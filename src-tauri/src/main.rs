@@ -74,8 +74,7 @@ fn read_dir(path: Option<String>) -> Result<DirContents, String> {
     for entry in read_entries {
         if let Ok(entry) = entry {
             let metadata = entry.metadata().ok();
-            let file_type = entry.file_type().ok();
-            let is_dir = file_type.map(|t| t.is_dir()).unwrap_or(false);
+            let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
             
             let name = entry.file_name().to_string_lossy().to_string();
             
