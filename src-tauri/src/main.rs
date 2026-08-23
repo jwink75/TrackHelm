@@ -27,6 +27,147 @@ struct PlaybackStatus {
     progress: f32,
 }
 
+#[derive(serde::Serialize)]
+struct DirEntry {
+    name: String,
+    path: String,
+    is_dir: bool,
+    size_bytes: u64,
+}
+
+#[derive(serde::Serialize)]
+struct DirContents {
+    current_path: String,
+    parent_path: Option<String>,
+    entries: Vec<DirEntry>,
+}
+
+#[tauri::command]
+fn read_dir(path: Option<String>) -> Result<DirContents, String> {
+    use std::path::PathBuf;
+    
+    let target_path = match path {
+        Some(p) => PathBuf::from(p),
+        None => dirs::home_dir().ok_or_else(|| "Could not find home directory".to_string())?,
+    };
+
+    let canonical = target_path.canonicalize()
+        .map_err(|e| format!("Failed to canonicalize path: {}", e))?;
+
+    let parent_path = canonical.parent().map(|p| p.to_string_lossy().to_string());
+
+    let mut entries = Vec::new();
+    let read_entries = std::fs::read_dir(&canonical)
+        .map_err(|e| format!("Failed to read directory: {}", e))?;
+
+    for entry in read_entries {
+        if let Ok(entry) = entry {
+            let metadata = entry.metadata().ok();
+            let file_type = entry.file_type().ok();
+            let is_dir = file_type.map(|t| t.is_dir()).unwrap_or(false);
+            
+            let name = entry.file_name().to_string_lossy().to_string();
+            
+            if name.starts_with('.') {
+                continue;
+            }
+
+            let path_str = entry.path().to_string_lossy().to_string();
+            let size_bytes = metadata.map(|m| m.len()).unwrap_or(0);
+
+            if is_dir {
+                entries.push(DirEntry {
+                    name,
+                    path: path_str,
+                    is_dir: true,
+                    size_bytes,
+                });
+            } else {
+                let lower_name = name.to_lowercase();
+                if lower_name.ends_with(".wav")
+                    || lower_name.ends_with(".mp3")
+                    || lower_name.ends_with(".flac")
+                    || lower_name.ends_with(".m4a")
+                    || lower_name.ends_with(".aiff")
+                    || lower_name.ends_with(".ogg")
+                {
+                    entries.push(DirEntry {
+                        name,
+                        path: path_str,
+                        is_dir: false,
+                        size_bytes,
+                    });
+                }
+            }
+        }
+    }
+
+    entries.sort_by(|a, b| {
+        if a.is_dir != b.is_dir {
+            b.is_dir.cmp(&a.is_dir)
+        } else {
+            a.name.to_lowercase().cmp(&b.name.to_lowercase())
+        }
+    });
+
+    Ok(DirContents {
+        current_path: canonical.to_string_lossy().to_string(),
+        parent_path,
+        entries,
+    })
+}
+
+#[tauri::command]
+fn get_waveform_slice(
+    state: State<'_, AppState>,
+    start_frame: usize,
+    end_frame: usize,
+    num_points: usize
+) -> Result<Vec<f32>, String> {
+    let active_opt = state.active_audio.lock().unwrap();
+    let audio = active_opt.as_ref().ok_or_else(|| "No active track loaded".to_string())?;
+
+    let channel_data = &audio.channel_samples[0]; // Mono/first channel peaks
+    let total_frames = channel_data.len();
+
+    let start = std::cmp::min(start_frame, total_frames);
+    let end = std::cmp::min(end_frame, total_frames);
+    
+    if start >= end {
+        return Ok(Vec::new());
+    }
+
+    let slice_len = end - start;
+    let mut result = Vec::new();
+
+    if slice_len <= num_points {
+        // Sample level: return raw values
+        for i in start..end {
+            result.push(channel_data[i]);
+        }
+    } else {
+        // Downsample slice
+        let chunk_size = slice_len / num_points;
+        for i in 0..num_points {
+            let chunk_start = start + i * chunk_size;
+            let chunk_end = std::cmp::min(chunk_start + chunk_size, end);
+            if chunk_start >= chunk_end {
+                break;
+            }
+            let mut max_val: f32 = 0.0;
+            for j in chunk_start..chunk_end {
+                let val = channel_data[j].abs();
+                if val > max_val {
+                    max_val = val;
+                }
+            }
+            result.push(max_val);
+        }
+    }
+
+    Ok(result)
+}
+
 #[tauri::command]
 fn load_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata, String> {
     println!("Loading track: {}", path);
@@ -152,6 +293,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(AppState {
             command_bus,
             shared_engine_state: shared_state,
@@ -164,7 +306,9 @@ fn main() {
             stop,
             seek,
             set_volume,
-            get_playback_status
+            get_playback_status,
+            read_dir,
+            get_waveform_slice
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

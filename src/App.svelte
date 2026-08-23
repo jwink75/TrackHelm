@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { open } from "@tauri-apps/plugin-dialog";
 
   // Active Playback State (for the backend engine)
   let filePath = "";
@@ -9,7 +8,7 @@
   let duration = 0;
   let currentTime = 0;
   let isPlaying = false;
-  let volume = 1.0;
+  let volumeLinear = 1.0;
   let progress = 0.0;
   let channels = 2;
   let sampleRate = 44100;
@@ -28,16 +27,17 @@
   let alternateTrack: Track | null = null;
   let activeTrackMode: "main" | "alternate" = "main";
 
-  // Rehearsal Workstation State
-  let speed = 1.0; // Placeholder for Milestone 2
-  let pitch = 0;   // Placeholder for Milestone 2
-  let compressorThreshold = -20; // Placeholder for Milestone 4
-  let compressorMakeup = 0;      // Placeholder for Milestone 4
-  let eqBass = 0;                // Placeholder for Milestone 3
-  let eqTreble = 0;              // Placeholder for Milestone 3
+  // Rehearsal Workstation State (Double-click resets)
+  let speed = 1.0;                  // range 0.25 - 4.0 (25% - 400%)
+  let pitch = 0;                    // range -24 - +24 semitones
+  let dbVolume = 0.0;               // range -60 - +12 dB
+  let zoom = 1.0;                   // range 1.0 - 1000.0 (logarithmic or linear)
 
-  // Zoom State
-  let zoom = 1.0;
+  // Placeholder DSP state variables
+  let compressorThreshold = -20;
+  let compressorMakeup = 0;
+  let eqBass = 0;
+  let eqTreble = 0;
 
   // Markers
   interface Marker {
@@ -48,13 +48,35 @@
   let markers: Marker[] = [];
   let nextMarkerId = 1;
 
+  // OS Folder Browser State
+  let currentPath = "";
+  let parentPath: string | null = null;
+  let browserEntries: any[] = [];
+  let selectedBrowserFile: { name: string; path: string } | null = null;
+
+  // Waveform Zoom View State
+  let visiblePeaks: number[] = [];
+
+  // Canvas elements
   let mainCanvas: HTMLCanvasElement;
   let overviewCanvas: HTMLCanvasElement;
   let altOverviewCanvas: HTMLCanvasElement;
+  let centerContentElement: HTMLDivElement;
+  
   let statusInterval: any;
+  let resizeObserver: ResizeObserver;
+
+  // Helper to map dB to Linear Amplitude
+  function dbToLinear(db: number) {
+    if (db <= -59.5) return 0.0; // Mute at bottom
+    return Math.pow(10, db / 20);
+  }
 
   // Poll engine status periodically
   onMount(() => {
+    // Initial folder load
+    loadBrowser(null);
+
     statusInterval = setInterval(async () => {
       try {
         const status: any = await invoke("get_playback_status");
@@ -63,6 +85,10 @@
         duration = status.duration_seconds;
         progress = status.progress;
         
+        // Fetch high-res peaks slice dynamically for current zoom/playhead window
+        await updateVisiblePeaks();
+
+        // Render canvases
         drawMainWaveform();
         drawOverviewWaveform();
         drawAltOverviewWaveform();
@@ -71,58 +97,71 @@
       }
     }, 50);
 
+    // Resize observer for responsive canvas dimensions
+    if (centerContentElement) {
+      resizeObserver = new ResizeObserver(() => {
+        drawMainWaveform();
+        drawOverviewWaveform();
+        drawAltOverviewWaveform();
+      });
+      resizeObserver.observe(centerContentElement);
+    }
+
     return () => {
       clearInterval(statusInterval);
+      if (resizeObserver) resizeObserver.disconnect();
     };
   });
 
-  // Load a file as Main or Alternate
-  async function loadFile(target: "main" | "alternate") {
+  // OS Folder Browser Loader
+  async function loadBrowser(path: string | null) {
     try {
-      const selected = await open({
-        multiple: false,
-        filters: [{
-          name: "Audio Files",
-          extensions: ["wav", "mp3", "flac", "m4a", "aiff", "ogg"]
-        }]
-      });
+      const contents: any = await invoke("read_dir", { path });
+      currentPath = contents.current_path;
+      parentPath = contents.parent_path;
+      browserEntries = contents.entries;
+      selectedBrowserFile = null;
+    } catch (err) {
+      alert("Failed to read directory: " + err);
+    }
+  }
 
-      if (selected && typeof selected === "string") {
-        const metadata: any = await invoke("load_track", { path: selected });
-        const track: Track = {
-          name: selected.split("/").pop() || selected,
-          path: selected,
-          duration: metadata.duration_seconds,
-          sampleRate: metadata.sample_rate,
-          channels: metadata.channels,
-          peaks: metadata.peaks
-        };
+  // Load a file into main or alternate track slots
+  async function assignTrack(target: "main" | "alternate") {
+    if (!selectedBrowserFile) return;
+    const path = selectedBrowserFile.path;
+    try {
+      const metadata: any = await invoke("load_track", { path });
+      const track: Track = {
+        name: selectedBrowserFile.name,
+        path: path,
+        duration: metadata.duration_seconds,
+        sampleRate: metadata.sample_rate,
+        channels: metadata.channels,
+        peaks: metadata.peaks
+      };
 
-        if (target === "main") {
-          mainTrack = track;
-        } else {
-          alternateTrack = track;
-        }
-
-        // Set loaded track as active on backend
-        filePath = selected;
-        fileName = track.name;
-        duration = track.duration;
-        sampleRate = track.sampleRate;
-        channels = track.channels;
-        activeTrackMode = target;
-
-        // Reset markers
-        markers = [];
-        nextMarkerId = 1;
-
-        // Redraw
-        setTimeout(() => {
-          drawMainWaveform();
-          drawOverviewWaveform();
-          drawAltOverviewWaveform();
-        }, 50);
+      if (target === "main") {
+        mainTrack = track;
+      } else {
+        alternateTrack = track;
       }
+
+      // Automatically activate newly loaded track
+      filePath = path;
+      fileName = track.name;
+      duration = track.duration;
+      sampleRate = track.sampleRate;
+      channels = track.channels;
+      activeTrackMode = target;
+
+      // Reset markers
+      markers = [];
+      nextMarkerId = 1;
+
+      setTimeout(() => {
+        updateVisiblePeaks();
+      }, 50);
     } catch (err) {
       alert("Failed to load file: " + err);
     }
@@ -147,6 +186,7 @@
       channels = alternateTrack.channels;
       await invoke("load_track", { path: alternateTrack.path });
     }
+    updateVisiblePeaks();
   }
 
   async function handlePlayPause() {
@@ -161,29 +201,64 @@
     await invoke("stop");
     currentTime = 0;
     progress = 0;
-    drawMainWaveform();
-    drawOverviewWaveform();
-    drawAltOverviewWaveform();
+    updateVisiblePeaks().then(() => {
+      drawMainWaveform();
+      drawOverviewWaveform();
+      drawAltOverviewWaveform();
+    });
   }
 
   async function handleVolume(e: Event) {
     const target = e.target as HTMLInputElement;
-    volume = parseFloat(target.value);
-    await invoke("set_volume", { volume });
+    dbVolume = parseFloat(target.value);
+    volumeLinear = dbToLinear(dbVolume);
+    await invoke("set_volume", { volume: volumeLinear });
   }
 
   function handleRewind() {
     invoke("seek", { seconds: 0 });
   }
 
-  // Seek by clicking on Main Waveform or Overviews
+  // Fetch peaks slice dynamically from backend based on playhead position and zoom
+  async function updateVisiblePeaks() {
+    const activePeaks = getActivePeaks();
+    if (activePeaks.length === 0 || !mainCanvas) {
+      visiblePeaks = [];
+      return;
+    }
+
+    const rect = mainCanvas.getBoundingClientRect();
+    const numPoints = Math.max(100, Math.floor(rect.width));
+
+    const totalFrames = duration * sampleRate;
+    
+    // Zoom window sizing (zoom value goes up to 1000)
+    const windowWidth = 1.0 / zoom;
+    const startProgress = Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2));
+    const endProgress = startProgress + windowWidth;
+
+    const startFrame = Math.floor(startProgress * totalFrames);
+    const endFrame = Math.floor(endProgress * totalFrames);
+
+    try {
+      const slice: any = await invoke("get_waveform_slice", {
+        start_frame: startFrame,
+        end_frame: endFrame,
+        num_points: numPoints
+      });
+      visiblePeaks = slice;
+    } catch (err) {
+      console.error("Failed to fetch waveform slice", err);
+    }
+  }
+
+  // Click navigation handlers
   function handleMainWaveformClick(e: MouseEvent) {
     if (duration === 0) return;
     const rect = mainCanvas.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     const pct = clickX / rect.width;
     
-    // Calculate clicked progress based on current zoom view window
     const windowWidth = 1.0 / zoom;
     const startProgress = Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2));
     const targetPct = startProgress + pct * windowWidth;
@@ -192,7 +267,6 @@
   }
 
   function handleOverviewClick(e: MouseEvent, target: "main" | "alternate") {
-    // Navigate file if active
     if (target !== activeTrackMode) {
       toggleActiveTrack(target);
       return;
@@ -206,7 +280,7 @@
     invoke("seek", { seconds: targetSeconds });
   }
 
-  // Markers operations
+  // Markers
   function addMarker() {
     if (duration === 0) return;
     const newMarker: Marker = {
@@ -245,7 +319,7 @@
     }
   }
 
-  // Get active peaks
+  // Get active peaks helper
   function getActivePeaks(): number[] {
     if (activeTrackMode === "main" && mainTrack) {
       return mainTrack.peaks;
@@ -255,33 +329,45 @@
     return [];
   }
 
-  // Draw the main scrolling and zoomable waveform
+  // High-DPI canvas initialization
+  function setupCanvasResolution(canvas: HTMLCanvasElement, rect: DOMRect) {
+    const dpr = window.devicePixelRatio || 1;
+    const canvasWidth = Math.floor(rect.width * dpr);
+    const canvasHeight = Math.floor(rect.height * dpr);
+
+    if (canvas.width !== canvasWidth || canvas.height !== canvasHeight) {
+      canvas.width = canvasWidth;
+      canvas.height = canvasHeight;
+    }
+  }
+
+  // Draw the main scrolling, zoomable waveform
   function drawMainWaveform() {
     if (!mainCanvas) return;
     const ctx = mainCanvas.getContext("2d");
     if (!ctx) return;
 
-    const width = mainCanvas.width;
-    const height = mainCanvas.height;
+    const rect = mainCanvas.getBoundingClientRect();
+    setupCanvasResolution(mainCanvas, rect);
+
+    const dpr = window.devicePixelRatio || 1;
+    const width = rect.width;
+    const height = rect.height;
+    const halfHeight = height / 2;
+
+    ctx.clearRect(0, 0, mainCanvas.width, mainCanvas.height);
+    ctx.save();
+    ctx.scale(dpr, dpr);
 
     // Colored Backdrop (Anytune style - deep blue/slate gradient)
-    ctx.clearRect(0, 0, width, height);
     const gradient = ctx.createLinearGradient(0, 0, 0, height);
-    gradient.addColorStop(0, "#1a2c3a");
-    gradient.addColorStop(1, "#111e28");
+    gradient.addColorStop(0, "#162837");
+    gradient.addColorStop(1, "#0d1822");
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, width, height);
 
-    const activePeaks = getActivePeaks();
-    if (activePeaks.length === 0) {
-      ctx.fillStyle = "#ffffff";
-      ctx.font = "14px sans-serif";
-      ctx.fillText("No Active Track Loaded", width / 2 - 75, height / 2);
-      return;
-    }
-
-    // Grid lines
-    ctx.strokeStyle = "#1b384d";
+    // Grid lines (vertical beat lines)
+    ctx.strokeStyle = "#1b3547";
     ctx.lineWidth = 1;
     for (let x = 50; x < width; x += 100) {
       ctx.beginPath();
@@ -290,31 +376,87 @@
       ctx.stroke();
     }
 
-    const halfHeight = height / 2;
+    const activePeaks = getActivePeaks();
+    if (activePeaks.length === 0 || visiblePeaks.length === 0) {
+      ctx.fillStyle = "#888888";
+      ctx.font = "13px sans-serif";
+      ctx.fillText("No active track loaded", width / 2 - 70, height / 2 + 4);
+      ctx.restore();
+      return;
+    }
 
-    // Calculate view window progress slices
+    const totalFrames = duration * sampleRate;
     const windowWidth = 1.0 / zoom;
     const startProgress = Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2));
     const endProgress = startProgress + windowWidth;
+    const visibleFrames = (endProgress - startProgress) * totalFrames;
 
-    const startPeakIdx = Math.floor(startProgress * activePeaks.length);
-    const endPeakIdx = Math.floor(endProgress * activePeaks.length);
-    const visiblePeakCount = endPeakIdx - startPeakIdx;
+    // Check if we are zoomed in enough to show samples (e.g. less than 1500 samples in view)
+    const isSampleLevel = visibleFrames < 1500;
 
-    const barWidth = width / visiblePeakCount;
+    if (isSampleLevel) {
+      // Draw continuous line connecting actual sample nodes
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
 
-    // Draw zoomed-in white peaks
-    ctx.fillStyle = "#ffffff";
-    for (let i = 0; i < visiblePeakCount; i++) {
-      const peakIdx = startPeakIdx + i;
-      const val = activePeaks[peakIdx] || 0;
-      const barHeight = val * (height * 0.8);
-      const x = i * barWidth;
-      const y = halfHeight - barHeight / 2;
-      ctx.fillRect(x, y, Math.max(1, barWidth - 0.5), barHeight);
+      const step = width / visiblePeaks.length;
+      for (let i = 0; i < visiblePeaks.length; i++) {
+        const val = visiblePeaks[i];
+        const x = i * step;
+        const y = halfHeight - val * (halfHeight * 0.8);
+        if (i === 0) {
+          ctx.moveTo(x, y);
+        } else {
+          ctx.lineTo(x, y);
+        }
+      }
+      ctx.stroke();
+
+      // Draw sample dots
+      ctx.fillStyle = "#3b99fc";
+      for (let i = 0; i < visiblePeaks.length; i++) {
+        const val = visiblePeaks[i];
+        const x = i * step;
+        const y = halfHeight - val * (halfHeight * 0.8);
+        ctx.beginPath();
+        ctx.arc(x, y, 3, 0, 2 * Math.PI);
+        ctx.fill();
+      }
+
+      // Draw center zero line
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, halfHeight);
+      ctx.lineTo(width, halfHeight);
+      ctx.stroke();
+    } else {
+      // Draw professional filled path outline (much crisper than columns)
+      ctx.fillStyle = "#ffffff";
+      ctx.beginPath();
+      ctx.moveTo(0, halfHeight);
+
+      const step = width / visiblePeaks.length;
+      // Upper outline
+      for (let i = 0; i < visiblePeaks.length; i++) {
+        const val = visiblePeaks[i];
+        const x = i * step;
+        const y = halfHeight - val * (halfHeight * 0.85);
+        ctx.lineTo(x, y);
+      }
+      // Lower outline
+      for (let i = visiblePeaks.length - 1; i >= 0; i--) {
+        const val = visiblePeaks[i];
+        const x = i * step;
+        const y = halfHeight + val * (halfHeight * 0.85);
+        ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fill();
     }
 
-    // Draw markers on zoom window
+    // Draw markers inside view
     ctx.lineWidth = 1;
     for (const marker of markers) {
       const markerPct = marker.time / duration;
@@ -327,7 +469,7 @@
         ctx.stroke();
         
         ctx.fillStyle = "#ff9500";
-        ctx.font = "9px sans-serif";
+        ctx.font = "bold 9px sans-serif";
         ctx.fillText(marker.name, markerX + 4, 12);
       }
     }
@@ -341,27 +483,36 @@
     ctx.moveTo(playheadX, 0);
     ctx.lineTo(playheadX, height);
     ctx.stroke();
+
+    ctx.restore();
   }
 
-  // Draw the overview waveform (Generic helper)
+  // Draw the overview waveform (retina-compliant)
   function drawGenericOverview(canvas: HTMLCanvasElement, track: Track | null, mode: "main" | "alternate") {
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const width = canvas.width;
-    const height = canvas.height;
+    const rect = canvas.getBoundingClientRect();
+    setupCanvasResolution(canvas, rect);
 
-    // Background: Dorico dark grey or slightly colored if selected
-    ctx.clearRect(0, 0, width, height);
+    const dpr = window.devicePixelRatio || 1;
+    const width = rect.width;
+    const height = rect.height;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    ctx.scale(dpr, dpr);
+
     const isActive = activeTrackMode === mode;
-    ctx.fillStyle = isActive ? "#222222" : "#191919";
+    ctx.fillStyle = isActive ? "#262626" : "#1a1a1a";
     ctx.fillRect(0, 0, width, height);
 
     if (!track) {
-      ctx.fillStyle = "#555555";
-      ctx.font = "9px sans-serif";
-      ctx.fillText(`Empty [Double click to Load ${mode.toUpperCase()}]`, 12, height / 2 + 3);
+      ctx.fillStyle = "#666666";
+      ctx.font = "10px sans-serif";
+      ctx.fillText(`Empty [Double click in browser to load ${mode.toUpperCase()}]`, 12, height / 2 + 3);
+      ctx.restore();
       return;
     }
 
@@ -377,14 +528,13 @@
       ctx.fillRect(x, y, Math.max(1, barWidth * 2 - 0.5), barHeight);
     }
 
-    // Draw playhead vertical line
+    // Draw viewport zoom overlay
     if (isActive) {
-      // Highlight current zoom window overlay
       const windowWidth = 1.0 / zoom;
       const startProgress = Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2));
       const endProgress = startProgress + windowWidth;
 
-      ctx.fillStyle = "rgba(59, 153, 252, 0.25)"; // Cyan transparent highlight box
+      ctx.fillStyle = "rgba(59, 153, 252, 0.18)"; // Cyan transparent highlight box
       ctx.fillRect(startProgress * width, 0, (endProgress - startProgress) * width, height);
       
       ctx.strokeStyle = "#3b99fc";
@@ -400,6 +550,8 @@
       ctx.lineTo(playheadX, height);
       ctx.stroke();
     }
+
+    ctx.restore();
   }
 
   function drawOverviewWaveform() {
@@ -436,42 +588,64 @@
 
   <div class="workspace-grid">
     
-    <!-- LEFT SIDEBAR: Browser / Playlist -->
+    <!-- LEFT SIDEBAR: File Browser -->
     <aside class="sidebar-left">
-      <div class="panel-header">TRACK LIST / LOADING</div>
+      <div class="panel-header">FILE BROWSER</div>
       
-      <div class="load-panel">
-        <div class="load-block">
-          <span class="load-title">MAIN TRACK</span>
-          {#if mainTrack}
-            <div class="loaded-file-info" class:active={activeTrackMode === "main"}>
-              <span class="fn-name" title={mainTrack.name}>{mainTrack.name}</span>
-              <button class="select-track-btn" on:click={() => toggleActiveTrack("main")}>
-                {activeTrackMode === "main" ? "Active" : "Activate"}
-              </button>
-            </div>
-          {:else}
-            <button class="action-btn file-btn" on:click={() => loadFile("main")}>
-              Load Main Track
-            </button>
-          {/if}
-        </div>
+      <!-- Browser Nav -->
+      <div class="browser-nav">
+        <span class="current-dir-label" title={currentPath}>{currentPath.split("/").pop() || currentPath}</span>
+        {#if parentPath}
+          <!-- svelte-ignore a11y-click-events-have-key-events -->
+          <!-- svelte-ignore a11y-no-static-element-interactions -->
+          <span class="up-btn" on:click={() => loadBrowser(parentPath)}>Parent ↰</span>
+        {/if}
+      </div>
 
-        <div class="load-block">
-          <span class="load-title">ALTERNATE TRACK</span>
-          {#if alternateTrack}
-            <div class="loaded-file-info" class:active={activeTrackMode === "alternate"}>
-              <span class="fn-name" title={alternateTrack.name}>{alternateTrack.name}</span>
-              <button class="select-track-btn" on:click={() => toggleActiveTrack("alternate")}>
-                {activeTrackMode === "alternate" ? "Active" : "Activate"}
-              </button>
-            </div>
-          {:else}
-            <button class="action-btn file-btn alt-btn" on:click={() => loadFile("alternate")}>
-              Load Alternate Track
+      <!-- File list -->
+      <div class="browser-list">
+        {#each browserEntries as entry}
+          <!-- svelte-ignore a11y-click-events-have-key-events -->
+          <!-- svelte-ignore a11y-no-static-element-interactions -->
+          <div 
+            class="browser-item" 
+            class:is-dir={entry.is_dir}
+            class:active={selectedBrowserFile?.path === entry.path}
+            on:click={() => {
+              if (entry.is_dir) {
+                loadBrowser(entry.path);
+              } else {
+                selectedBrowserFile = { name: entry.name, path: entry.path };
+              }
+            }}
+            on:dblclick={() => {
+              if (!entry.is_dir) {
+                selectedBrowserFile = { name: entry.name, path: entry.path };
+                assignTrack("main");
+              }
+            }}
+          >
+            <span class="item-icon">{entry.is_dir ? "📁" : "🎵"}</span>
+            <span class="item-name" title={entry.name}>{entry.name}</span>
+          </div>
+        {/each}
+      </div>
+
+      <!-- Loading Assign Buttons -->
+      <div class="assign-panel">
+        {#if selectedBrowserFile}
+          <span class="selected-filename" title={selectedBrowserFile.name}>Selected: {selectedBrowserFile.name}</span>
+          <div class="btn-row">
+            <button class="action-btn file-btn" on:click={() => assignTrack("main")}>
+              Set as Main
             </button>
-          {/if}
-        </div>
+            <button class="action-btn alt-btn" on:click={() => assignTrack("alternate")}>
+              Set as Alt
+            </button>
+          </div>
+        {:else}
+          <span class="browser-help-text">Select an audio file above to assign it. Double click assigns to Main.</span>
+        {/if}
       </div>
 
       <div class="selection-info">
@@ -491,8 +665,8 @@
       </div>
     </aside>
 
-    <!-- CENTER AREA: Waveforms & Transport -->
-    <section class="center-content">
+    <!-- CENTER AREA: Resizable Waveforms & Fixed Bottom controls -->
+    <section class="center-content" bind:this={centerContentElement}>
       
       <!-- Current File info header -->
       <div class="track-header">
@@ -514,62 +688,59 @@
         </div>
       </div>
 
-      <!-- Overview Waveform (Alternate File) -->
-      <div class="waveform-overview-container">
-        <div class="waveform-label-row">
-          <span class="waveform-label">WAVEFORM OVERVIEW (ALTERNATE FILE)</span>
-          {#if alternateTrack}
-            <span class="overview-desc-tag" class:active={activeTrackMode === "alternate"}>
-              Double-click to activate
-            </span>
-          {/if}
+      <!-- Waveforms (flex-grow vertically) -->
+      <div class="waveforms-flexbox">
+        <!-- Overview Waveform (Alternate File) -->
+        <div class="waveform-block block-alt-overview">
+          <div class="waveform-label-row">
+            <span class="waveform-label">WAVEFORM OVERVIEW (ALTERNATE FILE)</span>
+            {#if alternateTrack}
+              <span class="overview-desc-tag" class:active={activeTrackMode === "alternate"}>
+                Double-click to activate
+              </span>
+            {/if}
+          </div>
+          <!-- svelte-ignore a11y-click-events-have-key-events -->
+          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+          <canvas 
+            bind:this={altOverviewCanvas} 
+            on:click={(e) => handleOverviewClick(e, "alternate")}
+            on:dblclick={() => toggleActiveTrack("alternate")}
+            class="overview-canvas"
+          ></canvas>
         </div>
-        <!-- svelte-ignore a11y-click-events-have-key-events -->
-        <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-        <canvas 
-          bind:this={altOverviewCanvas} 
-          width="800" 
-          height="45" 
-          on:click={(e) => handleOverviewClick(e, "alternate")}
-          on:dblclick={() => toggleActiveTrack("alternate")}
-          class="overview-canvas"
-        ></canvas>
-      </div>
 
-      <!-- Overview Waveform (Main File) -->
-      <div class="waveform-overview-container">
-        <div class="waveform-label-row">
-          <span class="waveform-label">WAVEFORM OVERVIEW (MAIN FILE)</span>
-          {#if mainTrack}
-            <span class="overview-desc-tag" class:active={activeTrackMode === "main"}>
-              Double-click to activate
-            </span>
-          {/if}
+        <!-- Overview Waveform (Main File) -->
+        <div class="waveform-block block-main-overview">
+          <div class="waveform-label-row">
+            <span class="waveform-label">WAVEFORM OVERVIEW (MAIN FILE)</span>
+            {#if mainTrack}
+              <span class="overview-desc-tag" class:active={activeTrackMode === "main"}>
+                Double-click to activate
+              </span>
+            {/if}
+          </div>
+          <!-- svelte-ignore a11y-click-events-have-key-events -->
+          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+          <canvas 
+            bind:this={overviewCanvas} 
+            on:click={(e) => handleOverviewClick(e, "main")}
+            on:dblclick={() => toggleActiveTrack("main")}
+            class="overview-canvas"
+          ></canvas>
         </div>
-        <!-- svelte-ignore a11y-click-events-have-key-events -->
-        <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-        <canvas 
-          bind:this={overviewCanvas} 
-          width="800" 
-          height="45" 
-          on:click={(e) => handleOverviewClick(e, "main")}
-          on:dblclick={() => toggleActiveTrack("main")}
-          class="overview-canvas"
-        ></canvas>
-      </div>
 
-      <!-- Main Waveform Box (Anytune-style White-on-Blue Backdrop) -->
-      <div class="main-waveform-container">
-        <div class="waveform-label">MAIN WAVEFORM DISPLAY (ZOOMED & SCROLLING)</div>
-        <!-- svelte-ignore a11y-click-events-have-key-events -->
-        <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-        <canvas 
-          bind:this={mainCanvas} 
-          width="800" 
-          height="220" 
-          on:click={handleMainWaveformClick}
-          class="main-canvas"
-        ></canvas>
+        <!-- Main Waveform Box (Flex-grow to occupy rest of center height) -->
+        <div class="waveform-block block-main-waveform">
+          <div class="waveform-label">MAIN WAVEFORM DISPLAY (ZOOMED & SCROLLING)</div>
+          <!-- svelte-ignore a11y-click-events-have-key-events -->
+          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+          <canvas 
+            bind:this={mainCanvas} 
+            on:click={handleMainWaveformClick}
+            class="main-canvas"
+          ></canvas>
+        </div>
       </div>
 
       <!-- Bottom controls bar (Transport & Loop controls) -->
@@ -590,7 +761,7 @@
 
         <!-- Looping, markers, and Zoom controls -->
         <div class="control-group">
-          <div class="group-label">MARKERS / LOOPING / ZOOM</div>
+          <div class="group-label">MARKERS / LOOPING / ZOOM (Dbl-click slider resets)</div>
           <div class="loop-zoom-grid">
             <div class="btn-row">
               <button class="control-btn accent-btn" on:click={addMarker}>+ Add Marker</button>
@@ -599,15 +770,18 @@
             </div>
             <div class="zoom-slider-group">
               <span class="control-text-label">ZOOM</span>
+              <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
               <input 
                 type="range" 
                 min="1.0" 
-                max="10.0" 
-                step="0.2" 
+                max="800.0" 
+                step="1.0" 
                 bind:value={zoom} 
+                on:dblclick={() => { zoom = 1.0; updateVisiblePeaks(); }}
+                on:input={updateVisiblePeaks}
                 class="zoom-slider" 
               />
-              <span class="zoom-value-label">{zoom.toFixed(1)}x</span>
+              <span class="zoom-value-label">{zoom.toFixed(0)}x</span>
             </div>
           </div>
         </div>
@@ -623,11 +797,11 @@
         <div class="linked-files">
           <div class="setup-row">
             <span class="label">Main Track:</span>
-            <span class="value">{mainTrack ? "LOADED" : "EMPTY"}</span>
+            <span class="value" class:active-val={mainTrack}>{mainTrack ? "LOADED" : "EMPTY"}</span>
           </div>
           <div class="setup-row">
             <span class="label">Alt Track:</span>
-            <span class="value">{alternateTrack ? "LOADED" : "EMPTY"}</span>
+            <span class="value" class:active-val={alternateTrack}>{alternateTrack ? "LOADED" : "EMPTY"}</span>
           </div>
         </div>
       </div>
@@ -655,15 +829,24 @@
 
       <!-- Effects Rack & Stretch (Sliders) -->
       <div class="panel-section dsp-section">
-        <div class="panel-header">EFFECTS MODULES</div>
+        <div class="panel-header">EFFECTS MODULES (Dbl-click slider resets)</div>
 
         <!-- Time & Pitch Stretch (Milestone 2) -->
         <div class="dsp-control">
           <div class="dsp-label-row">
             <span class="dsp-title">SPEED (Tempo)</span>
-            <span class="dsp-value">{speed.toFixed(2)}x</span>
+            <span class="dsp-value">{Math.round(speed * 100)}%</span>
           </div>
-          <input type="range" min="0.5" max="2.0" step="0.05" bind:value={speed} class="dsp-slider" />
+          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+          <input 
+            type="range" 
+            min="0.25" 
+            max="4.00" 
+            step="0.05" 
+            bind:value={speed} 
+            on:dblclick={() => speed = 1.0}
+            class="dsp-slider" 
+          />
         </div>
 
         <div class="dsp-control">
@@ -671,22 +854,37 @@
             <span class="dsp-title">PITCH SHIFT</span>
             <span class="dsp-value">{pitch > 0 ? "+" : ""}{pitch} semitones</span>
           </div>
-          <input type="range" min="-12" max="12" step="1" bind:value={pitch} class="dsp-slider" />
+          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+          <input 
+            type="range" 
+            min="-24" 
+            max="24" 
+            step="1" 
+            bind:value={pitch} 
+            on:dblclick={() => pitch = 0}
+            class="dsp-slider" 
+          />
         </div>
 
-        <!-- Gain / Master Fader (Functional Volume) -->
+        <!-- Gain / Master Fader (dB Volume) -->
         <div class="dsp-control active-dsp">
           <div class="dsp-label-row">
             <span class="dsp-title">MASTER GAIN</span>
-            <span class="dsp-value">{Math.round(volume * 100)}%</span>
+            <span class="dsp-value">{dbVolume <= -59.5 ? "-inf" : (dbVolume > 0 ? "+" : "") + dbVolume.toFixed(1)} dB</span>
           </div>
+          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
           <input 
             type="range" 
-            min="0" 
-            max="1.5" 
-            step="0.05" 
-            value={volume} 
+            min="-60.0" 
+            max="12.0" 
+            step="0.5" 
+            value={dbVolume} 
             on:input={handleVolume}
+            on:dblclick={async () => {
+              dbVolume = 0.0;
+              volumeLinear = 1.0;
+              await invoke("set_volume", { volume: 1.0 });
+            }}
             class="dsp-slider" 
           />
         </div>
@@ -824,110 +1022,103 @@
     color: #a5a5a5;
   }
 
-  /* Left Sidebar styles */
+  /* Left Sidebar: OS Directory Browser */
   .sidebar-left {
-    background-color: #252526; /* Dorico sidebar charcoal */
+    background-color: #252526;
     border-right: 1px solid #3c3c3c;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
   }
 
-  .load-panel {
-    flex-grow: 1;
-    padding: 16px;
+  .browser-nav {
     display: flex;
-    flex-direction: column;
-    gap: 20px;
-    overflow-y: auto;
+    justify-content: space-between;
+    align-items: center;
+    background-color: #202021;
+    border-bottom: 1px solid #3c3c3c;
+    padding: 6px 12px;
+    font-size: 0.8rem;
   }
 
-  .load-block {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    background-color: #1e1e1e;
-    border: 1px solid #3c3c3c;
-    padding: 12px;
-    border-radius: 6px;
+  .current-dir-label {
+    font-weight: 700;
+    color: #ffffff;
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .load-title {
-    font-size: 0.65rem;
-    font-weight: 800;
-    color: #8e8e8e;
-    letter-spacing: 0.05em;
-  }
-
-  .loaded-file-info {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .loaded-file-info.active .fn-name {
+  .up-btn {
     color: #3b99fc;
+    cursor: pointer;
     font-weight: bold;
   }
 
-  .fn-name {
+  .up-btn:hover {
+    text-decoration: underline;
+  }
+
+  .browser-list {
+    flex-grow: 1;
+    overflow-y: auto;
+    background-color: #1e1e1f;
+  }
+
+  .browser-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
     font-size: 0.8rem;
+    cursor: pointer;
+    border-bottom: 1px solid #282829;
+    color: #cccccc;
+    transition: background-color 0.15s ease;
+  }
+
+  .browser-item:hover {
+    background-color: #2d2d2e;
+  }
+
+  .browser-item.is-dir {
+    font-weight: 600;
+    color: #ff9500; /* Folders amber */
+  }
+
+  .browser-item.active {
+    background-color: #333d46;
     color: #ffffff;
-    word-break: break-all;
+  }
+
+  .browser-item.active.is-dir {
+    color: #ffaa33;
+  }
+
+  .assign-panel {
+    background-color: #202021;
+    border-top: 1px solid #3c3c3c;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .selected-filename {
+    font-size: 0.75rem;
+    font-weight: bold;
+    color: #ffffff;
     overflow: hidden;
     text-overflow: ellipsis;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
+    white-space: nowrap;
   }
 
-  .select-track-btn {
-    background-color: #333333;
-    color: #ffffff;
-    border: 1px solid #444444;
-    padding: 4px 8px;
-    border-radius: 3px;
-    font-size: 0.75rem;
-    cursor: pointer;
-  }
-
-  .select-track-btn:hover {
-    background-color: #444444;
-  }
-
-  .loaded-file-info.active .select-track-btn {
-    background-color: rgba(59, 153, 252, 0.2);
-    color: #3b99fc;
-    border-color: #3b99fc;
-  }
-
-  .action-btn {
-    border: none;
-    padding: 10px;
-    font-weight: 600;
-    font-size: 0.85rem;
-    cursor: pointer;
-    width: 100%;
-    box-sizing: border-box;
-    text-align: center;
-    border-radius: 4px;
-  }
-
-  .file-btn {
-    background-color: #3b99fc;
-    color: #ffffff;
-  }
-
-  .file-btn:hover {
-    background-color: #258bf5;
-  }
-
-  .alt-btn {
-    background-color: #ff9500;
-    color: #000000;
-  }
-
-  .alt-btn:hover {
-    background-color: #ffaa33;
+  .browser-help-text {
+    font-size: 0.7rem;
+    color: #717171;
+    font-style: italic;
+    line-height: 1.3;
   }
 
   .selection-info {
@@ -953,14 +1144,46 @@
     color: #ffffff;
   }
 
-  /* Center Workspace area styling */
+  .action-btn {
+    border: none;
+    padding: 8px;
+    font-weight: 600;
+    font-size: 0.8rem;
+    cursor: pointer;
+    width: 100%;
+    box-sizing: border-box;
+    text-align: center;
+    border-radius: 4px;
+  }
+
+  .file-btn {
+    background-color: #3b99fc;
+    color: #ffffff;
+  }
+
+  .file-btn:hover {
+    background-color: #258bf5;
+  }
+
+  .alt-btn {
+    background-color: #ff9500;
+    color: #000000;
+  }
+
+  .alt-btn:hover {
+    background-color: #ffaa33;
+  }
+
+  /* Center Workspace area styling (Flex layout with vertical stretch) */
   .center-content {
     background-color: #1e1e1e;
     padding: 16px 20px;
     display: flex;
     flex-direction: column;
     gap: 12px;
-    overflow-y: auto;
+    overflow: hidden;
+    height: 100%;
+    box-sizing: border-box;
   }
 
   .track-header {
@@ -969,6 +1192,7 @@
     align-items: center;
     border-bottom: 1px solid #2d2d2d;
     padding-bottom: 8px;
+    flex-shrink: 0;
   }
 
   h2 {
@@ -1027,12 +1251,39 @@
     color: #8e8e8e;
   }
 
+  /* Waveforms stretching wrapper */
+  .waveforms-flexbox {
+    display: flex;
+    flex-direction: column;
+    flex-grow: 1;
+    gap: 10px;
+    overflow: hidden;
+  }
+
+  .waveform-block {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .block-alt-overview, .block-main-overview {
+    flex-shrink: 0;
+    height: 65px;
+  }
+
+  .block-main-waveform {
+    flex-grow: 1;
+    background-color: #122a3a; /* Anytune style blue */
+    border: 1px solid #1b384d;
+    border-radius: 4px;
+  }
+
   /* Waveform labeling and grids */
   .waveform-label-row {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    margin-bottom: 4px;
+    margin-bottom: 2px;
   }
 
   .waveform-label {
@@ -1054,32 +1305,19 @@
     font-style: normal;
   }
 
-  .waveform-overview-container {
-    background-color: #1a1a1a;
-    border: 1px solid #3c3c3c;
-    border-radius: 4px;
-    overflow: hidden;
-  }
-
   .overview-canvas {
     display: block;
     width: 100%;
     height: 45px;
     cursor: pointer;
-  }
-
-  /* Main Waveform Box (Anytune style white on blue-slate) */
-  .main-waveform-container {
-    background-color: #122a3a; /* Anytune style blue */
-    border: 1px solid #1b384d;
+    border: 1px solid #3c3c3c;
     border-radius: 4px;
-    overflow: hidden;
   }
 
   .main-canvas {
     display: block;
     width: 100%;
-    height: 220px;
+    height: 100%;
     cursor: pointer;
   }
 
@@ -1087,6 +1325,7 @@
   .controls-row {
     display: flex;
     gap: 16px;
+    flex-shrink: 0;
     margin-top: 5px;
   }
 
@@ -1186,7 +1425,7 @@
     height: 4px;
     border-radius: 2px;
     outline: none;
-    width: 100px;
+    width: 120px;
   }
 
   .zoom-slider::-webkit-slider-thumb {
@@ -1203,7 +1442,7 @@
     font-size: 0.75rem;
     font-family: monospace;
     color: #ffffff;
-    width: 32px;
+    width: 38px;
     text-align: right;
   }
 
@@ -1241,7 +1480,11 @@
 
   .setup-row .value {
     font-weight: bold;
-    color: #ffffff;
+    color: #717171;
+  }
+
+  .setup-row .value.active-val {
+    color: #3b99fc;
   }
 
   .placeholder-text {
@@ -1256,7 +1499,7 @@
     flex-grow: 1;
     display: flex;
     flex-direction: column;
-    max-height: 240px;
+    max-height: 200px;
   }
 
   .markers-list {

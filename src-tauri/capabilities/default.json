@@ -6,12 +6,15 @@
   "permissions": [
     "core:default",
     "dialog:default",
+    "window-state:default",
     "allow-load-track",
     "allow-play",
     "allow-pause",
     "allow-stop",
     "allow-seek",
     "allow-set-volume",
-    "allow-get-playback-status"
+    "allow-get-playback-status",
+    "allow-read-dir",
+    "allow-get-waveform-slice"
   ]
 }

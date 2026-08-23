@@ -10,7 +10,9 @@ fn main() {
                         "stop",
                         "seek",
                         "set_volume",
-                        "get_playback_status"
+                        "get_playback_status",
+                        "read_dir",
+                        "get_waveform_slice"
                     ])
             )
     ).expect("failed to run tauri-build");
