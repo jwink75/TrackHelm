@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { open } from "@tauri-apps/plugin-dialog";
+  import { listen } from "@tauri-apps/api/event";
 
   // Active Playback State (for the backend engine)
   let filePath = "";
@@ -27,17 +29,24 @@
   let alternateTrack: Track | null = null;
   let activeTrackMode: "main" | "alternate" = "main";
 
-  // Rehearsal Workstation State (Double-click resets)
+  // Left Panel tabs
+  let activeTab: "browser" | "playlist" = "browser";
+
+  // Rehearsal Workstation Knob State (Double-click resets)
   let speed = 1.0;                  // range 0.25 - 4.0 (25% - 400%)
   let pitch = 0;                    // range -24 - +24 semitones
+  let eqBass = 0;                   // range -12 - +12 dB
+  let eqTreble = 0;                 // range -12 - +12 dB
+  let compressorThreshold = -20;    // range -60 - 0 dB
+  let compressorKnee = 6;           // range 0 - 24 dB
+  let compressorMakeup = 0;         // range 0 - 24 dB
+  
+  // Slider State (Dbl-click resets)
   let dbVolume = 0.0;               // range -60 - +12 dB
   let zoom = 1.0;                   // range 1.0 - 1000.0 (logarithmic or linear)
 
-  // Placeholder DSP state variables
-  let compressorThreshold = -20;
-  let compressorMakeup = 0;
-  let eqBass = 0;
-  let eqTreble = 0;
+  // Zoom View State
+  let visiblePeaks: number[] = [];
 
   // Markers
   interface Marker {
@@ -52,10 +61,28 @@
   let currentPath = "";
   let parentPath: string | null = null;
   let browserEntries: any[] = [];
-  let selectedBrowserFile: { name: string; path: string } | null = null;
+  
+  // Browser Multi-selection
+  let selectedFilePaths = new Set<string>();
+  let lastSelectedEntry: { name: string; path: string } | null = null;
 
-  // Waveform Zoom View State
-  let visiblePeaks: number[] = [];
+  // Custom Context Menu State
+  let showContextMenu = false;
+  let contextMenuX = 0;
+  let contextMenuY = 0;
+  let contextMenuTargetFile: { name: string; path: string } | null = null;
+
+  // Playlist State (saved in localStorage)
+  interface PlaylistItem {
+    name: string;
+    path: string;
+  }
+  let playlistItems: PlaylistItem[] = [];
+
+  // Project Setup: File Associations (saved in localStorage)
+  let pdfChartPath = "";
+  let pdfChartName = "";
+  let associatedVersions: PlaylistItem[] = [];
 
   // Canvas elements
   let mainCanvas: HTMLCanvasElement;
@@ -66,16 +93,40 @@
   let statusInterval: any;
   let resizeObserver: ResizeObserver;
 
+  // Knob Drag Interaction State
+  let activeKnob: {
+    id: string;
+    startY: number;
+    startX: number;
+    startVal: number;
+    min: number;
+    max: number;
+    step: number;
+    setValue: (val: number) => void;
+  } | null = null;
+
   // Helper to map dB to Linear Amplitude
   function dbToLinear(db: number) {
     if (db <= -59.5) return 0.0; // Mute at bottom
     return Math.pow(10, db / 20);
   }
 
-  // Poll engine status periodically
   onMount(() => {
     // Initial folder load
     loadBrowser(null);
+
+    // Restore Playlists and Project setup from LocalStorage
+    const savedPlaylist = localStorage.getItem("th_playlist");
+    if (savedPlaylist) playlistItems = JSON.parse(savedPlaylist);
+
+    const savedPdf = localStorage.getItem("th_pdf_path");
+    if (savedPdf) {
+      pdfChartPath = savedPdf;
+      pdfChartName = pdfChartPath.split("/").pop() || pdfChartPath;
+    }
+
+    const savedVersions = localStorage.getItem("th_associated_versions");
+    if (savedVersions) associatedVersions = JSON.parse(savedVersions);
 
     statusInterval = setInterval(async () => {
       try {
@@ -85,10 +136,8 @@
         duration = status.duration_seconds;
         progress = status.progress;
         
-        // Fetch high-res peaks slice dynamically for current zoom/playhead window
         await updateVisiblePeaks();
 
-        // Render canvases
         drawMainWaveform();
         drawOverviewWaveform();
         drawAltOverviewWaveform();
@@ -97,7 +146,7 @@
       }
     }, 50);
 
-    // Resize observer for responsive canvas dimensions
+    // Resize observer for canvases
     if (centerContentElement) {
       resizeObserver = new ResizeObserver(() => {
         drawMainWaveform();
@@ -107,9 +156,29 @@
       resizeObserver.observe(centerContentElement);
     }
 
+    // Listen to native window file drops (Tauri drag & drop)
+    const unlistenDragDrop = listen("tauri://drag-drop", (event: any) => {
+      const paths = event.payload.paths;
+      if (paths && paths.length > 0) {
+        const audioPath = paths.find((p: string) => {
+          const lower = p.toLowerCase();
+          return lower.endsWith(".wav") || lower.endsWith(".mp3") || lower.endsWith(".flac") || lower.endsWith(".m4a") || lower.endsWith(".aiff") || lower.endsWith(".ogg");
+        });
+        if (audioPath) {
+          loadAudioPath(audioPath, "main");
+        }
+      }
+    });
+
+    // Close context menu on window click
+    const closeMenu = () => { showContextMenu = false; };
+    window.addEventListener("click", closeMenu);
+
     return () => {
       clearInterval(statusInterval);
       if (resizeObserver) resizeObserver.disconnect();
+      unlistenDragDrop.then(fn => fn());
+      window.removeEventListener("click", closeMenu);
     };
   });
 
@@ -120,20 +189,19 @@
       currentPath = contents.current_path;
       parentPath = contents.parent_path;
       browserEntries = contents.entries;
-      selectedBrowserFile = null;
+      selectedFilePaths.clear();
+      lastSelectedEntry = null;
     } catch (err) {
       alert("Failed to read directory: " + err);
     }
   }
 
   // Load a file into main or alternate track slots
-  async function assignTrack(target: "main" | "alternate") {
-    if (!selectedBrowserFile) return;
-    const path = selectedBrowserFile.path;
+  async function loadAudioPath(path: string, target: "main" | "alternate") {
     try {
       const metadata: any = await invoke("load_track", { path });
       const track: Track = {
-        name: selectedBrowserFile.name,
+        name: path.split("/").pop() || path,
         path: path,
         duration: metadata.duration_seconds,
         sampleRate: metadata.sample_rate,
@@ -147,7 +215,6 @@
         alternateTrack = track;
       }
 
-      // Automatically activate newly loaded track
       filePath = path;
       fileName = track.name;
       duration = track.duration;
@@ -155,7 +222,7 @@
       channels = track.channels;
       activeTrackMode = target;
 
-      // Reset markers
+      // Reset markers for new track
       markers = [];
       nextMarkerId = 1;
 
@@ -189,6 +256,178 @@
     updateVisiblePeaks();
   }
 
+  // Handle Multi-select File Clicks
+  function handleFileClick(e: MouseEvent, entry: any) {
+    if (entry.is_dir) return;
+
+    if (e.metaKey || e.ctrlKey) {
+      // Toggle selection
+      if (selectedFilePaths.has(entry.path)) {
+        selectedFilePaths.delete(entry.path);
+        selectedFilePaths = selectedFilePaths; // Trigger reactivity
+      } else {
+        selectedFilePaths.add(entry.path);
+        selectedFilePaths = selectedFilePaths;
+      }
+      lastSelectedEntry = { name: entry.name, path: entry.path };
+    } else {
+      // Regular click replaces selection
+      selectedFilePaths.clear();
+      selectedFilePaths.add(entry.path);
+      selectedFilePaths = selectedFilePaths;
+      lastSelectedEntry = { name: entry.name, path: entry.path };
+    }
+  }
+
+  // Context Menu handlers
+  function handleContextMenu(e: MouseEvent, entry: any) {
+    if (entry.is_dir) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    // If right-clicked item is not selected, select it exclusively
+    if (!selectedFilePaths.has(entry.path)) {
+      selectedFilePaths.clear();
+      selectedFilePaths.add(entry.path);
+      selectedFilePaths = selectedFilePaths;
+      lastSelectedEntry = { name: entry.name, path: entry.path };
+    }
+
+    contextMenuTargetFile = { name: entry.name, path: entry.path };
+    contextMenuX = e.clientX;
+    contextMenuY = e.clientY;
+    showContextMenu = true;
+  }
+
+  // Playlist management
+  function addToPlaylist(name: string, path: string) {
+    if (playlistItems.some(item => item.path === path)) return;
+    playlistItems = [...playlistItems, { name, path }];
+    localStorage.setItem("th_playlist", JSON.stringify(playlistItems));
+  }
+
+  function addSelectedToPlaylist() {
+    selectedFilePaths.forEach(path => {
+      const name = path.split("/").pop() || path;
+      addToPlaylist(name, path);
+    });
+  }
+
+  function removePlaylistItem(idx: number) {
+    playlistItems = playlistItems.filter((_, i) => i !== idx);
+    localStorage.setItem("th_playlist", JSON.stringify(playlistItems));
+  }
+
+  function clearPlaylist() {
+    playlistItems = [];
+    localStorage.setItem("th_playlist", JSON.stringify(playlistItems));
+  }
+
+  async function selectPlaylistFiles() {
+    try {
+      const selected = await open({
+        multiple: true,
+        filters: [{
+          name: "Audio Files",
+          extensions: ["wav", "mp3", "flac", "m4a", "aiff", "ogg"]
+        }]
+      });
+
+      if (selected && Array.isArray(selected)) {
+        selected.forEach(path => {
+          const name = path.split("/").pop() || path;
+          addToPlaylist(name, path);
+        });
+      } else if (selected && typeof selected === "string") {
+        const name = selected.split("/").pop() || selected;
+        addToPlaylist(name, selected);
+      }
+    } catch (err) {
+      alert("Failed to add files: " + err);
+    }
+  }
+
+  // File Associations Linkers
+  async function associatePdfChart() {
+    try {
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: "PDF Charts", extensions: ["pdf"] }]
+      });
+      if (selected && typeof selected === "string") {
+        pdfChartPath = selected;
+        pdfChartName = selected.split("/").pop() || selected;
+        localStorage.setItem("th_pdf_path", selected);
+      }
+    } catch (err) {
+      alert("Failed to associate PDF: " + err);
+    }
+  }
+
+  function clearPdfChart() {
+    pdfChartPath = "";
+    pdfChartName = "";
+    localStorage.removeItem("th_pdf_path");
+  }
+
+  async function associateAlternativeVersion() {
+    try {
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: "Audio Files", extensions: ["wav", "mp3", "flac", "m4a", "aiff", "ogg"] }]
+      });
+      if (selected && typeof selected === "string") {
+        const name = selected.split("/").pop() || selected;
+        associatedVersions = [...associatedVersions, { name, path: selected }];
+        localStorage.setItem("th_associated_versions", JSON.stringify(associatedVersions));
+      }
+    } catch (err) {
+      alert("Failed to associate track: " + err);
+    }
+  }
+
+  function removeAssociatedVersion(idx: number) {
+    associatedVersions = associatedVersions.filter((_, i) => i !== idx);
+    localStorage.setItem("th_associated_versions", JSON.stringify(associatedVersions));
+  }
+
+  async function loadAssociatedTrack(path: string) {
+    // Treat associated file load as alternate track
+    await loadAudioPath(path, "alternate");
+  }
+
+  // Dynamic Peak Slice fetcher
+  async function updateVisiblePeaks() {
+    const activePeaks = getActivePeaks();
+    if (activePeaks.length === 0 || !mainCanvas) {
+      visiblePeaks = [];
+      return;
+    }
+
+    const rect = mainCanvas.getBoundingClientRect();
+    const numPoints = Math.max(100, Math.floor(rect.width));
+
+    const totalFrames = duration * sampleRate;
+    const windowWidth = 1.0 / zoom;
+    const startProgress = Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2));
+    const endProgress = startProgress + windowWidth;
+
+    const startFrame = Math.floor(startProgress * totalFrames);
+    const endFrame = Math.floor(endProgress * totalFrames);
+
+    try {
+      const slice: any = await invoke("get_waveform_slice", {
+        start_frame: startFrame,
+        end_frame: endFrame,
+        num_points: numPoints
+      });
+      visiblePeaks = slice;
+    } catch (err) {
+      console.error("Failed to fetch waveform slice", err);
+    }
+  }
+
+  // Playback handlers
   async function handlePlayPause() {
     if (isPlaying) {
       await invoke("pause");
@@ -219,40 +458,6 @@
     invoke("seek", { seconds: 0 });
   }
 
-  // Fetch peaks slice dynamically from backend based on playhead position and zoom
-  async function updateVisiblePeaks() {
-    const activePeaks = getActivePeaks();
-    if (activePeaks.length === 0 || !mainCanvas) {
-      visiblePeaks = [];
-      return;
-    }
-
-    const rect = mainCanvas.getBoundingClientRect();
-    const numPoints = Math.max(100, Math.floor(rect.width));
-
-    const totalFrames = duration * sampleRate;
-    
-    // Zoom window sizing (zoom value goes up to 1000)
-    const windowWidth = 1.0 / zoom;
-    const startProgress = Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2));
-    const endProgress = startProgress + windowWidth;
-
-    const startFrame = Math.floor(startProgress * totalFrames);
-    const endFrame = Math.floor(endProgress * totalFrames);
-
-    try {
-      const slice: any = await invoke("get_waveform_slice", {
-        start_frame: startFrame,
-        end_frame: endFrame,
-        num_points: numPoints
-      });
-      visiblePeaks = slice;
-    } catch (err) {
-      console.error("Failed to fetch waveform slice", err);
-    }
-  }
-
-  // Click navigation handlers
   function handleMainWaveformClick(e: MouseEvent) {
     if (duration === 0) return;
     const rect = mainCanvas.getBoundingClientRect();
@@ -319,7 +524,6 @@
     }
   }
 
-  // Get active peaks helper
   function getActivePeaks(): number[] {
     if (activeTrackMode === "main" && mainTrack) {
       return mainTrack.peaks;
@@ -329,7 +533,6 @@
     return [];
   }
 
-  // High-DPI canvas initialization
   function setupCanvasResolution(canvas: HTMLCanvasElement, rect: DOMRect) {
     const dpr = window.devicePixelRatio || 1;
     const canvasWidth = Math.floor(rect.width * dpr);
@@ -341,7 +544,7 @@
     }
   }
 
-  // Draw the main scrolling, zoomable waveform
+  // Draw Waveform canvases
   function drawMainWaveform() {
     if (!mainCanvas) return;
     const ctx = mainCanvas.getContext("2d");
@@ -359,14 +562,12 @@
     ctx.save();
     ctx.scale(dpr, dpr);
 
-    // Colored Backdrop (Anytune style - deep blue/slate gradient)
     const gradient = ctx.createLinearGradient(0, 0, 0, height);
     gradient.addColorStop(0, "#162837");
     gradient.addColorStop(1, "#0d1822");
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, width, height);
 
-    // Grid lines (vertical beat lines)
     ctx.strokeStyle = "#1b3547";
     ctx.lineWidth = 1;
     for (let x = 50; x < width; x += 100) {
@@ -380,7 +581,7 @@
     if (activePeaks.length === 0 || visiblePeaks.length === 0) {
       ctx.fillStyle = "#888888";
       ctx.font = "13px sans-serif";
-      ctx.fillText("No active track loaded", width / 2 - 70, height / 2 + 4);
+      ctx.fillText("No active track loaded (Drag & Drop file to load)", width / 2 - 140, height / 2 + 4);
       ctx.restore();
       return;
     }
@@ -391,11 +592,9 @@
     const endProgress = startProgress + windowWidth;
     const visibleFrames = (endProgress - startProgress) * totalFrames;
 
-    // Check if we are zoomed in enough to show samples (e.g. less than 1500 samples in view)
     const isSampleLevel = visibleFrames < 1500;
 
     if (isSampleLevel) {
-      // Draw continuous line connecting actual sample nodes
       ctx.strokeStyle = "#ffffff";
       ctx.lineWidth = 1.5;
       ctx.beginPath();
@@ -413,7 +612,6 @@
       }
       ctx.stroke();
 
-      // Draw sample dots
       ctx.fillStyle = "#3b99fc";
       for (let i = 0; i < visiblePeaks.length; i++) {
         const val = visiblePeaks[i];
@@ -424,7 +622,6 @@
         ctx.fill();
       }
 
-      // Draw center zero line
       ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -432,20 +629,17 @@
       ctx.lineTo(width, halfHeight);
       ctx.stroke();
     } else {
-      // Draw professional filled path outline (much crisper than columns)
       ctx.fillStyle = "#ffffff";
       ctx.beginPath();
       ctx.moveTo(0, halfHeight);
 
       const step = width / visiblePeaks.length;
-      // Upper outline
       for (let i = 0; i < visiblePeaks.length; i++) {
         const val = visiblePeaks[i];
         const x = i * step;
         const y = halfHeight - val * (halfHeight * 0.85);
         ctx.lineTo(x, y);
       }
-      // Lower outline
       for (let i = visiblePeaks.length - 1; i >= 0; i--) {
         const val = visiblePeaks[i];
         const x = i * step;
@@ -456,13 +650,11 @@
       ctx.fill();
     }
 
-    // Draw markers inside view
-    ctx.lineWidth = 1;
     for (const marker of markers) {
       const markerPct = marker.time / duration;
       if (markerPct >= startProgress && markerPct <= endProgress) {
         const markerX = ((markerPct - startProgress) / windowWidth) * width;
-        ctx.strokeStyle = "#ff9500"; // Dorico Amber
+        ctx.strokeStyle = "#ff9500"; 
         ctx.beginPath();
         ctx.moveTo(markerX, 0);
         ctx.lineTo(markerX, height);
@@ -474,7 +666,6 @@
       }
     }
 
-    // Draw playhead vertical line (Dorico highlight cyan)
     const playheadPct = (progress - startProgress) / windowWidth;
     const playheadX = playheadPct * width;
     ctx.strokeStyle = "#3b99fc"; 
@@ -487,7 +678,6 @@
     ctx.restore();
   }
 
-  // Draw the overview waveform (retina-compliant)
   function drawGenericOverview(canvas: HTMLCanvasElement, track: Track | null, mode: "main" | "alternate") {
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
@@ -511,12 +701,11 @@
     if (!track) {
       ctx.fillStyle = "#666666";
       ctx.font = "10px sans-serif";
-      ctx.fillText(`Empty [Double click in browser to load ${mode.toUpperCase()}]`, 12, height / 2 + 3);
+      ctx.fillText(`Empty [Double click file in browser to load as ${mode.toUpperCase()}]`, 12, height / 2 + 3);
       ctx.restore();
       return;
     }
 
-    // Draw simplified peaks in muted blue-grey
     const barWidth = width / track.peaks.length;
     const halfHeight = height / 2;
     ctx.fillStyle = isActive ? "#567c94" : "#444444";
@@ -528,20 +717,18 @@
       ctx.fillRect(x, y, Math.max(1, barWidth * 2 - 0.5), barHeight);
     }
 
-    // Draw viewport zoom overlay
     if (isActive) {
       const windowWidth = 1.0 / zoom;
       const startProgress = Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2));
       const endProgress = startProgress + windowWidth;
 
-      ctx.fillStyle = "rgba(59, 153, 252, 0.18)"; // Cyan transparent highlight box
+      ctx.fillStyle = "rgba(59, 153, 252, 0.18)"; 
       ctx.fillRect(startProgress * width, 0, (endProgress - startProgress) * width, height);
       
       ctx.strokeStyle = "#3b99fc";
       ctx.lineWidth = 1;
       ctx.strokeRect(startProgress * width, 0, (endProgress - startProgress) * width, height);
 
-      // Playhead vertical line
       const playheadX = progress * width;
       ctx.strokeStyle = "#3b99fc";
       ctx.lineWidth = 1.5;
@@ -562,6 +749,58 @@
     drawGenericOverview(altOverviewCanvas, alternateTrack, "alternate");
   }
 
+  // Custom Knobs Mouse Interaction
+  function handleKnobMousedown(
+    e: MouseEvent,
+    id: string,
+    val: number,
+    min: number,
+    max: number,
+    step: number,
+    setValue: (v: number) => void
+  ) {
+    e.preventDefault();
+    activeKnob = {
+      id,
+      startY: e.clientY,
+      startX: e.clientX,
+      startVal: val,
+      min,
+      max,
+      step,
+      setValue
+    };
+    window.addEventListener("mousemove", handleKnobMousemove);
+    window.addEventListener("mouseup", handleKnobMouseup);
+  }
+
+  function handleKnobMousemove(e: MouseEvent) {
+    if (!activeKnob) return;
+    const dy = activeKnob.startY - e.clientY;
+    const dx = e.clientX - activeKnob.startX;
+    
+    // Sensitivity scalar
+    const pixelsPerRange = 150;
+    const range = activeKnob.max - activeKnob.min;
+    const delta = ((dy + dx) / pixelsPerRange) * range;
+    
+    let newVal = activeKnob.startVal + delta;
+    newVal = Math.max(activeKnob.min, Math.min(activeKnob.max, newVal));
+    newVal = Math.round(newVal / activeKnob.step) * activeKnob.step;
+    activeKnob.setValue(newVal);
+  }
+
+  function handleKnobMouseup() {
+    activeKnob = null;
+    window.removeEventListener("mousemove", handleKnobMousemove);
+    window.removeEventListener("mouseup", handleKnobMouseup);
+  }
+
+  function getKnobRotation(val: number, min: number, max: number) {
+    const pct = (val - min) / (max - min);
+    return -135 + pct * 270;
+  }
+
   // Format Helper (MM:SS.hh)
   function formatTime(secs: number) {
     if (isNaN(secs) || secs < 0) return "00:00.00";
@@ -573,7 +812,7 @@
 </script>
 
 <main class="app-container">
-  <!-- Top bar (OS Stuff / Title) -->
+  <!-- Top bar -->
   <header class="app-header">
     <div class="header-left">
       <span class="logo">TrackHelm</span>
@@ -588,65 +827,122 @@
 
   <div class="workspace-grid">
     
-    <!-- LEFT SIDEBAR: File Browser -->
+    <!-- LEFT SIDEBAR: Switchable Browser & Playlist -->
     <aside class="sidebar-left">
-      <div class="panel-header">FILE BROWSER</div>
       
-      <!-- Browser Nav -->
-      <div class="browser-nav">
-        <span class="current-dir-label" title={currentPath}>{currentPath.split("/").pop() || currentPath}</span>
-        {#if parentPath}
-          <!-- svelte-ignore a11y-click-events-have-key-events -->
-          <!-- svelte-ignore a11y-no-static-element-interactions -->
-          <span class="up-btn" on:click={() => loadBrowser(parentPath)}>Parent ↰</span>
-        {/if}
+      <!-- Tab Selector -->
+      <div class="tab-selectors">
+        <button 
+          class="tab-btn" 
+          class:active={activeTab === "browser"} 
+          on:click={() => activeTab = "browser"}
+        >
+          BROWSER
+        </button>
+        <button 
+          class="tab-btn" 
+          class:active={activeTab === "playlist"} 
+          on:click={() => activeTab = "playlist"}
+        >
+          PLAYLIST
+        </button>
       </div>
 
-      <!-- File list -->
-      <div class="browser-list">
-        {#each browserEntries as entry}
-          <!-- svelte-ignore a11y-click-events-have-key-events -->
-          <!-- svelte-ignore a11y-no-static-element-interactions -->
-          <div 
-            class="browser-item" 
-            class:is-dir={entry.is_dir}
-            class:active={selectedBrowserFile?.path === entry.path}
-            on:click={() => {
-              if (entry.is_dir) {
-                loadBrowser(entry.path);
-              } else {
-                selectedBrowserFile = { name: entry.name, path: entry.path };
-              }
-            }}
-            on:dblclick={() => {
-              if (!entry.is_dir) {
-                selectedBrowserFile = { name: entry.name, path: entry.path };
-                assignTrack("main");
-              }
-            }}
-          >
-            <span class="item-icon">{entry.is_dir ? "📁" : "🎵"}</span>
-            <span class="item-name" title={entry.name}>{entry.name}</span>
-          </div>
-        {/each}
-      </div>
+      <!-- Tab Content: Browser -->
+      {#if activeTab === "browser"}
+        <!-- Quick Bookmarks Bar -->
+        <div class="quick-bookmarks">
+          <button class="bookmark-btn" on:click={() => loadBrowser("~")}>Home</button>
+          <button class="bookmark-btn" on:click={() => loadBrowser("~/Library/CloudStorage/Dropbox-Personal")}>Dropbox</button>
+          <button class="bookmark-btn" on:click={() => loadBrowser("/Users/winkler/Library/CloudStorage/Dropbox-Personal/Programming/TrackHelm")}>Project</button>
+        </div>
 
-      <!-- Loading Assign Buttons -->
-      <div class="assign-panel">
-        {#if selectedBrowserFile}
-          <span class="selected-filename" title={selectedBrowserFile.name}>Selected: {selectedBrowserFile.name}</span>
-          <div class="btn-row">
-            <button class="action-btn file-btn" on:click={() => assignTrack("main")}>
-              Set as Main
+        <div class="browser-nav">
+          <span class="current-dir-label" title={currentPath}>{currentPath.split("/").pop() || currentPath}</span>
+          {#if parentPath}
+            <!-- svelte-ignore a11y-click-events-have-key-events -->
+            <!-- svelte-ignore a11y-no-static-element-interactions -->
+            <span class="up-btn" on:click={() => loadBrowser(parentPath)}>Parent ↰</span>
+          {/if}
+        </div>
+
+        <div class="browser-list">
+          {#each browserEntries as entry}
+            <!-- svelte-ignore a11y-click-events-have-key-events -->
+            <!-- svelte-ignore a11y-no-static-element-interactions -->
+            <div 
+              class="browser-item" 
+              class:is-dir={entry.is_dir}
+              class:active={selectedFilePaths.has(entry.path)}
+              on:click={(e) => handleFileClick(e, entry)}
+              on:contextmenu={(e) => handleContextMenu(e, entry)}
+              on:dblclick={() => {
+                if (entry.is_dir) {
+                  loadBrowser(entry.path);
+                } else {
+                  loadAudioPath(entry.path, "main");
+                }
+              }}
+            >
+              <span class="item-icon">{entry.is_dir ? "📁" : "🎵"}</span>
+              <span class="item-name" title={entry.name}>{entry.name}</span>
+            </div>
+          {/each}
+        </div>
+
+        <div class="assign-panel">
+          {#if selectedFilePaths.size > 0 && lastSelectedEntry}
+            <span class="selected-filename" title={lastSelectedEntry.name}>
+              Selected: {selectedFilePaths.size} file(s)
+            </span>
+            <div class="btn-row">
+              <button class="action-btn file-btn" on:click={() => lastSelectedEntry && loadAudioPath(lastSelectedEntry.path, "main")}>
+                Set as Main
+              </button>
+              <button class="action-btn alt-btn" on:click={() => lastSelectedEntry && loadAudioPath(lastSelectedEntry.path, "alternate")}>
+                Set as Alt
+              </button>
+            </div>
+            <button class="action-btn playlist-add-btn" on:click={addSelectedToPlaylist}>
+              Add to Playlist
             </button>
-            <button class="action-btn alt-btn" on:click={() => assignTrack("alternate")}>
-              Set as Alt
-            </button>
-          </div>
-        {:else}
-          <span class="browser-help-text">Select an audio file above to assign it. Double click assigns to Main.</span>
-        {/if}
-      </div>
+          {:else}
+            <span class="browser-help-text">
+              Dbl-click folder to open, file to set as Main. Right-click for options. Cmd/Ctrl-click to multi-select.
+            </span>
+          {/if}
+        </div>
+      {:else}
+        <!-- Tab Content: Playlist -->
+        <div class="playlist-list">
+          {#if playlistItems.length === 0}
+            <div class="placeholder-text-sidebar">Playlist is empty. Add files below or right-click files in Browser.</div>
+          {:else}
+            {#each playlistItems as item, idx}
+              <!-- svelte-ignore a11y-click-events-have-key-events -->
+              <!-- svelte-ignore a11y-no-static-element-interactions -->
+              <div 
+                class="playlist-item-sidebar"
+                class:active={filePath === item.path}
+                on:dblclick={() => loadAudioPath(item.path, "main")}
+              >
+                <span class="item-icon">🎵</span>
+                <span class="item-name" title={item.name}>{item.name}</span>
+                <button class="remove-playlist-item-btn" on:click={() => removePlaylistItem(idx)}>×</button>
+              </div>
+            {/each}
+          {/if}
+        </div>
+
+        <div class="playlist-controls-sidebar">
+          <button class="action-btn file-btn" on:click={selectPlaylistFiles}>
+            + Add Files
+          </button>
+          <button class="action-btn clear-btn" on:click={clearPlaylist}>
+            Clear List
+          </button>
+        </div>
+      {/if}
 
       <div class="selection-info">
         <div class="panel-header">ACTIVE SELECTION INFO</div>
@@ -675,7 +971,7 @@
             <span class="track-badge" class:main-badge={activeTrackMode === "main"}>
               {activeTrackMode.toUpperCase()}
             </span>
-            {fileName || "Load a track to begin"}
+            {fileName || "Drag & Drop Audio file to begin"}
           </h2>
           {#if fileName}
             <span class="track-spec">{channels} Channels • {sampleRate / 1000} kHz</span>
@@ -788,10 +1084,10 @@
       </div>
     </section>
 
-    <!-- RIGHT SIDEBAR: Markers, FX, Stretch Controls (Dorico Theme) -->
+    <!-- RIGHT SIDEBAR: Markers, FX, Project Setup (Dorico Theme) -->
     <aside class="sidebar-right">
       
-      <!-- Project and Links -->
+      <!-- Project and File Associations -->
       <div class="panel-section">
         <div class="panel-header">PROJECT SETUP</div>
         <div class="linked-files">
@@ -799,9 +1095,54 @@
             <span class="label">Main Track:</span>
             <span class="value" class:active-val={mainTrack}>{mainTrack ? "LOADED" : "EMPTY"}</span>
           </div>
-          <div class="setup-row">
+          <div class="setup-row mb-12">
             <span class="label">Alt Track:</span>
             <span class="value" class:active-val={alternateTrack}>{alternateTrack ? "LOADED" : "EMPTY"}</span>
+          </div>
+
+          <div class="associations-divider">FILE ASSOCIATIONS</div>
+          
+          <!-- PDF Chart Association -->
+          <div class="assoc-block">
+            <div class="assoc-title-row">
+              <span class="assoc-label">PDF Chart:</span>
+              {#if pdfChartPath}
+                <button class="clear-assoc-btn" on:click={clearPdfChart}>Clear</button>
+              {/if}
+            </div>
+            {#if pdfChartPath}
+              <span class="assoc-value" title={pdfChartPath}>📄 {pdfChartName}</span>
+            {:else}
+              <button class="assoc-add-btn" on:click={associatePdfChart}>Link PDF Chart...</button>
+            {/if}
+          </div>
+
+          <!-- Other Associated Versions -->
+          <div class="assoc-block mt-8">
+            <div class="assoc-title-row">
+              <span class="assoc-label">Associated Tracks:</span>
+              <button class="clear-assoc-btn" on:click={associateAlternativeVersion}>+ Link</button>
+            </div>
+            <div class="associated-versions-list">
+              {#if associatedVersions.length === 0}
+                <span class="placeholder-text">None linked (e.g. vocals-only, live).</span>
+              {:else}
+                {#each associatedVersions as version, idx}
+                  <div class="assoc-version-item">
+                    <!-- svelte-ignore a11y-click-events-have-key-events -->
+                    <!-- svelte-ignore a11y-no-static-element-interactions -->
+                    <span 
+                      class="assoc-version-name" 
+                      title="Load as alternate track"
+                      on:click={() => loadAssociatedTrack(version.path)}
+                    >
+                      {version.name}
+                    </span>
+                    <button class="remove-assoc-btn" on:click={() => removeAssociatedVersion(idx)}>×</button>
+                  </div>
+                {/each}
+              {/if}
+            </div>
           </div>
         </div>
       </div>
@@ -827,49 +1168,132 @@
         </div>
       </div>
 
-      <!-- Effects Rack & Stretch (Sliders) -->
+      <!-- DSP Effects Rack Panel (Knobs layout from BOTTOM up) -->
       <div class="panel-section dsp-section">
-        <div class="panel-header">EFFECTS MODULES (Dbl-click slider resets)</div>
+        <div class="panel-header">EFFECTS MODULES</div>
 
-        <!-- Time & Pitch Stretch (Milestone 2) -->
-        <div class="dsp-control">
-          <div class="dsp-label-row">
-            <span class="dsp-title">SPEED (Tempo)</span>
-            <span class="dsp-value">{Math.round(speed * 100)}%</span>
-          </div>
+        <!-- 4. Compressor knobs (Threshold, Knee, Makeup) -->
+        <div class="dsp-divider">COMPRESSOR</div>
+        <div class="knobs-row placeholder-knobs">
+          <!-- Threshold -->
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-          <input 
-            type="range" 
-            min="0.25" 
-            max="4.00" 
-            step="0.05" 
-            bind:value={speed} 
+          <div 
+            class="knob-container" 
+            on:mousedown={(e) => handleKnobMousedown(e, "comp_thresh", compressorThreshold, -60, 0, 1, (v) => compressorThreshold = v)}
+            on:dblclick={() => compressorThreshold = -20}
+            title="Double-click resets to -20 dB"
+          >
+            <span class="knob-label">Threshold</span>
+            <div class="knob-circle">
+              <div class="knob-marker" style="transform: rotate({getKnobRotation(compressorThreshold, -60, 0)}deg)"></div>
+            </div>
+            <span class="knob-value">{compressorThreshold} dB</span>
+          </div>
+
+          <!-- Knee -->
+          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+          <div 
+            class="knob-container" 
+            on:mousedown={(e) => handleKnobMousedown(e, "comp_knee", compressorKnee, 0, 24, 0.5, (v) => compressorKnee = v)}
+            on:dblclick={() => compressorKnee = 6}
+            title="Double-click resets to 6 dB"
+          >
+            <span class="knob-label">Knee</span>
+            <div class="knob-circle">
+              <div class="knob-marker" style="transform: rotate({getKnobRotation(compressorKnee, 0, 24)}deg)"></div>
+            </div>
+            <span class="knob-value">{compressorKnee.toFixed(1)} dB</span>
+          </div>
+
+          <!-- Makeup -->
+          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+          <div 
+            class="knob-container" 
+            on:mousedown={(e) => handleKnobMousedown(e, "comp_makeup", compressorMakeup, 0, 24, 0.5, (v) => compressorMakeup = v)}
+            on:dblclick={() => compressorMakeup = 0}
+            title="Double-click resets to 0 dB"
+          >
+            <span class="knob-label">Makeup</span>
+            <div class="knob-circle">
+              <div class="knob-marker" style="transform: rotate({getKnobRotation(compressorMakeup, 0, 24)}deg)"></div>
+            </div>
+            <span class="knob-value">+{compressorMakeup.toFixed(1)} dB</span>
+          </div>
+        </div>
+
+        <!-- 3. Equalizer knobs (Bass, Treble) -->
+        <div class="dsp-divider">EQUALIZER (EQ)</div>
+        <div class="knobs-row placeholder-knobs">
+          <!-- Bass -->
+          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+          <div 
+            class="knob-container" 
+            on:mousedown={(e) => handleKnobMousedown(e, "eq_bass", eqBass, -12, 12, 0.5, (v) => eqBass = v)}
+            on:dblclick={() => eqBass = 0}
+            title="Double-click resets to 0 dB"
+          >
+            <span class="knob-label">Bass</span>
+            <div class="knob-circle">
+              <div class="knob-marker" style="transform: rotate({getKnobRotation(eqBass, -12, 12)}deg)"></div>
+            </div>
+            <span class="knob-value">{eqBass > 0 ? "+" : ""}{eqBass.toFixed(1)} dB</span>
+          </div>
+
+          <!-- Treble -->
+          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+          <div 
+            class="knob-container" 
+            on:mousedown={(e) => handleKnobMousedown(e, "eq_treble", eqTreble, -12, 12, 0.5, (v) => eqTreble = v)}
+            on:dblclick={() => eqTreble = 0}
+            title="Double-click resets to 0 dB"
+          >
+            <span class="knob-label">Treble</span>
+            <div class="knob-circle">
+              <div class="knob-marker" style="transform: rotate({getKnobRotation(eqTreble, -12, 12)}deg)"></div>
+            </div>
+            <span class="knob-value">{eqTreble > 0 ? "+" : ""}{eqTreble.toFixed(1)} dB</span>
+          </div>
+        </div>
+
+        <!-- 2. Speed and Pitch Knobs (Knobs on same line) -->
+        <div class="dsp-divider">PITCH & SPEED</div>
+        <div class="knobs-row active-knobs">
+          <!-- Speed Knob -->
+          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+          <div 
+            class="knob-container" 
+            on:mousedown={(e) => handleKnobMousedown(e, "speed", speed, 0.25, 4.00, 0.05, (v) => speed = v)}
             on:dblclick={() => speed = 1.0}
-            class="dsp-slider" 
-          />
-        </div>
-
-        <div class="dsp-control">
-          <div class="dsp-label-row">
-            <span class="dsp-title">PITCH SHIFT</span>
-            <span class="dsp-value">{pitch > 0 ? "+" : ""}{pitch} semitones</span>
+            title="Double-click resets to 100%"
+          >
+            <span class="knob-label">Speed</span>
+            <div class="knob-circle">
+              <div class="knob-marker" style="transform: rotate({getKnobRotation(speed, 0.25, 4.00)}deg)"></div>
+            </div>
+            <span class="knob-value">{Math.round(speed * 100)}%</span>
           </div>
+
+          <!-- Pitch Knob -->
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-          <input 
-            type="range" 
-            min="-24" 
-            max="24" 
-            step="1" 
-            bind:value={pitch} 
+          <div 
+            class="knob-container" 
+            on:mousedown={(e) => handleKnobMousedown(e, "pitch", pitch, -24, 24, 1, (v) => pitch = v)}
             on:dblclick={() => pitch = 0}
-            class="dsp-slider" 
-          />
+            title="Double-click resets to 0 semitones"
+          >
+            <span class="knob-label">Pitch Shift</span>
+            <div class="knob-circle">
+              <div class="knob-marker" style="transform: rotate({getKnobRotation(pitch, -24, 24)}deg)"></div>
+            </div>
+            <span class="knob-value">{pitch > 0 ? "+" : ""}{pitch} st</span>
+          </div>
         </div>
 
-        <!-- Gain / Master Fader (dB Volume) -->
+        <!-- 1. Volume Master Gain (Slider at the very bottom) -->
+        <div class="dsp-divider">MASTER VOLUME</div>
         <div class="dsp-control active-dsp">
           <div class="dsp-label-row">
-            <span class="dsp-title">MASTER GAIN</span>
+            <span class="dsp-title">VOLUME GAIN</span>
             <span class="dsp-value">{dbVolume <= -59.5 ? "-inf" : (dbVolume > 0 ? "+" : "") + dbVolume.toFixed(1)} dB</span>
           </div>
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
@@ -889,44 +1313,45 @@
           />
         </div>
 
-        <!-- Compressor Placeholders (Milestone 4) -->
-        <div class="dsp-divider">COMPRESSOR</div>
-        <div class="dsp-control placeholder-dsp">
-          <div class="dsp-label-row">
-            <span class="dsp-title">Threshold</span>
-            <span class="dsp-value">{compressorThreshold} dB</span>
-          </div>
-          <input type="range" min="-60" max="0" step="1" bind:value={compressorThreshold} class="dsp-slider disabled-slider" disabled />
-        </div>
-        <div class="dsp-control placeholder-dsp">
-          <div class="dsp-label-row">
-            <span class="dsp-title">Makeup Gain</span>
-            <span class="dsp-value">+{compressorMakeup} dB</span>
-          </div>
-          <input type="range" min="0" max="24" step="1" bind:value={compressorMakeup} class="dsp-slider disabled-slider" disabled />
-        </div>
-
-        <!-- EQ Placeholders (Milestone 3) -->
-        <div class="dsp-divider">EQUALIZER (EQ)</div>
-        <div class="dsp-control placeholder-dsp">
-          <div class="dsp-label-row">
-            <span class="dsp-title">Bass</span>
-            <span class="dsp-value">{eqBass > 0 ? "+" : ""}{eqBass} dB</span>
-          </div>
-          <input type="range" min="-12" max="12" step="1" bind:value={eqBass} class="dsp-slider disabled-slider" disabled />
-        </div>
-        <div class="dsp-control placeholder-dsp">
-          <div class="dsp-label-row">
-            <span class="dsp-title">Treble</span>
-            <span class="dsp-value">{eqTreble > 0 ? "+" : ""}{eqTreble} dB</span>
-          </div>
-          <input type="range" min="-12" max="12" step="1" bind:value={eqTreble} class="dsp-slider disabled-slider" disabled />
-        </div>
-
       </div>
     </aside>
 
   </div>
+
+  <!-- Custom Right-click Context Menu -->
+  {#if showContextMenu}
+    <div 
+      class="context-menu" 
+      style="top: {contextMenuY}px; left: {contextMenuX}px;"
+      on:click|stopPropagation
+    >
+      <!-- svelte-ignore a11y-click-events-have-key-events -->
+      <!-- svelte-ignore a11y-no-static-element-interactions -->
+      <div class="menu-item" on:click={() => { if (contextMenuTargetFile) { loadAudioPath(contextMenuTargetFile.path, "main"); showContextMenu = false; } }}>
+        Set as Main Track
+      </div>
+      <!-- svelte-ignore a11y-click-events-have-key-events -->
+      <!-- svelte-ignore a11y-no-static-element-interactions -->
+      <div class="menu-item" on:click={() => { if (contextMenuTargetFile) { loadAudioPath(contextMenuTargetFile.path, "alternate"); showContextMenu = false; } }}>
+        Set as Alt Track
+      </div>
+      <!-- svelte-ignore a11y-click-events-have-key-events -->
+      <!-- svelte-ignore a11y-no-static-element-interactions -->
+      <div class="menu-item" on:click={() => { if (contextMenuTargetFile) { addToPlaylist(contextMenuTargetFile.name, contextMenuTargetFile.path); showContextMenu = false; } }}>
+        Add to Current Playlist
+      </div>
+      <!-- svelte-ignore a11y-click-events-have-key-events -->
+      <!-- svelte-ignore a11y-no-static-element-interactions -->
+      <div class="menu-item" on:click={() => { addSelectedToPlaylist(); showContextMenu = false; }}>
+        Add Selected to Playlist ({selectedFilePaths.size})
+      </div>
+      <!-- svelte-ignore a11y-click-events-have-key-events -->
+      <!-- svelte-ignore a11y-no-static-element-interactions -->
+      <div class="menu-item" on:click={() => { if (contextMenuTargetFile) { clearPlaylist(); addToPlaylist(contextMenuTargetFile.name, contextMenuTargetFile.path); showContextMenu = false; } }}>
+        Create New Playlist from File
+      </div>
+    </div>
+  {/if}
 </main>
 
 <style>
@@ -1022,13 +1447,66 @@
     color: #a5a5a5;
   }
 
-  /* Left Sidebar: OS Directory Browser */
+  /* Left Sidebar Tab system */
   .sidebar-left {
     background-color: #252526;
     border-right: 1px solid #3c3c3c;
     display: flex;
     flex-direction: column;
     overflow: hidden;
+  }
+
+  .tab-selectors {
+    display: flex;
+    background-color: #1f1f20;
+    border-bottom: 1px solid #3c3c3c;
+  }
+
+  .tab-btn {
+    flex-grow: 1;
+    background: transparent;
+    border: none;
+    color: #8e8e8e;
+    padding: 10px;
+    font-size: 0.75rem;
+    font-weight: bold;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s ease;
+  }
+
+  .tab-btn.active {
+    color: #3b99fc;
+    border-bottom-color: #3b99fc;
+    background-color: #252526;
+  }
+
+  /* Bookmarks toolbar */
+  .quick-bookmarks {
+    display: flex;
+    gap: 4px;
+    padding: 6px 12px;
+    background-color: #202021;
+    border-bottom: 1px solid #2d2d2d;
+  }
+
+  .bookmark-btn {
+    background-color: #2f2f30;
+    color: #d1d1d1;
+    border: 1px solid #3c3c3c;
+    border-radius: 3px;
+    padding: 4px 8px;
+    font-size: 0.7rem;
+    cursor: pointer;
+    flex-grow: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .bookmark-btn:hover {
+    background-color: #3c3c3e;
+    color: #ffffff;
   }
 
   .browser-nav {
@@ -1084,7 +1562,7 @@
 
   .browser-item.is-dir {
     font-weight: 600;
-    color: #ff9500; /* Folders amber */
+    color: #ff9500; 
   }
 
   .browser-item.active {
@@ -1119,6 +1597,77 @@
     color: #717171;
     font-style: italic;
     line-height: 1.3;
+  }
+
+  /* Playlist Sidebar mode */
+  .playlist-list {
+    flex-grow: 1;
+    overflow-y: auto;
+    background-color: #1e1e1f;
+    padding: 6px 0;
+  }
+
+  .placeholder-text-sidebar {
+    font-size: 0.75rem;
+    color: #717171;
+    padding: 16px;
+    font-style: italic;
+    line-height: 1.4;
+  }
+
+  .playlist-item-sidebar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    border-bottom: 1px solid #282829;
+    color: #cccccc;
+    transition: background-color 0.15s ease;
+  }
+
+  .playlist-item-sidebar:hover {
+    background-color: #2d2d2e;
+  }
+
+  .playlist-item-sidebar.active {
+    background-color: #333d46;
+    color: #ffffff;
+    border-left: 3px solid #3b99fc;
+  }
+
+  .remove-playlist-item-btn {
+    background: transparent;
+    border: none;
+    color: #717171;
+    cursor: pointer;
+    margin-left: auto;
+    font-size: 1rem;
+    font-weight: bold;
+  }
+
+  .remove-playlist-item-btn:hover {
+    color: #ff453a;
+  }
+
+  .playlist-controls-sidebar {
+    background-color: #202021;
+    border-top: 1px solid #3c3c3c;
+    padding: 12px;
+    display: flex;
+    gap: 8px;
+  }
+
+  .clear-btn {
+    background-color: #333333;
+    color: #d1d1d1;
+    border: 1px solid #444444;
+  }
+
+  .clear-btn:hover {
+    background-color: #444444;
+    color: #ffffff;
   }
 
   .selection-info {
@@ -1174,7 +1723,18 @@
     background-color: #ffaa33;
   }
 
-  /* Center Workspace area styling (Flex layout with vertical stretch) */
+  .playlist-add-btn {
+    background-color: #2e2e2f;
+    color: #d1d1d1;
+    border: 1px solid #3c3c3c;
+  }
+
+  .playlist-add-btn:hover {
+    background-color: #3c3c3e;
+    color: #ffffff;
+  }
+
+  /* Center Workspace area styling */
   .center-content {
     background-color: #1e1e1e;
     padding: 16px 20px;
@@ -1273,12 +1833,11 @@
 
   .block-main-waveform {
     flex-grow: 1;
-    background-color: #122a3a; /* Anytune style blue */
+    background-color: #122a3a; 
     border: 1px solid #1b384d;
     border-radius: 4px;
   }
 
-  /* Waveform labeling and grids */
   .waveform-label-row {
     display: flex;
     justify-content: space-between;
@@ -1381,7 +1940,7 @@
   }
 
   .accent-btn {
-    background-color: #ff9500; /* Dorico Amber */
+    background-color: #ff9500; 
     color: #000000;
     border-color: #e08300;
   }
@@ -1448,7 +2007,7 @@
 
   /* Right Sidebar styles */
   .sidebar-right {
-    background-color: #252526; /* Dorico panels */
+    background-color: #252526; 
     border-left: 1px solid #3c3c3c;
     display: flex;
     flex-direction: column;
@@ -1465,13 +2024,13 @@
     padding: 12px 16px;
     display: flex;
     flex-direction: column;
-    gap: 6px;
   }
 
   .setup-row {
     display: flex;
     justify-content: space-between;
     font-size: 0.75rem;
+    margin-bottom: 4px;
   }
 
   .setup-row .label {
@@ -1487,8 +2046,127 @@
     color: #3b99fc;
   }
 
-  .placeholder-text {
+  .mb-12 {
+    margin-bottom: 12px;
+  }
+
+  /* Project File Associations section */
+  .associations-divider {
+    font-size: 0.65rem;
+    font-weight: 800;
+    color: #8e8e8e;
+    letter-spacing: 0.08em;
+    border-top: 1px solid #333333;
+    padding-top: 12px;
+    margin-bottom: 8px;
+  }
+
+  .assoc-block {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .assoc-title-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .assoc-label {
     font-size: 0.75rem;
+    font-weight: 600;
+    color: #aaaaaa;
+  }
+
+  .clear-assoc-btn {
+    background: transparent;
+    border: none;
+    color: #ff453a;
+    cursor: pointer;
+    font-size: 0.7rem;
+    padding: 0;
+  }
+
+  .clear-assoc-btn:hover {
+    text-decoration: underline;
+  }
+
+  .assoc-value {
+    font-size: 0.75rem;
+    color: #3b99fc;
+    word-break: break-all;
+    background-color: #1e1e1e;
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid #3c3c3c;
+  }
+
+  .assoc-add-btn {
+    background-color: #2c2c2d;
+    color: #d1d1d1;
+    border: 1px dashed #444444;
+    padding: 6px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    text-align: left;
+    width: 100%;
+  }
+
+  .assoc-add-btn:hover {
+    background-color: #3c3c3e;
+    color: #ffffff;
+  }
+
+  .mt-8 { margin-top: 8px; }
+
+  .associated-versions-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 4px;
+  }
+
+  .assoc-version-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background-color: #1e1e1e;
+    border: 1px solid #3c3c3c;
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+  }
+
+  .assoc-version-name {
+    color: #3b99fc;
+    cursor: pointer;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    width: 190px;
+  }
+
+  .assoc-version-name:hover {
+    text-decoration: underline;
+  }
+
+  .remove-assoc-btn {
+    background: transparent;
+    border: none;
+    color: #717171;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: bold;
+  }
+
+  .remove-assoc-btn:hover {
+    color: #ff453a;
+  }
+
+  .placeholder-text {
+    font-size: 0.7rem;
     color: #717171;
     font-style: italic;
     line-height: 1.4;
@@ -1550,7 +2228,7 @@
     color: #ff453a;
   }
 
-  /* DSP Effects Rack panel */
+  /* DSP Panel Knobs styling */
   .dsp-section {
     padding-bottom: 16px;
   }
@@ -1571,7 +2249,7 @@
     font-weight: 700;
     letter-spacing: 0.05em;
     color: #8e8e8e;
-    margin-top: 12px;
+    margin-top: 8px;
   }
 
   .dsp-label-row {
@@ -1594,15 +2272,6 @@
     color: #3b99fc;
   }
 
-  .placeholder-dsp .dsp-title {
-    color: #717171;
-  }
-
-  .placeholder-dsp .dsp-value {
-    color: #717171;
-  }
-
-  /* Sliders customization */
   .dsp-slider {
     -webkit-appearance: none;
     appearance: none;
@@ -1626,9 +2295,110 @@
     background: #5faeff;
   }
 
-  /* Disabled inputs for future features */
-  .disabled-slider::-webkit-slider-thumb {
-    background: #555555;
+  /* Knobs row */
+  .knobs-row {
+    display: flex;
+    justify-content: space-around;
+    padding: 12px 8px;
+    background-color: #1e1e1f;
+    border-bottom: 1px solid #2d2d2d;
+  }
+
+  .knob-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    cursor: ns-resize;
+    width: 65px;
+  }
+
+  .knob-label {
+    font-size: 0.65rem;
+    color: #8e8e8e;
+    margin-bottom: 4px;
+    text-align: center;
+    white-space: nowrap;
+  }
+
+  .knob-circle {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background-color: #333333;
+    border: 2px solid #555555;
+    position: relative;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
+    margin-bottom: 4px;
+    transition: border-color 0.15s ease;
+  }
+
+  .knob-container:hover .knob-circle {
+    border-color: #3b99fc;
+  }
+
+  .knob-marker {
+    width: 2px;
+    height: 10px;
+    background-color: #ffffff;
+    position: absolute;
+    top: 2px;
+    left: 13px;
+    transform-origin: bottom center;
+    border-radius: 1px;
+  }
+
+  .knob-value {
+    font-size: 0.7rem;
+    font-family: monospace;
+    color: #ffffff;
+    text-align: center;
+  }
+
+  /* Active vs Muted knobs coloring */
+  .active-knobs .knob-circle {
+    border-color: #444444;
+  }
+  .active-knobs .knob-marker {
+    background-color: #3b99fc; /* active highlight */
+  }
+  .active-knobs .knob-value {
+    color: #3b99fc;
+  }
+
+  .placeholder-knobs .knob-circle {
+    border-color: #333333;
+    opacity: 0.6;
     cursor: not-allowed;
+  }
+  .placeholder-knobs .knob-marker {
+    background-color: #717171;
+  }
+  .placeholder-knobs .knob-value {
+    color: #717171;
+  }
+
+  /* Context Menu layout */
+  .context-menu {
+    position: fixed;
+    background-color: #2a2a2b;
+    border: 1px solid #444445;
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    z-index: 10000;
+    min-width: 185px;
+    padding: 4px 0;
+  }
+
+  .menu-item {
+    padding: 8px 14px;
+    font-size: 0.8rem;
+    color: #d1d1d1;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+  }
+
+  .menu-item:hover {
+    background-color: #3b99fc;
+    color: #ffffff;
   }
 </style>

@@ -47,7 +47,18 @@ fn read_dir(path: Option<String>) -> Result<DirContents, String> {
     use std::path::PathBuf;
     
     let target_path = match path {
-        Some(p) => PathBuf::from(p),
+        Some(p) => {
+            if p.starts_with('~') {
+                let home = dirs::home_dir().ok_or_else(|| "Could not find home directory".to_string())?;
+                if p.len() > 2 {
+                    home.join(&p[2..]) // Skip "~/"
+                } else {
+                    home
+                }
+            } else {
+                PathBuf::from(p)
+            }
+        }
         None => dirs::home_dir().ok_or_else(|| "Could not find home directory".to_string())?,
     };
 
