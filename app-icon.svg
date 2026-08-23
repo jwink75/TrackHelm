@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <!-- Background Gradient -->
+    <radialGradient id="bgGrad" cx="50%" cy="50%" r="70%">
+      <stop offset="0%" stop-color="#2d2d2d"/>
+      <stop offset="100%" stop-color="#181818"/>
+    </radialGradient>
+    <!-- Cyan glow gradient -->
+    <radialGradient id="helmGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#3b99fc" stop-opacity="0.2"/>
+      <stop offset="100%" stop-color="#3b99fc" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Metallic Gradient for Helm -->
+    <linearGradient id="metal" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#5faeff"/>
+      <stop offset="50%" stop-color="#3b99fc"/>
+      <stop offset="100%" stop-color="#1c5ba3"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded Icon Background (macOS style squire/rounded rect) -->
+  <rect width="1024" height="1024" rx="220" fill="url(#bgGrad)" stroke="#2b2b2b" stroke-width="20"/>
+
+  <!-- Glowing center backing -->
+  <circle cx="512" cy="512" r="420" fill="url(#helmGlow)"/>
+
+  <!-- Waveform lines in background -->
+  <g stroke="#1e2d3a" stroke-width="6" opacity="0.6">
+    <path d="M 100 300 Q 300 100 512 300 T 924 300" fill="none"/>
+    <path d="M 100 512 Q 300 312 512 512 T 924 512" fill="none" stroke="#2c4d6c"/>
+    <path d="M 100 724 Q 300 924 512 724 T 924 724" fill="none"/>
+  </g>
+
+  <!-- SHIP'S HELM STRUCTURE (Steel/Cyan gradient) -->
+  <!-- Spokes / Handles -->
+  <g stroke="url(#metal)" stroke-width="28" stroke-linecap="round">
+    <!-- Up spoke -->
+    <line x1="512" y1="512" x2="512" y2="120"/>
+    <!-- Down spoke -->
+    <line x1="512" y1="512" x2="512" y2="904"/>
+    <!-- Top-Right spoke -->
+    <line x1="512" y1="512" x2="841" y2="322"/>
+    <!-- Bottom-Right spoke -->
+    <line x1="512" y1="512" x2="841" y2="702"/>
+    <!-- Bottom-Left spoke -->
+    <line x1="512" y1="512" x2="183" y2="702"/>
+    <!-- Top-Left spoke -->
+    <line x1="512" y1="512" x2="183" y2="322"/>
+  </g>
+
+  <!-- Spoke Handles (wooden/metal caps) -->
+  <g fill="#ff9500" stroke="url(#metal)" stroke-width="12">
+    <circle cx="512" cy="120" r="28"/>
+    <circle cx="512" cy="904" r="28"/>
+    <circle cx="841" cy="322" r="28"/>
+    <circle cx="841" cy="702" r="28"/>
+    <circle cx="183" cy="702" r="28"/>
+    <circle cx="183" cy="322" r="28"/>
+  </g>
+
+  <!-- Helm Outer Ring -->
+  <circle cx="512" cy="512" r="330" fill="none" stroke="url(#metal)" stroke-width="32"/>
+  <circle cx="512" cy="512" r="300" fill="none" stroke="#181818" stroke-width="12"/>
+
+  <!-- Center Hub -->
+  <circle cx="512" cy="512" r="140" fill="#181818" stroke="url(#metal)" stroke-width="20"/>
+  <circle cx="512" cy="512" r="120" fill="#141414" stroke="#ff9500" stroke-width="6"/>
+
+  <!-- Stylized wave logo inside center hub in pure white -->
+  <g fill="#ffffff">
+    <rect x="442" y="472" width="16" height="80" rx="8"/>
+    <rect x="472" y="442" width="16" height="140" rx="8" fill="#3b99fc"/>
+    <rect x="502" y="412" width="16" height="200" rx="8" fill="#ff9500"/>
+    <rect x="532" y="432" width="16" height="160" rx="8" fill="#3b99fc"/>
+    <rect x="562" y="462" width="16" height="100" rx="8"/>
+  </g>
+</svg>
