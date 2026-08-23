@@ -1,0 +1,17 @@
+[package]
+name = "trackhelm-engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cpal = "0.15"
+symphonia = { version = "0.5", features = ["all-codecs", "all-formats"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+midir = "0.9"
+rosc = "0.10"
+ringbuf = "0.4"
+crossbeam-channel = "0.5"
+log = "0.4"
+
+# local dependency
+signalsmith-stretch-rs = { path = "../signalsmith-stretch-rs" }
