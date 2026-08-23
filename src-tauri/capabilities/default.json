@@ -15,6 +15,7 @@
     "allow-set-volume",
     "allow-get-playback-status",
     "allow-read-dir",
-    "allow-get-waveform-slice"
+    "allow-get-waveform-slice",
+    "allow-get-cloud-folders"
   ]
 }

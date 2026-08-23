@@ -129,6 +129,54 @@ fn read_dir(path: Option<String>) -> Result<DirContents, String> {
 }
 
 #[tauri::command]
+fn get_cloud_folders() -> Result<Vec<DirEntry>, String> {
+    let mut folders = Vec::new();
+    let home = dirs::home_dir().ok_or_else(|| "Home directory not found".to_string())?;
+    
+    // Scan Library/CloudStorage
+    let cloud_storage = home.join("Library/CloudStorage");
+    if cloud_storage.exists() && cloud_storage.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(cloud_storage) {
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if !name.starts_with('.') {
+                            folders.push(DirEntry {
+                                name,
+                                path: path.to_string_lossy().to_string(),
+                                is_dir: true,
+                                size_bytes: 0,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Scan common legacy folders direct in home folder
+    let legacy_folders = vec!["Dropbox", "OneDrive", "Google Drive"];
+    for name in legacy_folders {
+        let path = home.join(name);
+        if path.exists() && path.is_dir() {
+            let path_str = path.to_string_lossy().to_string();
+            if !folders.iter().any(|f| f.path == path_str) {
+                folders.push(DirEntry {
+                    name: name.to_string(),
+                    path: path_str,
+                    is_dir: true,
+                    size_bytes: 0,
+                });
+            }
+        }
+    }
+
+    Ok(folders)
+}
+
+#[tauri::command]
 fn get_waveform_slice(
     state: State<'_, AppState>,
     start_frame: usize,
@@ -319,7 +367,8 @@ fn main() {
             set_volume,
             get_playback_status,
             read_dir,
-            get_waveform_slice
+            get_waveform_slice,
+            get_cloud_folders
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

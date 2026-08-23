@@ -12,7 +12,8 @@ fn main() {
                         "set_volume",
                         "get_playback_status",
                         "read_dir",
-                        "get_waveform_slice"
+                        "get_waveform_slice",
+                        "get_cloud_folders"
                     ])
             )
     ).expect("failed to run tauri-build");

@@ -61,6 +61,7 @@
   let currentPath = "";
   let parentPath: string | null = null;
   let browserEntries: any[] = [];
+  let cloudFolders: PlaylistItem[] = [];
   
   // Browser Multi-selection
   let selectedFilePaths = new Set<string>();
@@ -114,6 +115,15 @@
   onMount(() => {
     // Initial folder load
     loadBrowser(null);
+
+    // Fetch detected cloud folders dynamically
+    invoke("get_cloud_folders")
+      .then((folders: any) => {
+        cloudFolders = folders;
+      })
+      .catch(err => {
+        console.error("Failed to load cloud folders:", err);
+      });
 
     // Restore Playlists and Project setup from LocalStorage
     const savedPlaylist = localStorage.getItem("th_playlist");
@@ -853,8 +863,12 @@
         <!-- Quick Bookmarks Bar -->
         <div class="quick-bookmarks">
           <button class="bookmark-btn" on:click={() => loadBrowser("~")}>Home</button>
-          <button class="bookmark-btn" on:click={() => loadBrowser("~/Library/CloudStorage/Dropbox-Personal")}>Dropbox</button>
-          <button class="bookmark-btn" on:click={() => loadBrowser("/Users/winkler/Library/CloudStorage/Dropbox-Personal/Programming/TrackHelm")}>Project</button>
+          {#each cloudFolders as cloud}
+            <button class="bookmark-btn" on:click={() => loadBrowser(cloud.path)} title={cloud.name}>
+              {cloud.name.replace(" - Personal", "").replace(" - Work", "").replace("-Personal", "").replace("-Work", "")}
+            </button>
+          {/each}
+          <button class="bookmark-btn" on:click={() => loadBrowser("~/Library/CloudStorage/Dropbox-Personal/Programming/TrackHelm")}>Project</button>
         </div>
 
         <div class="browser-nav">
@@ -1552,8 +1566,16 @@
     font-size: 0.8rem;
     cursor: pointer;
     border-bottom: 1px solid #282829;
-    color: #cccccc;
+    color: #ffffff; /* White text */
     transition: background-color 0.15s ease;
+  }
+
+  .browser-item:nth-child(even) {
+    background-color: #1a1a1b;
+  }
+
+  .browser-item:nth-child(odd) {
+    background-color: #212122;
   }
 
   .browser-item:hover {
@@ -1562,7 +1584,7 @@
 
   .browser-item.is-dir {
     font-weight: 600;
-    color: #ff9500; 
+    color: #ffffff; /* White text for directories */
   }
 
   .browser-item.active {
@@ -1571,7 +1593,7 @@
   }
 
   .browser-item.active.is-dir {
-    color: #ffaa33;
+    color: #ffffff;
   }
 
   .assign-panel {
