@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg width="100%" height="100%" viewBox="0 0 3024 1752" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" xmlns:serif="http://www.serif.com/" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linejoin:round;stroke-miterlimit:2;">
+    <g id="TrackHelm-UI" serif:id="TrackHelm UI">
+        <g transform="matrix(1,0,0,1.154123,-0,22.689443)">
+            <rect x="0" y="179.126" width="497.646" height="1156.949" style="fill:none;fill-rule:nonzero;stroke:rgb(255,122,0);stroke-width:1.85px;"/>
+            <g transform="matrix(1,0,0,0.866459,0,23.920702)">
+                <g transform="matrix(24,0,0,24,383.975577,203.125894)">
+                </g>
+                <text x="113.671px" y="203.126px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">OS Browser/Playlist V<tspan x="347.964px 353.296px " y="203.126px 203.126px ">ie</tspan>w</text>
+            </g>
+        </g>
+        <g transform="matrix(1,0,0,0.136206,0,47.441427)">
+            <rect x="0" y="179.126" width="497.646" height="1156.949" style="fill:none;fill-rule:nonzero;stroke:rgb(255,122,0);stroke-width:2.8px;"/>
+            <g transform="matrix(1,0,0,7.341822,0,-1135.984588)">
+                <text x="94.751px" y="203.126px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">Folder/Playlist/Selection info:</text>
+                <text x="194.138px" y="254.724px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">T<tspan x="206.138px 219.485px " y="254.724px 254.724px ">ot</tspan>al <tspan x="251.067px 264.837px 270.169px " y="254.724px 254.724px 254.724px ">Tim</tspan>e</text>
+                <g transform="matrix(24,0,0,24,426.895499,306.321207)">
+                </g>
+                <text x="70.751px" y="306.321px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">Elapsed <tspan x="163.716px 177.485px 182.817px " y="306.321px 306.321px 306.321px ">Tim</tspan>e — Remaining <tspan x="374.454px 388.224px 393.556px " y="306.321px 306.321px 306.321px ">Tim</tspan>e</text>
+            </g>
+        </g>
+        <g transform="matrix(4.32602,0,0,1.017152,497.646467,205.693296)">
+            <rect x="0" y="179.126" width="497.646" height="1156.949" style="fill:none;fill-rule:nonzero;stroke:rgb(255,122,0);stroke-width:0.64px;"/>
+            <g transform="matrix(0.231159,0,0,0.983137,0,3.020524)">
+                <g transform="matrix(24,0,0,24,1352.549129,779.522168)">
+                </g>
+                <text x="800.28px" y="779.522px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">Main W<tspan x="880.729px 894.076px " y="779.522px 779.522px ">av</tspan>eform Display<tspan x="1051.002px 1057.67px " y="779.522px 779.522px ">, </tspan>centered on playback head</text>
+            </g>
+        </g>
+        <g transform="matrix(4.32602,0,0,0.068486,497.646467,296.389596)">
+            <rect x="0" y="179.126" width="497.646" height="1156.949" style="fill:none;fill-rule:nonzero;stroke:rgb(255,122,0);stroke-width:0.65px;"/>
+            <g transform="matrix(0.231159,0,0,14.601602,0,-2436.39907)">
+                <g transform="matrix(24,0,0,24,1243.992488,230.743082)">
+                </g>
+                <text x="908.836px" y="230.743px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">W<tspan x="930.598px 943.946px " y="230.743px 230.743px ">av</tspan>eform Overview (Main File)</text>
+            </g>
+        </g>
+        <g transform="matrix(4.32602,0,0,0.068486,497.646467,217.15522)">
+            <rect x="0" y="179.126" width="497.646" height="1156.949" style="fill:none;fill-rule:nonzero;stroke:rgb(255,122,0);stroke-width:0.65px;"/>
+            <g transform="matrix(0.231159,0,0,14.601602,0,-2436.39907)">
+                <g transform="matrix(24,0,0,24,1266.01202,230.743082)">
+                </g>
+                <text x="886.817px" y="230.743px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">W<tspan x="908.578px 921.926px " y="230.743px 230.743px ">av</tspan>eform Overview (Alternate File)</text>
+            </g>
+        </g>
+        <g transform="matrix(4.32602,0,0,0.136589,497.646467,46.930173)">
+            <rect x="0" y="179.126" width="497.646" height="1156.949" style="fill:none;fill-rule:nonzero;stroke:rgb(255,122,0);stroke-width:0.65px;"/>
+            <g transform="matrix(0.231159,0,0,7.321254,0,-1132.300295)">
+                <g transform="matrix(24,0,0,24,943.260067,244.340086)">
+                </g>
+                <g transform="matrix(24,0,0,24,949.928035,244.340086)">
+                </g>
+                <g transform="matrix(24,0,0,24,1073.959285,244.340086)">
+                </g>
+                <g transform="matrix(24,0,0,24,1080.627254,244.340086)">
+                </g>
+                <text x="856.565px" y="244.34px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">Current ﬁle: <tspan x="986.842px 1000.612px 1005.944px " y="244.34px 244.34px 244.34px ">Tit</tspan>le (or ﬁlename) - <tspan x="1193.561px 1205.561px 1218.909px " y="244.34px 244.34px 244.34px ">Tot</tspan>al time</text>
+                <g transform="matrix(24,0,0,24,1254.486629,295.937742)">
+                </g>
+                <text x="898.342px" y="295.938px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">Elapsed <tspan x="991.307px 1005.076px 1010.409px " y="295.938px 295.938px 295.938px ">Tim</tspan>e — Remaining <tspan x="1202.045px 1215.815px 1221.147px " y="295.938px 295.938px 295.938px ">Tim</tspan>e</text>
+            </g>
+        </g>
+        <g transform="matrix(6.076603,0,0,0.062094,0,-11.122622)">
+            <rect x="0" y="179.126" width="497.646" height="1156.949" style="fill:none;fill-rule:nonzero;stroke:rgb(255,122,0);stroke-width:0.47px;"/>
+            <g transform="matrix(0.164566,0,0,16.104646,0,-2705.633221)">
+                <g transform="matrix(24,0,0,24,395.742188,227.045616)">
+                </g>
+                <text x="12px" y="227.046px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">OS stuf<tspan x="91.594px 98.262px " y="227.046px 227.046px ">f.</tspan>.. standard window controls</text>
+            </g>
+        </g>
+        <g transform="matrix(0.750583,0,0,0.614429,2650.475194,743.761095)">
+            <rect x="0" y="179.126" width="497.646" height="1156.949" style="fill:none;fill-rule:nonzero;stroke:rgb(255,122,0);stroke-width:2.92px;"/>
+            <g transform="matrix(1.332298,0,0,1.627527,0,-112.406418)">
+                <text x="98.274px" y="203.126px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">Ef<tspan x="120.516px 127.184px " y="203.126px 203.126px ">fe</tspan>cts Modules:</text>
+                <text x="81.487px" y="246.724px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">- External FX &apos;Rack&apos;</text>
+                <text x="162.786px" y="290.321px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">------</text>
+                <text x="57.604px" y="317.919px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">- Compressor <tspan x="209.198px 223.858px " y="317.919px 317.919px ">Th</tspan>reshold</text>
+                <text x="28.032px" y="361.517px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">v- Compressor knee &amp; graphic</text>
+                <text x="68.057px" y="405.114px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">- Compressor makeup</text>
+                <text x="162.786px" y="448.712px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">------</text>
+                <text x="68.022px" y="492.309px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">- <tspan x="81.358px 97.366px " y="492.309px 492.309px ">Ad</tspan>vanced EQ Button</text>
+                <text x="64.706px" y="535.907px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">- EQ bass/treble knobs</text>
+                <text x="166.782px" y="579.505px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">-----</text>
+                <text x="99.382px" y="623.102px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">- Speed controls</text>
+                <text x="107.403px" y="666.7px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">- Pitch controls</text>
+                <text x="166.782px" y="710.298px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">-----</text>
+                <text x="108.733px" y="753.895px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">- Gain (fader?)</text>
+                <g transform="matrix(24,0,0,24,237.440137,797.493082)">
+                </g>
+                <text x="136.085px" y="797.493px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">- Meters?</text>
+            </g>
+        </g>
+        <g transform="matrix(0.750583,0,0,0.539694,2650.475194,132.749579)">
+            <rect x="0" y="179.126" width="497.646" height="1156.949" style="fill:none;fill-rule:nonzero;stroke:rgb(255,122,0);stroke-width:3.06px;"/>
+            <g transform="matrix(1.332298,0,0,1.852901,0,-152.776729)">
+                <g transform="matrix(24,0,0,24,312.809278,203.125894)">
+                </g>
+                <text x="60.716px" y="203.126px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">List of Markers/Regions</text>
+            </g>
+        </g>
+        <g transform="matrix(0.750583,0,0,0.136589,2650.475194,46.930173)">
+            <rect x="0" y="179.126" width="497.646" height="1156.949" style="fill:none;fill-rule:nonzero;stroke:rgb(255,122,0);stroke-width:3.71px;"/>
+            <g transform="matrix(1.332298,0,0,7.321254,0,-1132.300295)">
+                <text x="146.081px" y="203.126px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">Project:</text>
+                <g transform="matrix(24,0,0,24,181.442091,254.723551)">
+                </g>
+                <g transform="matrix(24,0,0,24,188.110059,254.723551)">
+                </g>
+                <g transform="matrix(24,0,0,24,269.473341,254.723551)">
+                </g>
+                <text x="104.051px" y="254.724px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">Linked ﬁles, etc</text>
+            </g>
+        </g>
+        <g transform="matrix(2.235983,0,0,0.161905,1911.271147,1535.682671)">
+            <rect x="0" y="179.126" width="497.646" height="1156.949" style="fill:none;fill-rule:nonzero;stroke:rgb(255,122,0);stroke-width:1.26px;"/>
+            <g transform="matrix(0.447231,0,0,6.176457,0,-927.237497)">
+                <g transform="matrix(24,0,0,24,720.362474,284.783859)">
+                </g>
+                <text x="392.366px" y="284.784px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">&apos;Add Marker&apos;, Looping Controls</text>
+            </g>
+        </g>
+        <g transform="matrix(1.35522,0,0,0.161905,1236.850514,1535.682671)">
+            <rect x="0" y="179.126" width="497.646" height="1156.949" style="fill:none;fill-rule:nonzero;stroke:rgb(255,122,0);stroke-width:2.07px;"/>
+            <g transform="matrix(0.737887,0,0,6.176457,0,-927.237497)">
+                <text x="237.167px" y="258.985px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">Playback Controls:</text>
+                <g transform="matrix(24,0,0,24,560.616566,310.582687)">
+                </g>
+                <text x="113.804px" y="310.583px" style="font-family:'ArialMT', 'Arial', sans-serif;font-size:24px;fill:rgb(255,112,0);">Rewind, PrevMark, Play/Pause, NextMark</text>
+            </g>
+        </g>
+    </g>
+</svg>
