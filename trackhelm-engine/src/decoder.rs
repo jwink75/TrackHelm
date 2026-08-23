@@ -49,11 +49,9 @@ pub fn decode_file<P: AsRef<Path>>(path: P) -> Result<DecodedAudio, String> {
         .make(&track.codec_params, &decoder_opts)
         .map_err(|e| format!("Failed to create decoder: {}", e))?;
 
-    let channels = track.codec_params.channels.ok_or_else(|| "Unknown channel layout".to_string())?.count();
-    let sample_rate = track.codec_params.sample_rate.ok_or_else(|| "Unknown sample rate".to_string())?;
-
-    // Pre-allocate channels
-    let mut channel_samples: Vec<Vec<f32>> = vec![Vec::new(); channels];
+    let mut channel_samples: Vec<Vec<f32>> = Vec::new();
+    let mut sample_rate = 0;
+    let mut channels = 0;
 
     // Decode loop
     loop {
@@ -72,10 +70,18 @@ pub fn decode_file<P: AsRef<Path>>(path: P) -> Result<DecodedAudio, String> {
             Err(e) => return Err(format!("Failed to decode packet: {}", e)),
         };
 
+        // Initialize parameters from the first decoded buffer spec if not already set
+        if channels == 0 {
+            let spec = decoded.spec();
+            channels = spec.channels.count();
+            sample_rate = spec.rate;
+            channel_samples = vec![Vec::new(); channels];
+        }
+
         copy_samples_to_f32(&decoded, &mut channel_samples);
     }
 
-    if channel_samples.is_empty() || channel_samples[0].is_empty() {
+    if channels == 0 || channel_samples.is_empty() || channel_samples[0].is_empty() {
         return Err("No audio samples decoded".to_string());
     }
 
