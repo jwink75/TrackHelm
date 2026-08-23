@@ -1,1 +1,1 @@
-{"default":{"identifier":"default","description":"Default capabilities for TrackHelm","local":true,"permissions":["core:default","dialog:default"],"platforms":["macOS","windows","linux"]}}
+{"default":{"identifier":"default","description":"Default capabilities for TrackHelm","local":true,"windows":["*"],"permissions":["core:default","dialog:default","allow-load-track","allow-play","allow-pause","allow-stop","allow-seek","allow-set-volume","allow-get-playback-status"]}}

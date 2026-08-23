@@ -177,6 +177,90 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the get_playback_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-playback-status",
+          "markdownDescription": "Enables the get_playback_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the load_track command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-load-track",
+          "markdownDescription": "Enables the load_track command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the pause command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-pause",
+          "markdownDescription": "Enables the pause command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the play command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-play",
+          "markdownDescription": "Enables the play command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the seek command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-seek",
+          "markdownDescription": "Enables the seek command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_volume command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-volume",
+          "markdownDescription": "Enables the set_volume command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the stop command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stop",
+          "markdownDescription": "Enables the stop command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_playback_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-playback-status",
+          "markdownDescription": "Denies the get_playback_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the load_track command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-load-track",
+          "markdownDescription": "Denies the load_track command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the pause command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-pause",
+          "markdownDescription": "Denies the pause command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the play command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-play",
+          "markdownDescription": "Denies the play command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the seek command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-seek",
+          "markdownDescription": "Denies the seek command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_volume command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-volume",
+          "markdownDescription": "Denies the set_volume command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stop command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stop",
+          "markdownDescription": "Denies the stop command without any pre-configured scope."
+        },
+        {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",
           "type": "string",
           "const": "core:default",

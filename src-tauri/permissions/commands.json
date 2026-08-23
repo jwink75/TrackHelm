@@ -1,0 +1,19 @@
+{
+  "permissions": [
+    {
+      "identifier": "allow-playback-commands",
+      "description": "Enables TrackHelm custom playback and engine commands",
+      "commands": {
+        "allow": [
+          "load_track",
+          "play",
+          "pause",
+          "stop",
+          "seek",
+          "set_volume",
+          "get_playback_status"
+        ]
+      }
+    }
+  ]
+}
