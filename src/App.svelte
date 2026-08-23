@@ -1176,7 +1176,6 @@
         <div class="panel-header">EFFECTS MODULES</div>
 
         <!-- 4. Compressor knobs (Threshold, Knee, Makeup) -->
-        <div class="dsp-divider">COMPRESSOR</div>
         <div class="knobs-row placeholder-knobs">
           <!-- Threshold -->
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
@@ -1225,7 +1224,6 @@
         </div>
 
         <!-- 3. Equalizer knobs (Bass, Treble) -->
-        <div class="dsp-divider">EQUALIZER (EQ)</div>
         <div class="knobs-row placeholder-knobs">
           <!-- Bass -->
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
@@ -1259,7 +1257,6 @@
         </div>
 
         <!-- 2. Speed and Pitch Knobs (Knobs on same line) -->
-        <div class="dsp-divider">PITCH & SPEED</div>
         <div class="knobs-row active-knobs">
           <!-- Speed Knob -->
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
@@ -1293,7 +1290,6 @@
         </div>
 
         <!-- 1. Volume Master Gain (Slider at the very bottom) -->
-        <div class="dsp-divider">MASTER VOLUME</div>
         <div class="dsp-control active-dsp">
           <div class="dsp-label-row">
             <span class="dsp-title">VOLUME GAIN</span>
@@ -2155,12 +2151,11 @@
     line-height: 1.4;
   }
 
-  /* Markers list panel */
   .markers-section {
     flex-grow: 1;
     display: flex;
     flex-direction: column;
-    max-height: 120px;
+    overflow: hidden;
   }
 
   .markers-list {
@@ -2221,18 +2216,6 @@
     display: flex;
     flex-direction: column;
     gap: 3px;
-  }
-
-  .dsp-divider {
-    background-color: #2b2b2b;
-    border-top: 1px solid #3c3c3c;
-    border-bottom: 1px solid #3c3c3c;
-    padding: 2px 12px;
-    font-size: 0.6rem;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    color: #8e8e8e;
-    margin-top: 4px;
   }
 
   .dsp-label-row {
