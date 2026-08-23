@@ -46,20 +46,21 @@ struct DirContents {
 fn read_dir(path: Option<String>) -> Result<DirContents, String> {
     use std::path::PathBuf;
     
+    let home = dirs::home_dir().ok_or_else(|| "Could not find home directory".to_string())?;
+    
     let target_path = match path {
         Some(p) => {
             if p.starts_with('~') {
-                let home = dirs::home_dir().ok_or_else(|| "Could not find home directory".to_string())?;
                 if p.len() > 2 {
                     home.join(&p[2..]) // Skip "~/"
                 } else {
-                    home
+                    home.clone()
                 }
             } else {
                 PathBuf::from(p)
             }
         }
-        None => dirs::home_dir().ok_or_else(|| "Could not find home directory".to_string())?,
+        None => home.clone(),
     };
 
     let canonical = target_path.canonicalize()
@@ -108,6 +109,48 @@ fn read_dir(path: Option<String>) -> Result<DirContents, String> {
                         size_bytes,
                     });
                 }
+            }
+        }
+    }
+
+    // Inject CloudStorage folder and cloud subfolders if we are in the home directory
+    let is_home = canonical == home.canonicalize().unwrap_or_else(|_| home.clone());
+    if is_home {
+        let cloud_storage = home.join("Library/CloudStorage");
+        if cloud_storage.exists() && cloud_storage.is_dir() {
+            // 1. Inject cloud subfolders (e.g. Dropbox-Personal, GoogleDrive, OneDrive)
+            if let Ok(sub_entries) = std::fs::read_dir(&cloud_storage) {
+                for sub_entry in sub_entries {
+                    if let Ok(sub_entry) = sub_entry {
+                        let sub_metadata = sub_entry.metadata().ok();
+                        let sub_is_dir = sub_metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+                        if sub_is_dir {
+                            let sub_name = sub_entry.file_name().to_string_lossy().to_string();
+                            if !sub_name.starts_with('.') {
+                                let sub_path_str = sub_entry.path().to_string_lossy().to_string();
+                                // Avoid duplicate entry additions
+                                if !entries.iter().any(|e| e.name == sub_name) {
+                                    entries.push(DirEntry {
+                                        name: sub_name,
+                                        path: sub_path_str,
+                                        is_dir: true,
+                                        size_bytes: 0,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // 2. Inject the CloudStorage folder itself
+            if !entries.iter().any(|e| e.name == "CloudStorage") {
+                entries.push(DirEntry {
+                    name: "CloudStorage".to_string(),
+                    path: cloud_storage.to_string_lossy().to_string(),
+                    is_dir: true,
+                    size_bytes: 0,
+                });
             }
         }
     }
