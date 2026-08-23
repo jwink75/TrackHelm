@@ -63,6 +63,17 @@
   let browserEntries: any[] = [];
   let cloudFolders: PlaylistItem[] = [];
   
+  // Search & Type to Jump State
+  let searchQuery = "";
+  $: filteredEntries = browserEntries.filter(entry => 
+    entry.name.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+  $: { if (currentPath) searchQuery = ""; } // Clear search on folder change
+
+  let typeToJumpBuffer = "";
+  let typeToJumpTimeout: any = null;
+  let jumpDebounceTimeout: any = null;
+  
   // Browser Multi-selection
   let selectedFilePaths = new Set<string>();
   let lastSelectedEntry: { name: string; path: string } | null = null;
@@ -264,6 +275,56 @@
       await invoke("load_track", { path: alternateTrack.path });
     }
     updateVisiblePeaks();
+  }
+
+  // Type-To-Jump Keyboard Listener
+  function handleBrowserKeydown(e: KeyboardEvent) {
+    // Disable if focused inside an input element (e.g. search box)
+    const activeEl = document.activeElement;
+    if (activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA")) {
+      return;
+    }
+
+    // Capture standard printable characters (length 1) without Cmd/Ctrl modifiers
+    if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      e.preventDefault();
+      typeToJumpBuffer += e.key;
+
+      // Clear existing timeouts
+      clearTimeout(typeToJumpTimeout);
+      typeToJumpTimeout = setTimeout(() => {
+        typeToJumpBuffer = "";
+      }, 1000); // Clear buffer after 1s of inactivity
+
+      clearTimeout(jumpDebounceTimeout);
+      jumpDebounceTimeout = setTimeout(() => {
+        performTypeToJump();
+      }, 300); // Debounce actual jump scroll by 300ms to avoid aggressive cursor twitching
+    }
+  }
+
+  function performTypeToJump() {
+    if (!typeToJumpBuffer) return;
+    
+    // Find first matching directory or file prefix in current filtered list
+    const match = filteredEntries.find(entry => 
+      entry.name.toLowerCase().startsWith(typeToJumpBuffer.toLowerCase())
+    );
+
+    if (match) {
+      selectedFilePaths.clear();
+      selectedFilePaths.add(match.path);
+      selectedFilePaths = selectedFilePaths;
+      lastSelectedEntry = { name: match.name, path: match.path };
+
+      // Scroll the newly active browser element into view smoothly
+      setTimeout(() => {
+        const el = document.querySelector(".browser-item.active");
+        if (el) {
+          el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+        }
+      }, 50);
+    }
   }
 
   // Handle Multi-select File Clicks
@@ -821,6 +882,8 @@
   }
 </script>
 
+<svelte:window on:keydown={handleBrowserKeydown} />
+
 <main class="app-container">
   <!-- Top bar -->
   <header class="app-header">
@@ -869,8 +932,15 @@
           {/if}
         </div>
 
+        <input 
+          type="text" 
+          placeholder="Search / filter files..." 
+          bind:value={searchQuery} 
+          class="browser-search-input" 
+        />
+
         <div class="browser-list">
-          {#each browserEntries as entry}
+          {#each filteredEntries as entry}
             <!-- svelte-ignore a11y-click-events-have-key-events -->
             <!-- svelte-ignore a11y-no-static-element-interactions -->
             <div 
@@ -1507,6 +1577,24 @@
 
   .up-btn:hover {
     text-decoration: underline;
+  }
+
+  .browser-search-input {
+    background-color: #1a1a1b;
+    border: 1px solid #3c3c3c;
+    border-radius: 4px;
+    color: #ffffff;
+    padding: 6px 10px;
+    font-size: 0.8rem;
+    margin: 8px 12px;
+    width: calc(100% - 24px);
+    box-sizing: border-box;
+    outline: none;
+    transition: border-color 0.15s ease;
+  }
+
+  .browser-search-input:focus {
+    border-color: #3b99fc;
   }
 
   .browser-list {
