@@ -38,7 +38,7 @@
   let eqBass = 0;                   // range -12 - +12 dB
   let eqTreble = 0;                 // range -12 - +12 dB
   let compressorThreshold = -20;    // range -60 - 0 dB
-  let compressorKnee = 6;           // range 0 - 24 dB
+  let compressorRatio = 2.0;        // range 1.0 - 20.0 (Ratio)
   let compressorMakeup = 0;         // range 0 - 24 dB
   
   // Slider State (Dbl-click resets)
@@ -1193,19 +1193,19 @@
             <span class="knob-value">{compressorThreshold} dB</span>
           </div>
 
-          <!-- Knee -->
+          <!-- Ratio -->
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
           <div 
             class="knob-container" 
-            on:mousedown={(e) => handleKnobMousedown(e, "comp_knee", compressorKnee, 0, 24, 0.5, (v) => compressorKnee = v)}
-            on:dblclick={() => compressorKnee = 6}
-            title="Double-click resets to 6 dB"
+            on:mousedown={(e) => handleKnobMousedown(e, "comp_ratio", compressorRatio, 1.0, 20.0, 0.5, (v) => compressorRatio = v)}
+            on:dblclick={() => compressorRatio = 2.0}
+            title="Double-click resets to 2.0:1"
           >
-            <span class="knob-label">Knee</span>
+            <span class="knob-label">Ratio</span>
             <div class="knob-circle">
-              <div class="knob-marker" style="transform: rotate({getKnobRotation(compressorKnee, 0, 24)}deg)"></div>
+              <div class="knob-marker" style="transform: rotate({getKnobRotation(compressorRatio, 1.0, 20.0)}deg)"></div>
             </div>
-            <span class="knob-value">{compressorKnee.toFixed(1)} dB</span>
+            <span class="knob-value">{compressorRatio.toFixed(1)}:1</span>
           </div>
 
           <!-- Makeup -->
@@ -2004,7 +2004,7 @@
   }
 
   .linked-files {
-    padding: 12px 16px;
+    padding: 6px 12px;
     display: flex;
     flex-direction: column;
   }
@@ -2160,16 +2160,16 @@
     flex-grow: 1;
     display: flex;
     flex-direction: column;
-    max-height: 200px;
+    max-height: 120px;
   }
 
   .markers-list {
     flex-grow: 1;
     overflow-y: auto;
-    padding: 8px 16px;
+    padding: 4px 10px;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 4px;
   }
 
   .marker-item {
@@ -2178,9 +2178,9 @@
     align-items: center;
     background-color: #2d2d2d;
     border: 1px solid #3c3c3c;
-    padding: 6px 10px;
+    padding: 3px 6px;
     border-radius: 4px;
-    font-size: 0.8rem;
+    font-size: 0.75rem;
   }
 
   .marker-name-btn {
@@ -2213,32 +2213,32 @@
 
   /* DSP Panel Knobs styling */
   .dsp-section {
-    padding-bottom: 16px;
+    padding-bottom: 6px;
   }
 
   .dsp-control {
-    padding: 10px 16px;
+    padding: 4px 12px;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 3px;
   }
 
   .dsp-divider {
     background-color: #2b2b2b;
     border-top: 1px solid #3c3c3c;
     border-bottom: 1px solid #3c3c3c;
-    padding: 3px 16px;
-    font-size: 0.65rem;
+    padding: 2px 12px;
+    font-size: 0.6rem;
     font-weight: 700;
     letter-spacing: 0.05em;
     color: #8e8e8e;
-    margin-top: 8px;
+    margin-top: 4px;
   }
 
   .dsp-label-row {
     display: flex;
     justify-content: space-between;
-    font-size: 0.75rem;
+    font-size: 0.7rem;
     font-weight: 700;
   }
 
@@ -2267,8 +2267,8 @@
   .dsp-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
-    width: 12px;
-    height: 12px;
+    width: 10px;
+    height: 10px;
     border-radius: 50%;
     background: #3b99fc;
     cursor: pointer;
@@ -2282,7 +2282,7 @@
   .knobs-row {
     display: flex;
     justify-content: space-around;
-    padding: 12px 8px;
+    padding: 6px 4px;
     background-color: #1e1e1f;
     border-bottom: 1px solid #2d2d2d;
   }
@@ -2292,26 +2292,26 @@
     flex-direction: column;
     align-items: center;
     cursor: ns-resize;
-    width: 65px;
+    width: 55px;
   }
 
   .knob-label {
-    font-size: 0.65rem;
+    font-size: 0.6rem;
     color: #8e8e8e;
-    margin-bottom: 4px;
+    margin-bottom: 2px;
     text-align: center;
     white-space: nowrap;
   }
 
   .knob-circle {
-    width: 32px;
-    height: 32px;
+    width: 22px;
+    height: 22px;
     border-radius: 50%;
     background-color: #333333;
-    border: 2px solid #555555;
+    border: 1.5px solid #555555;
     position: relative;
     box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
-    margin-bottom: 4px;
+    margin-bottom: 2px;
     transition: border-color 0.15s ease;
   }
 
@@ -2320,18 +2320,18 @@
   }
 
   .knob-marker {
-    width: 2px;
-    height: 10px;
+    width: 1.5px;
+    height: 7px;
     background-color: #ffffff;
     position: absolute;
-    top: 2px;
-    left: 13px;
+    top: 1.5px;
+    left: calc(50% - 0.75px);
     transform-origin: bottom center;
     border-radius: 1px;
   }
 
   .knob-value {
-    font-size: 0.7rem;
+    font-size: 0.65rem;
     font-family: monospace;
     color: #ffffff;
     text-align: center;
