@@ -860,17 +860,6 @@
 
       <!-- Tab Content: Browser -->
       {#if activeTab === "browser"}
-        <!-- Quick Bookmarks Bar -->
-        <div class="quick-bookmarks">
-          <button class="bookmark-btn" on:click={() => loadBrowser("~")}>Home</button>
-          {#each cloudFolders as cloud}
-            <button class="bookmark-btn" on:click={() => loadBrowser(cloud.path)} title={cloud.name}>
-              {cloud.name.replace(" - Personal", "").replace(" - Work", "").replace("-Personal", "").replace("-Work", "")}
-            </button>
-          {/each}
-          <button class="bookmark-btn" on:click={() => loadBrowser("~/Library/CloudStorage/Dropbox-Personal/Programming/TrackHelm")}>Project</button>
-        </div>
-
         <div class="browser-nav">
           <span class="current-dir-label" title={currentPath}>{currentPath.split("/").pop() || currentPath}</span>
           {#if parentPath}
@@ -1493,34 +1482,6 @@
     color: #3b99fc;
     border-bottom-color: #3b99fc;
     background-color: #252526;
-  }
-
-  /* Bookmarks toolbar */
-  .quick-bookmarks {
-    display: flex;
-    gap: 4px;
-    padding: 6px 12px;
-    background-color: #202021;
-    border-bottom: 1px solid #2d2d2d;
-  }
-
-  .bookmark-btn {
-    background-color: #2f2f30;
-    color: #d1d1d1;
-    border: 1px solid #3c3c3c;
-    border-radius: 3px;
-    padding: 4px 8px;
-    font-size: 0.7rem;
-    cursor: pointer;
-    flex-grow: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .bookmark-btn:hover {
-    background-color: #3c3c3e;
-    color: #ffffff;
   }
 
   .browser-nav {
