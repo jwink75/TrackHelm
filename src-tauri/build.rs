@@ -20,7 +20,8 @@ fn main() {
                         "get_cloud_folders",
                         "open_file_external",
                         "read_audio_metadata",
-                        "save_audio_metadata"
+                        "save_audio_metadata",
+                        "read_file_bytes"
                     ])
             )
     ).expect("failed to run tauri-build");

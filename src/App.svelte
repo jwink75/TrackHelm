@@ -1,8 +1,12 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { open } from "@tauri-apps/plugin-dialog";
   import { listen } from "@tauri-apps/api/event";
+  import * as pdfjsLib from "pdfjs-dist";
+  import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+
+  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
   // Active Playback State (for the backend engine)
   let filePath = "";
@@ -227,6 +231,86 @@
     } finally {
       isSavingTags = false;
     }
+  }
+
+  // In-Tab PDF Viewer State
+  let pdfContainer: HTMLDivElement;
+  let isLoadingPdf = false;
+  let pdfTotalPages = 0;
+  let pdfRenderError = "";
+  let currentRenderTaskId = 0;
+  let lastRenderedWidth = 0;
+
+  async function renderPdfPages() {
+    if (!pdfChartPath || !pdfContainer) return;
+    const taskId = ++currentRenderTaskId;
+    isLoadingPdf = true;
+    pdfRenderError = "";
+
+    try {
+      const bytes: number[] = await invoke("read_file_bytes", { path: pdfChartPath });
+      if (taskId !== currentRenderTaskId) return;
+      const uint8 = new Uint8Array(bytes);
+      const loadingTask = pdfjsLib.getDocument({ data: uint8 });
+      const doc = await loadingTask.promise;
+      if (taskId !== currentRenderTaskId) return;
+
+      pdfTotalPages = doc.numPages;
+      pdfContainer.innerHTML = "";
+
+      const containerWidth = pdfContainer.clientWidth || 800;
+      lastRenderedWidth = containerWidth;
+      const dpr = window.devicePixelRatio || 1;
+
+      for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
+        if (taskId !== currentRenderTaskId) return;
+        const page = await doc.getPage(pageNum);
+        const unscaledViewport = page.getViewport({ scale: 1.0 });
+        
+        // Auto-scale to full container width minus padding (e.g. 24px)
+        const targetWidth = Math.max(300, containerWidth - 28);
+        const scale = targetWidth / unscaledViewport.width;
+        const viewport = page.getViewport({ scale });
+
+        const pageWrapper = document.createElement("div");
+        pageWrapper.className = "pdf-page-card";
+
+        const canvas = document.createElement("canvas");
+        canvas.className = "pdf-page-canvas";
+        canvas.width = Math.floor(viewport.width * dpr);
+        canvas.height = Math.floor(viewport.height * dpr);
+        canvas.style.width = `${Math.floor(viewport.width)}px`;
+        canvas.style.height = `${Math.floor(viewport.height)}px`;
+
+        const ctx = canvas.getContext("2d")!;
+        ctx.scale(dpr, dpr);
+
+        pageWrapper.appendChild(canvas);
+        pdfContainer.appendChild(pageWrapper);
+
+        const renderContext = {
+          canvasContext: ctx,
+          viewport: viewport
+        };
+        await page.render(renderContext).promise;
+      }
+    } catch (err: any) {
+      if (taskId === currentRenderTaskId) {
+        console.error("PDF render error:", err);
+        pdfRenderError = "Failed to render PDF: " + (err.message || err);
+      }
+    } finally {
+      if (taskId === currentRenderTaskId) {
+        isLoadingPdf = false;
+      }
+    }
+  }
+
+  // Reactive trigger when switching to PDF tab or when pdfChartPath changes
+  $: if (activeCenterTab === "pdf" && pdfChartPath) {
+    tick().then(() => {
+      renderPdfPages();
+    });
   }
 
   async function loadTrackProfile(trackPath: string) {
@@ -1962,23 +2046,38 @@
               {#if pdfChartPath}
                 <div class="pdf-viewer-container">
                   <div class="pdf-toolbar">
-                    <span class="pdf-title">📄 {pdfChartName}</span>
-                    <button class="popout-pdf-btn" on:click={openPdfInExternalViewer}>
-                      ⤢ Open in Floating Window
-                    </button>
-                  </div>
-                  <div class="pdf-preview-box">
-                    <div class="pdf-info-card">
-                      <span class="pdf-card-icon">🎼</span>
-                      <div class="pdf-card-details">
-                        <h4>{pdfChartName}</h4>
-                        <p class="pdf-card-path">{pdfChartPath}</p>
-                      </div>
-                      <button class="open-large-btn" on:click={openPdfInExternalViewer}>
-                        ⤢ Open Sheet Music in Preview / PDF Viewer
+                    <div class="pdf-toolbar-left">
+                      <span class="pdf-title">📄 {pdfChartName}</span>
+                      {#if pdfTotalPages > 0}
+                        <span class="pdf-page-count">{pdfTotalPages} {pdfTotalPages === 1 ? 'Page' : 'Pages'}</span>
+                      {/if}
+                    </div>
+                    <div class="pdf-toolbar-actions">
+                      <button class="link-pdf-small-btn" on:click={associatePdfChart} title="Change PDF file">
+                        Change File
+                      </button>
+                      <button class="popout-pdf-btn" on:click={openPdfInExternalViewer} title="Open in macOS Preview / external viewer">
+                        ⤢ Open in Floating Window
                       </button>
                     </div>
                   </div>
+
+                  {#if isLoadingPdf}
+                    <div class="pdf-loading-overlay">
+                      <span class="pdf-loading-spinner">⏳</span>
+                      <span>Rendering sheet music PDF...</span>
+                    </div>
+                  {/if}
+
+                  {#if pdfRenderError}
+                    <div class="pdf-error-card">
+                      <span>⚠️ {pdfRenderError}</span>
+                      <button class="retry-pdf-btn" on:click={renderPdfPages}>Retry</button>
+                    </div>
+                  {/if}
+
+                  <!-- Single scrollable column of auto-scaled PDF page canvases -->
+                  <div class="pdf-scroll-column" bind:this={pdfContainer}></div>
                 </div>
               {:else}
                 <div class="no-pdf-placeholder">
@@ -3619,16 +3718,53 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    background-color: #222225;
-    padding: 4px 10px;
+    background-color: #202023;
+    padding: 6px 12px;
     border-radius: 4px;
-    border: 1px solid #333336;
+    border: 1px solid #303034;
     flex-shrink: 0;
+  }
+
+  .pdf-toolbar-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
   }
 
   .pdf-title {
     font-size: 0.78rem;
     font-weight: 600;
+    color: #ffffff;
+  }
+
+  .pdf-page-count {
+    font-size: 0.68rem;
+    background-color: #2b2b30;
+    color: #a0a0a8;
+    padding: 2px 6px;
+    border-radius: 10px;
+    font-family: monospace;
+  }
+
+  .pdf-toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .link-pdf-small-btn {
+    background-color: #2b2b30;
+    color: #d1d1d1;
+    border: 1px solid #3c3c42;
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 0.7rem;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .link-pdf-small-btn:hover {
+    background-color: #383840;
     color: #ffffff;
   }
 
@@ -3648,62 +3784,79 @@
     background-color: #5faeff;
   }
 
-  .pdf-preview-box {
-    flex-grow: 1;
+  .pdf-loading-overlay {
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 0;
+    gap: 8px;
+    padding: 16px;
+    color: #a0a0a8;
+    font-size: 0.8rem;
+    font-weight: 500;
   }
 
-  .pdf-info-card {
+  .pdf-loading-spinner {
+    font-size: 1.1rem;
+    animation: pulse 1s infinite alternate;
+  }
+
+  @keyframes pulse {
+    from { opacity: 0.4; }
+    to { opacity: 1; }
+  }
+
+  .pdf-error-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background-color: #331515;
+    border: 1px solid #662222;
+    border-radius: 4px;
+    padding: 8px 12px;
+    color: #ff8080;
+    font-size: 0.75rem;
+  }
+
+  .retry-pdf-btn {
+    background-color: #662222;
+    color: #ffffff;
+    border: none;
+    border-radius: 3px;
+    padding: 2px 8px;
+    cursor: pointer;
+    font-size: 0.7rem;
+  }
+
+  /* Single scrollable column of full-width PDF pages */
+  .pdf-scroll-column {
+    flex-grow: 1;
     display: flex;
     flex-direction: column;
     align-items: center;
-    justify-content: center;
-    background-color: #18181a;
-    border: 1px dashed #3a3a3d;
-    border-radius: 6px;
-    padding: 16px 24px;
-    text-align: center;
-    gap: 8px;
-    width: 80%;
-    max-width: 480px;
-  }
-
-  .pdf-card-icon {
-    font-size: 2rem;
-  }
-
-  .pdf-card-details h4 {
-    margin: 0;
-    color: #ffffff;
-    font-size: 0.9rem;
-  }
-
-  .pdf-card-path {
-    margin: 2px 0 0 0;
-    font-size: 0.68rem;
-    color: #8e8e8e;
-    font-family: monospace;
-    word-break: break-all;
-  }
-
-  .open-large-btn {
-    background-color: #2a2a2e;
-    border: 1px solid #444448;
-    color: #ffffff;
-    padding: 6px 14px;
+    gap: 12px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 8px 6px 16px 6px;
+    min-height: 0;
+    background-color: #121214;
     border-radius: 4px;
-    font-size: 0.75rem;
-    cursor: pointer;
-    font-weight: 600;
-    margin-top: 4px;
   }
 
-  .open-large-btn:hover {
-    background-color: #3b99fc;
-    border-color: #3b99fc;
+  :global(.pdf-page-card) {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background-color: #ffffff;
+    border-radius: 3px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+    overflow: hidden;
+    max-width: 100%;
+  }
+
+  :global(.pdf-page-canvas) {
+    display: block;
+    max-width: 100%;
+    height: auto;
   }
 
   .no-pdf-placeholder {

@@ -599,6 +599,11 @@ fn save_audio_metadata(path: String, metadata: AudioTagMetadata) -> Result<(), S
     Ok(())
 }
 
+#[tauri::command]
+fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
+    std::fs::read(&path).map_err(|e| e.to_string())
+}
+
 fn main() {
     let (mut engine, command_bus, shared_state) = trackhelm_engine::AudioEngine::new();
 
@@ -638,7 +643,8 @@ fn main() {
             get_cloud_folders,
             open_file_external,
             read_audio_metadata,
-            save_audio_metadata
+            save_audio_metadata,
+            read_file_bytes
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

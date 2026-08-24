@@ -23,6 +23,7 @@
     "allow-get-cloud-folders",
     "allow-open-file-external",
     "allow-read-audio-metadata",
-    "allow-save-audio-metadata"
+    "allow-save-audio-metadata",
+    "allow-read-file-bytes"
   ]
 }
