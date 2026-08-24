@@ -189,6 +189,12 @@
           "markdownDescription": "Enables the get_playback_status command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_raw_samples command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-raw-samples",
+          "markdownDescription": "Enables the get_raw_samples command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_waveform_slice command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-waveform-slice",
@@ -225,6 +231,18 @@
           "markdownDescription": "Enables the seek command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_pitch command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-pitch",
+          "markdownDescription": "Enables the set_pitch command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_speed command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-speed",
+          "markdownDescription": "Enables the set_speed command without any pre-configured scope."
+        },
+        {
           "description": "Enables the set_volume command without any pre-configured scope.",
           "type": "string",
           "const": "allow-set-volume",
@@ -247,6 +265,12 @@
           "type": "string",
           "const": "deny-get-playback-status",
           "markdownDescription": "Denies the get_playback_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_raw_samples command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-raw-samples",
+          "markdownDescription": "Denies the get_raw_samples command without any pre-configured scope."
         },
         {
           "description": "Denies the get_waveform_slice command without any pre-configured scope.",
@@ -283,6 +307,18 @@
           "type": "string",
           "const": "deny-seek",
           "markdownDescription": "Denies the seek command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_pitch command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-pitch",
+          "markdownDescription": "Denies the set_pitch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_speed command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-speed",
+          "markdownDescription": "Denies the set_speed command without any pre-configured scope."
         },
         {
           "description": "Denies the set_volume command without any pre-configured scope.",

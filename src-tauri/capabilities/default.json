@@ -13,9 +13,12 @@
     "allow-stop",
     "allow-seek",
     "allow-set-volume",
+    "allow-set-speed",
+    "allow-set-pitch",
     "allow-get-playback-status",
     "allow-read-dir",
     "allow-get-waveform-slice",
+    "allow-get-raw-samples",
     "allow-get-cloud-folders"
   ]
 }

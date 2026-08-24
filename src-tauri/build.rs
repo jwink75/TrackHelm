@@ -10,9 +10,12 @@ fn main() {
                         "stop",
                         "seek",
                         "set_volume",
+                        "set_speed",
+                        "set_pitch",
                         "get_playback_status",
                         "read_dir",
                         "get_waveform_slice",
+                        "get_raw_samples",
                         "get_cloud_folders"
                     ])
             )
