@@ -24,6 +24,7 @@
     channels: number;
     overviewPeaks: number[];
     pyramidPeaks: number[];
+    monoSamples: number[];
   }
 
   let mainTrack: Track | null = null;
@@ -232,11 +233,35 @@
     const closeMenu = () => { showContextMenu = false; };
     window.addEventListener("click", closeMenu);
 
+    // Global keyboard shortcuts: Space = Play/Pause, Left/Right = Prev/Next Marker, Enter = Stop & Return to 0
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+        return;
+      }
+
+      if (e.code === "Space") {
+        e.preventDefault();
+        handlePlayPause();
+      } else if (e.code === "ArrowLeft") {
+        e.preventDefault();
+        jumpToPrevMarker();
+      } else if (e.code === "ArrowRight") {
+        e.preventDefault();
+        jumpToNextMarker();
+      } else if (e.code === "Enter" || e.code === "NumpadEnter") {
+        e.preventDefault();
+        handleStop();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+
     return () => {
       clearInterval(statusInterval);
       if (resizeObserver) resizeObserver.disconnect();
       unlistenDragDrop.then(fn => fn());
       window.removeEventListener("click", closeMenu);
+      window.removeEventListener("keydown", handleKeyDown);
     };
   });
 
@@ -266,7 +291,8 @@
         sampleRate: metadata.sample_rate,
         channels: metadata.channels,
         overviewPeaks: metadata.overview_peaks || [],
-        pyramidPeaks: metadata.pyramid_peaks || []
+        pyramidPeaks: metadata.pyramid_peaks || [],
+        monoSamples: metadata.mono_samples || []
       };
 
       if (target === "main") {
@@ -544,7 +570,7 @@
     zoomSliderVal = zoomToSliderVal(zoom);
   }
 
-  // Dynamic Peak Slice & Waveform updater (100% Synchronous Slicing with Background Fetch)
+  // Dynamic Peak Slice & Waveform updater (100% Synchronous Local Slicing)
   function updateVisiblePeaks() {
     const track = getActiveTrack();
     if (!track || !mainCanvas || duration === 0) {
@@ -570,78 +596,32 @@
     const endProgress = Math.min(1.0, startProgress + windowWidth);
 
     const startFrame = Math.floor(startProgress * totalTrackFrames);
-    const endFrame = Math.floor(endProgress * totalTrackFrames);
+    const endFrame = Math.min(totalTrackFrames, Math.floor(endProgress * totalTrackFrames));
     const visibleFrames = Math.max(1, endFrame - startFrame);
     visibleSampleFrames = visibleFrames;
 
-    // If visibleFrames <= 4000: We are in deep zoom / sample level!
-    if (visibleFrames <= 4000) {
-      // Check if inside localSampleCache
-      if (
-        localSampleCache.samples.length > 0 &&
-        startFrame >= localSampleCache.startFrame &&
-        endFrame <= localSampleCache.endFrame
-      ) {
-        const offset = startFrame - localSampleCache.startFrame;
-        const rawSlice = localSampleCache.samples.slice(offset, offset + visibleFrames);
-        visibleSamples = rawSlice;
-        drawMainWaveform();
-        drawOverviewWaveform();
-        drawAltOverviewWaveform();
+    const mono = track.monoSamples;
+    if (mono && mono.length > 0) {
+      if (visibleFrames <= numPoints) {
+        // Sample Level / Deep Zoom (down to 9 samples): Exact raw samples!
+        visibleSamples = mono.slice(startFrame, endFrame);
       } else {
-        // Fetch raw samples in background without blocking UI
-        if (!isFetchingRawChunk) {
-          isFetchingRawChunk = true;
-          const fetchPadding = Math.max(8000, visibleFrames * 4);
-          const fetchStart = Math.max(0, startFrame - Math.floor(fetchPadding / 2));
-          const fetchCount = Math.min(totalTrackFrames - fetchStart, visibleFrames + fetchPadding);
-
-          invoke("get_raw_samples", { startFrame: fetchStart, count: fetchCount })
-            .then((res: any) => {
-              const samples: number[] = res || [];
-              localSampleCache = {
-                startFrame: fetchStart,
-                endFrame: fetchStart + samples.length,
-                samples
-              };
-              isFetchingRawChunk = false;
-              // Re-slice and redraw
-              updateVisiblePeaks();
-            })
-            .catch(err => {
-              console.error("Failed to fetch raw samples", err);
-              isFetchingRawChunk = false;
-            });
+        // Zoomed Out: Downsample to exactly numPoints
+        const downsampled: number[] = new Array(numPoints);
+        const step = visibleFrames / numPoints;
+        for (let i = 0; i < numPoints; i++) {
+          const idx = Math.min(mono.length - 1, Math.floor(startFrame + i * step));
+          downsampled[i] = mono[idx];
         }
+        visibleSamples = downsampled;
       }
     } else {
-      // Slicing from pyramidPeaks (32,768 single samples) synchronously in JS!
-      const pyramid = track.pyramidPeaks;
-      if (pyramid && pyramid.length > 0) {
-        const startIdx = Math.floor(startProgress * pyramid.length);
-        const endIdx = Math.max(startIdx + 1, Math.floor(endProgress * pyramid.length));
-        const sliceLen = endIdx - startIdx;
-
-        if (sliceLen <= numPoints) {
-          visibleSamples = pyramid.slice(startIdx, endIdx);
-        } else {
-          const downsampled: number[] = [];
-          const step = sliceLen / numPoints;
-          for (let i = 0; i < numPoints; i++) {
-            const idx = Math.floor(startIdx + i * step);
-            if (idx >= endIdx || idx >= pyramid.length) break;
-            downsampled.push(pyramid[idx]);
-          }
-          visibleSamples = downsampled;
-        }
-      } else {
-        visibleSamples = [];
-      }
-
-      drawMainWaveform();
-      drawOverviewWaveform();
-      drawAltOverviewWaveform();
+      visibleSamples = [];
     }
+
+    drawMainWaveform();
+    drawOverviewWaveform();
+    drawAltOverviewWaveform();
   }
 
   // Playback handlers
@@ -819,18 +799,16 @@
 
   function updateOverviewDrag(e: MouseEvent) {
     const canvas = activeTrackMode === "main" ? overviewCanvas : altOverviewCanvas;
-    if (!canvas) return;
+    if (!canvas || duration === 0) return;
     const rect = canvas.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     const pct = Math.max(0, Math.min(1.0, clickX / rect.width));
 
-    const windowWidth = 1.0 / zoom;
-    const halfWindow = windowWidth / 2;
-
-    progress = Math.max(halfWindow, Math.min(1.0 - halfWindow, pct));
+    progress = pct;
     currentTime = progress * duration;
 
     updateVisiblePeaks();
+    invoke("seek", { seconds: currentTime });
   }
 
   // Markers
@@ -849,17 +827,35 @@
   }
 
   function seekToMarker(time: number) {
+    if (duration > 0) {
+      currentTime = time;
+      progress = time / duration;
+      updateVisiblePeaks();
+    }
     invoke("seek", { seconds: time });
   }
 
   function jumpToPrevMarker() {
-    if (markers.length === 0) return;
+    if (markers.length === 0) {
+      if (duration > 0) {
+        currentTime = 0;
+        progress = 0;
+        updateVisiblePeaks();
+      }
+      invoke("seek", { seconds: 0 });
+      return;
+    }
     const prev = [...markers]
       .reverse()
       .find(m => m.time < currentTime - 0.5);
     if (prev) {
       seekToMarker(prev.time);
     } else {
+      if (duration > 0) {
+        currentTime = 0;
+        progress = 0;
+        updateVisiblePeaks();
+      }
       invoke("seek", { seconds: 0 });
     }
   }
@@ -1044,12 +1040,12 @@
       ctx.stroke();
 
       // Progressive Sample Node Squares (RX style when <= 400 samples on screen)
-      if (visibleSampleFrames <= 400 && visibleSampleFrames === numSamples) {
-        let nodeSize = 1.5;
+      if (visibleSampleFrames <= 400) {
+        let nodeSize = 2.5;
         if (visibleSampleFrames <= 40) {
           nodeSize = 6.0;
         } else if (visibleSampleFrames <= 150) {
-          nodeSize = 3.5;
+          nodeSize = 4.0;
         }
 
         ctx.fillStyle = "#8fc4fa";
@@ -1057,8 +1053,8 @@
           const x = i * step;
           const y = halfHeight - visibleSamples[i] * (waveHeight * 0.44);
           ctx.fillRect(x - nodeSize / 2, y - nodeSize / 2, nodeSize, nodeSize);
-          if (nodeSize >= 5) {
-            ctx.strokeStyle = "#162837";
+          if (nodeSize >= 4) {
+            ctx.strokeStyle = "#0c151e";
             ctx.lineWidth = 1;
             ctx.strokeRect(x - nodeSize / 2, y - nodeSize / 2, nodeSize, nodeSize);
           }
