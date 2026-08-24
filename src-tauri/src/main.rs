@@ -17,6 +17,7 @@ struct TrackMetadata {
     sample_rate: u32,
     channels: usize,
     overview_peaks: Vec<f32>,
+    pyramid_peaks: Vec<f32>,
 }
 
 #[derive(serde::Serialize)]
@@ -268,8 +269,8 @@ fn get_waveform_slice(
             if chunk_start >= chunk_end {
                 break;
             }
-            let mut min_val = 0.0f32;
-            let mut max_val = 0.0f32;
+            let mut min_val = f32::INFINITY;
+            let mut max_val = f32::NEG_INFINITY;
 
             for j in chunk_start..chunk_end {
                 let mut sum = 0.0f32;
@@ -285,11 +286,48 @@ fn get_waveform_slice(
                     max_val = val;
                 }
             }
+            if min_val.is_infinite() {
+                min_val = 0.0;
+                max_val = 0.0;
+            }
             data.push(min_val);
             data.push(max_val);
         }
         Ok(WaveformSliceResult { is_sample_level: false, data })
     }
+}
+
+#[tauri::command]
+fn get_raw_samples(
+    state: State<'_, AppState>,
+    start_frame: usize,
+    count: usize
+) -> Result<Vec<f32>, String> {
+    let active_opt = state.active_audio.lock().unwrap();
+    let audio = active_opt.as_ref().ok_or_else(|| "No active track loaded".to_string())?;
+
+    let channels = audio.channels;
+    let total_frames = audio.channel_samples[0].len();
+
+    let start = std::cmp::min(start_frame, total_frames);
+    let end = std::cmp::min(start + count, total_frames);
+    
+    if start >= end {
+        return Ok(Vec::new());
+    }
+
+    let len = end - start;
+    let mut data = Vec::with_capacity(len);
+
+    for i in start..end {
+        let mut sum = 0.0f32;
+        for c in 0..channels {
+            sum += audio.channel_samples[c][i];
+        }
+        data.push(sum / channels as f32);
+    }
+
+    Ok(data)
 }
 
 #[tauri::command]
@@ -301,6 +339,7 @@ fn load_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata,
     let channels = audio.channels;
 
     let overview_peaks = compute_peaks(&audio, 1000);
+    let pyramid_peaks = compute_pyramid_peaks(&audio, 32768);
     let audio_arc = Arc::new(audio);
 
     let mut active_audio = state.active_audio.lock().unwrap();
@@ -313,6 +352,7 @@ fn load_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata,
         sample_rate,
         channels,
         overview_peaks,
+        pyramid_peaks,
     })
 }
 
@@ -413,6 +453,48 @@ fn compute_peaks(audio: &DecodedAudio, num_peaks: usize) -> Vec<f32> {
     overview_peaks
 }
 
+fn compute_pyramid_peaks(audio: &DecodedAudio, num_peaks: usize) -> Vec<f32> {
+    let channels = audio.channels;
+    let len = audio.channel_samples[0].len();
+    let chunk_size = (len / num_peaks).max(1);
+
+    let mut pyramid = Vec::with_capacity(num_peaks * 2);
+
+    for i in 0..num_peaks {
+        let start = i * chunk_size;
+        let end = std::cmp::min(start + chunk_size, len);
+        if start >= len {
+            pyramid.push(0.0);
+            pyramid.push(0.0);
+            continue;
+        }
+
+        let mut min_val = f32::INFINITY;
+        let mut max_val = f32::NEG_INFINITY;
+
+        for j in start..end {
+            let mut sum = 0.0f32;
+            for c in 0..channels {
+                sum += audio.channel_samples[c][j];
+            }
+            let val = sum / channels as f32;
+            if val < min_val {
+                min_val = val;
+            }
+            if val > max_val {
+                max_val = val;
+            }
+        }
+        if min_val.is_infinite() {
+            min_val = 0.0;
+            max_val = 0.0;
+        }
+        pyramid.push(min_val);
+        pyramid.push(max_val);
+    }
+    pyramid
+}
+
 fn main() {
     let (mut engine, command_bus, shared_state) = trackhelm_engine::AudioEngine::new();
 
@@ -444,6 +526,7 @@ fn main() {
             get_playback_status,
             read_dir,
             get_waveform_slice,
+            get_raw_samples,
             get_cloud_folders
         ])
         .run(tauri::generate_context!())

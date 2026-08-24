@@ -23,6 +23,7 @@
     sampleRate: number;
     channels: number;
     overviewPeaks: number[];
+    pyramidPeaks: number[];
   }
 
   let mainTrack: Track | null = null;
@@ -43,15 +44,28 @@
   
   // Slider State (Dbl-click resets)
   let dbVolume = 0.0;               // range -60 - +12 dB
-  let zoom = 1.0;                   // range 1.0 - 800.0
+  let zoom = 1.0;
+  let zoomSliderVal = 0;            // 0 - 1000 logarithmic scale
+  
+  $: totalFrames = duration > 0 && sampleRate > 0 ? duration * sampleRate : 1;
+  $: maxZoom = Math.max(1.0, totalFrames / 9.0); // Exactly 9 samples on screen at max zoom!
   $: target15sZoom = duration > 0 ? Math.max(1.0, duration / 15.0) : 1.0;
 
-  // Zoom View State (Continuous Single Line)
+  // Zoom View State (Continuous Single Line + Synchronous Local Cache)
+  interface SampleCache {
+    startFrame: number;
+    endFrame: number;
+    samples: number[];
+  }
+  let localSampleCache: SampleCache = { startFrame: -1, endFrame: -1, samples: [] };
+  let isFetchingRawChunk = false;
+
   interface VisibleWaveformData {
     isSampleLevel: boolean;
     data: number[];
+    visibleFrames: number;
   }
-  let visibleWaveform: VisibleWaveformData = { isSampleLevel: false, data: [] };
+  let visibleWaveform: VisibleWaveformData = { isSampleLevel: false, data: [], visibleFrames: 0 };
 
   // Markers
   interface Marker {
@@ -255,7 +269,8 @@
         duration: metadata.duration_seconds,
         sampleRate: metadata.sample_rate,
         channels: metadata.channels,
-        overviewPeaks: metadata.overview_peaks || []
+        overviewPeaks: metadata.overview_peaks || [],
+        pyramidPeaks: metadata.pyramid_peaks || []
       };
 
       if (target === "main") {
@@ -274,9 +289,15 @@
       activeTrackMode = target;
       localStorage.setItem("th_last_active_track_mode", target);
 
+      // Clear local sample cache
+      localSampleCache = { startFrame: -1, endFrame: -1, samples: [] };
+
       // Default zoom: 15 seconds rehearsal chunk view
       if (duration > 0) {
-        zoom = Math.max(1.0, duration / 15.0);
+        const targetZoom = Math.max(1.0, duration / 15.0);
+        setZoom(targetZoom);
+      } else {
+        setZoom(1.0);
       }
 
       // Reset markers for new track
@@ -510,11 +531,28 @@
     return null;
   }
 
-  // Dynamic Peak Slice fetcher (Continuous Mono Single Line)
-  async function updateVisiblePeaks() {
+  function sliderValToZoom(val: number): number {
+    if (maxZoom <= 1.0) return 1.0;
+    const t = Math.max(0, Math.min(1000, val)) / 1000;
+    return Math.exp(Math.log(1.0) + t * (Math.log(maxZoom) - Math.log(1.0)));
+  }
+
+  function zoomToSliderVal(z: number): number {
+    if (maxZoom <= 1.0 || z <= 1.0) return 0;
+    const t = (Math.log(z) - Math.log(1.0)) / (Math.log(maxZoom) - Math.log(1.0));
+    return Math.max(0, Math.min(1000, t * 1000));
+  }
+
+  function setZoom(newZoom: number) {
+    zoom = Math.max(1.0, Math.min(maxZoom, newZoom));
+    zoomSliderVal = zoomToSliderVal(zoom);
+  }
+
+  // Dynamic Peak Slice & Waveform updater (100% Synchronous Slicing with Background Fetch)
+  function updateVisiblePeaks() {
     const track = getActiveTrack();
     if (!track || !mainCanvas || duration === 0) {
-      visibleWaveform = { isSampleLevel: false, data: [] };
+      visibleWaveform = { isSampleLevel: false, data: [], visibleFrames: 0 };
       drawMainWaveform();
       drawOverviewWaveform();
       drawAltOverviewWaveform();
@@ -524,29 +562,106 @@
     const rect = mainCanvas.getBoundingClientRect();
     const numPoints = Math.max(100, Math.floor(rect.width));
 
-    const totalFrames = duration * sampleRate;
+    const totalTrackFrames = duration * sampleRate;
     const windowWidth = 1.0 / zoom;
     const startProgress = Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2));
     const endProgress = startProgress + windowWidth;
 
-    const startFrame = Math.floor(startProgress * totalFrames);
-    const endFrame = Math.floor(endProgress * totalFrames);
+    const startFrame = Math.floor(startProgress * totalTrackFrames);
+    const endFrame = Math.floor(endProgress * totalTrackFrames);
+    const visibleFrames = Math.max(1, endFrame - startFrame);
 
-    try {
-      const result: any = await invoke("get_waveform_slice", {
-        startFrame,
-        endFrame,
-        numPoints
-      });
-      visibleWaveform = {
-        isSampleLevel: result.is_sample_level || false,
-        data: result.data || []
-      };
+    // If visibleFrames <= 2000: We are in deep zoom / sample level!
+    if (visibleFrames <= 2000) {
+      // Check if inside localSampleCache
+      if (
+        localSampleCache.samples.length > 0 &&
+        startFrame >= localSampleCache.startFrame &&
+        endFrame <= localSampleCache.endFrame
+      ) {
+        const offset = startFrame - localSampleCache.startFrame;
+        const rawSlice = localSampleCache.samples.slice(offset, offset + visibleFrames);
+        visibleWaveform = {
+          isSampleLevel: true,
+          data: rawSlice,
+          visibleFrames
+        };
+        drawMainWaveform();
+        drawOverviewWaveform();
+        drawAltOverviewWaveform();
+      } else {
+        // Fetch raw samples in background without blocking UI
+        if (!isFetchingRawChunk) {
+          isFetchingRawChunk = true;
+          const fetchPadding = Math.max(8000, visibleFrames * 4);
+          const fetchStart = Math.max(0, startFrame - Math.floor(fetchPadding / 2));
+          const fetchCount = Math.min(totalTrackFrames - fetchStart, visibleFrames + fetchPadding);
+
+          invoke("get_raw_samples", { startFrame: fetchStart, count: fetchCount })
+            .then((res: any) => {
+              const samples: number[] = res || [];
+              localSampleCache = {
+                startFrame: fetchStart,
+                endFrame: fetchStart + samples.length,
+                samples
+              };
+              isFetchingRawChunk = false;
+              // Re-slice and redraw
+              updateVisiblePeaks();
+            })
+            .catch(err => {
+              console.error("Failed to fetch raw samples", err);
+              isFetchingRawChunk = false;
+            });
+        }
+      }
+    } else {
+      // Standard / Zoomed Out view: Slice from pyramidPeaks (32,768 min/max pairs) synchronously in JS!
+      const pyramid = track.pyramidPeaks;
+      if (pyramid && pyramid.length > 0) {
+        const numPairs = pyramid.length / 2;
+        const startIdx = Math.floor(startProgress * numPairs);
+        const endIdx = Math.max(startIdx + 1, Math.floor(endProgress * numPairs));
+        const slicePairs = endIdx - startIdx;
+
+        if (slicePairs <= numPoints) {
+          // Direct slice
+          const sliceData = pyramid.slice(startIdx * 2, endIdx * 2);
+          visibleWaveform = {
+            isSampleLevel: false,
+            data: sliceData,
+            visibleFrames
+          };
+        } else {
+          // Downsample to numPoints
+          const downsampled: number[] = [];
+          const chunkSize = slicePairs / numPoints;
+          for (let i = 0; i < numPoints; i++) {
+            const cStart = Math.floor(startIdx + i * chunkSize);
+            const cEnd = Math.min(Math.floor(startIdx + (i + 1) * chunkSize), endIdx);
+            if (cStart >= cEnd) break;
+            let minVal = 1.0;
+            let maxVal = -1.0;
+            for (let j = cStart; j < cEnd; j++) {
+              const minP = pyramid[j * 2];
+              const maxP = pyramid[j * 2 + 1];
+              if (minP < minVal) minVal = minP;
+              if (maxP > maxVal) maxVal = maxP;
+            }
+            downsampled.push(minVal);
+            downsampled.push(maxVal);
+          }
+          visibleWaveform = {
+            isSampleLevel: false,
+            data: downsampled,
+            visibleFrames
+          };
+        }
+      }
+
       drawMainWaveform();
       drawOverviewWaveform();
       drawAltOverviewWaveform();
-    } catch (err) {
-      console.error("Failed to fetch waveform slice", err);
     }
   }
 
@@ -651,10 +766,9 @@
   function handleMainWheel(e: WheelEvent) {
     if (duration === 0) return;
     e.preventDefault();
-    // Zoom in/out logarithmically or linearly based on scroll delta
     const factor = e.deltaY < 0 ? 1.15 : 0.85;
     let newZoom = zoom * factor;
-    newZoom = Math.max(1.0, Math.min(800.0, newZoom));
+    newZoom = Math.max(1.0, Math.min(maxZoom, newZoom));
     
     // Soft snap to 15s notch if scrolling close to it
     if (Math.abs(newZoom - target15sZoom) < target15sZoom * 0.05) {
@@ -662,23 +776,24 @@
     }
 
     if (newZoom !== zoom) {
-      zoom = newZoom;
+      setZoom(newZoom);
       updateVisiblePeaks();
     }
   }
 
-  function getNotchPercent(val: number, min = 1.0, max = 800.0): number {
-    return Math.max(0, Math.min(100, ((val - min) / (max - min)) * 100));
-  }
-
-  function handleZoomInput(e: Event) {
+  function handleZoomSliderInput(e: Event) {
     const inputVal = parseFloat((e.target as HTMLInputElement).value);
-    const diff = Math.abs(inputVal - target15sZoom);
-    if (diff < target15sZoom * 0.06) {
-      zoom = target15sZoom;
+    let newZoom = sliderValToZoom(inputVal);
+    
+    // Soft snap to 15s if close
+    if (Math.abs(newZoom - target15sZoom) / target15sZoom < 0.08) {
+      newZoom = target15sZoom;
+      zoomSliderVal = zoomToSliderVal(target15sZoom);
     } else {
-      zoom = inputVal;
+      zoomSliderVal = inputVal;
     }
+
+    zoom = newZoom;
     updateVisiblePeaks();
   }
 
@@ -917,14 +1032,15 @@
     ctx.stroke();
 
     if (visibleWaveform.isSampleLevel && visibleWaveform.data.length > 0) {
-      // High Zoom / Sample Level: Single continuous oscillating line
+      // Sample Level: Smooth continuous oscillating signal line
       const samples = visibleWaveform.data;
-      const step = width / (samples.length - 1 || 1);
+      const numSamples = samples.length;
+      const step = width / (numSamples - 1 || 1);
 
       ctx.strokeStyle = "#3b99fc";
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      for (let i = 0; i < samples.length; i++) {
+      for (let i = 0; i < numSamples; i++) {
         const x = i * step;
         const y = halfHeight - samples[i] * (waveHeight * 0.44);
         if (i === 0) ctx.moveTo(x, y);
@@ -932,17 +1048,30 @@
       }
       ctx.stroke();
 
-      // Sample Node Dots if highly zoomed
-      if (samples.length < 250) {
+      // Progressive Sample Node Squares (RX style)
+      // When visible samples <= 400, render square nodes that grow as you zoom down to 9 samples!
+      if (numSamples <= 400) {
+        let nodeSize = 1.5;
+        if (numSamples <= 40) {
+          nodeSize = 6.0;
+        } else if (numSamples <= 150) {
+          nodeSize = 3.5;
+        }
+
         ctx.fillStyle = "#8fc4fa";
-        for (let i = 0; i < samples.length; i++) {
+        for (let i = 0; i < numSamples; i++) {
           const x = i * step;
           const y = halfHeight - samples[i] * (waveHeight * 0.44);
-          ctx.fillRect(x - 2, y - 2, 4, 4);
+          ctx.fillRect(x - nodeSize / 2, y - nodeSize / 2, nodeSize, nodeSize);
+          if (nodeSize >= 5) {
+            ctx.strokeStyle = "#162837";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x - nodeSize / 2, y - nodeSize / 2, nodeSize, nodeSize);
+          }
         }
       }
     } else if (visibleWaveform.data.length > 0) {
-      // Standard / Zoomed Out: Continuous line zig-zagging min/max per pixel
+      // Standard / Zoomed Out: Continuous line tracing min and max per pixel column
       const data = visibleWaveform.data;
       const numCols = data.length / 2;
       const step = width / (numCols - 1 || 1);
@@ -1385,18 +1514,18 @@
               <div class="zoom-track-wrapper">
                 <input 
                   type="range" 
-                  min="1.0" 
-                  max="800.0" 
-                  step="0.5" 
-                  bind:value={zoom} 
-                  on:dblclick={() => { zoom = target15sZoom; updateVisiblePeaks(); }}
-                  on:input={handleZoomInput}
+                  min="0" 
+                  max="1000" 
+                  step="1" 
+                  bind:value={zoomSliderVal} 
+                  on:dblclick={() => { setZoom(target15sZoom); updateVisiblePeaks(); }}
+                  on:input={handleZoomSliderInput}
                   class="zoom-slider" 
                 />
                 {#if duration > 15}
                   <div 
                     class="zoom-snap-notch" 
-                    style="left: {getNotchPercent(target15sZoom)}%;" 
+                    style="left: {(zoomToSliderVal(target15sZoom) / 1000) * 100}%;" 
                     title="15s Rehearsal View"
                   ></div>
                 {/if}
