@@ -125,7 +125,8 @@
 
   onMount(() => {
     // Initial folder load
-    loadBrowser(null);
+    const lastDir = localStorage.getItem("th_last_dir");
+    loadBrowser(lastDir);
 
     // Fetch detected cloud folders dynamically
     invoke("get_cloud_folders")
@@ -148,6 +149,27 @@
 
     const savedVersions = localStorage.getItem("th_associated_versions");
     if (savedVersions) associatedVersions = JSON.parse(savedVersions);
+
+    // Restore last loaded tracks and active state
+    (async () => {
+      const lastMainPath = localStorage.getItem("th_last_main_track_path");
+      const lastAltPath = localStorage.getItem("th_last_alt_track_path");
+      const lastActiveMode = localStorage.getItem("th_last_active_track_mode") as "main" | "alternate" | null;
+
+      try {
+        if (lastMainPath) {
+          await loadAudioPath(lastMainPath, "main");
+        }
+        if (lastAltPath) {
+          await loadAudioPath(lastAltPath, "alternate");
+        }
+        if (lastActiveMode && lastActiveMode !== activeTrackMode) {
+          await toggleActiveTrack(lastActiveMode);
+        }
+      } catch (err) {
+        console.error("Failed to restore last loaded tracks:", err);
+      }
+    })();
 
     statusInterval = setInterval(async () => {
       try {
@@ -212,6 +234,7 @@
       browserEntries = contents.entries;
       selectedFilePaths.clear();
       lastSelectedEntry = null;
+      localStorage.setItem("th_last_dir", currentPath);
     } catch (err) {
       alert("Failed to read directory: " + err);
     }
@@ -232,8 +255,10 @@
 
       if (target === "main") {
         mainTrack = track;
+        localStorage.setItem("th_last_main_track_path", path);
       } else {
         alternateTrack = track;
+        localStorage.setItem("th_last_alt_track_path", path);
       }
 
       filePath = path;
@@ -242,6 +267,7 @@
       sampleRate = track.sampleRate;
       channels = track.channels;
       activeTrackMode = target;
+      localStorage.setItem("th_last_active_track_mode", target);
 
       // Reset markers for new track
       markers = [];
@@ -274,6 +300,7 @@
       channels = alternateTrack.channels;
       await invoke("load_track", { path: alternateTrack.path });
     }
+    localStorage.setItem("th_last_active_track_mode", target);
     updateVisiblePeaks();
   }
 
@@ -1607,7 +1634,7 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 2px 8px;
+    padding: 0px 8px;
     font-size: 0.72rem;
     cursor: pointer;
     color: #ffffff; /* White text */
@@ -1685,7 +1712,7 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 2px 10px;
+    padding: 0px 10px;
     font-size: 0.72rem;
     cursor: pointer;
     color: #cccccc;
