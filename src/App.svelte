@@ -1241,17 +1241,21 @@
     }
 
     // 4. Mono Continuous Single Line Waveform
-    const waveTop = rulerHeight;
-    const waveHeight = height - rulerHeight;
-    const halfHeight = waveTop + waveHeight / 2;
+    const halfHeight = Math.floor(height / 2);
+    const maxAmplitude = (height / 2) - rulerHeight - 4;
 
-    // Zero-Crossing Baseline
-    ctx.strokeStyle = "rgba(59, 153, 252, 0.25)";
+    // Zero-Crossing Baseline (Centered Vertically)
+    ctx.strokeStyle = "rgba(59, 153, 252, 0.35)";
     ctx.lineWidth = 1;
     ctx.beginPath();
-    ctx.moveTo(0, halfHeight);
-    ctx.lineTo(width, halfHeight);
+    ctx.moveTo(0, halfHeight + 0.5);
+    ctx.lineTo(width, halfHeight + 0.5);
     ctx.stroke();
+
+    // 0 dB center baseline label
+    ctx.fillStyle = "rgba(59, 153, 252, 0.4)";
+    ctx.font = "8px monospace";
+    ctx.fillText("0 dB", 4, halfHeight - 3);
 
     if (visibleSamples.length > 0) {
       const numSamples = visibleSamples.length;
@@ -1263,7 +1267,7 @@
       ctx.beginPath();
       for (let i = 0; i < numSamples; i++) {
         const x = i * step;
-        const y = halfHeight - visibleSamples[i] * (waveHeight * 0.44);
+        const y = halfHeight - visibleSamples[i] * maxAmplitude;
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       }
@@ -1281,7 +1285,7 @@
         ctx.fillStyle = "#8fc4fa";
         for (let i = 0; i < numSamples; i++) {
           const x = i * step;
-          const y = halfHeight - visibleSamples[i] * (waveHeight * 0.44);
+          const y = halfHeight - visibleSamples[i] * maxAmplitude;
           ctx.fillRect(x - nodeSize / 2, y - nodeSize / 2, nodeSize, nodeSize);
           if (nodeSize >= 4) {
             ctx.strokeStyle = "#0c151e";
@@ -1660,116 +1664,7 @@
         </div>
       </div>
 
-      <!-- Waveforms (flex-grow vertically) -->
-      <div class="waveforms-flexbox">
-        <!-- Overview Waveform (Alternate File) -->
-        <div class="waveform-block block-alt-overview">
-          <div class="waveform-label-row">
-            <span class="waveform-label">WAVEFORM OVERVIEW (ALTERNATE FILE)</span>
-            {#if alternateTrack}
-              <span class="overview-desc-tag" class:active={activeTrackMode === "alternate"}>
-                Double-click to activate
-              </span>
-            {/if}
-          </div>
-          <!-- svelte-ignore a11y-click-events-have-key-events -->
-          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-          <canvas 
-            bind:this={altOverviewCanvas} 
-            on:mousedown={(e) => handleOverviewMouseDown(e, "alternate")}
-            on:dblclick={() => toggleActiveTrack("alternate")}
-            class="overview-canvas"
-          ></canvas>
-        </div>
-
-        <!-- Overview Waveform (Main File) -->
-        <div class="waveform-block block-main-overview">
-          <div class="waveform-label-row">
-            <span class="waveform-label">WAVEFORM OVERVIEW (MAIN FILE)</span>
-            {#if mainTrack}
-              <span class="overview-desc-tag" class:active={activeTrackMode === "main"}>
-                Double-click to activate
-              </span>
-            {/if}
-          </div>
-          <!-- svelte-ignore a11y-click-events-have-key-events -->
-          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-          <canvas 
-            bind:this={overviewCanvas} 
-            on:mousedown={(e) => handleOverviewMouseDown(e, "main")}
-            on:dblclick={() => toggleActiveTrack("main")}
-            class="overview-canvas"
-          ></canvas>
-        </div>
-
-        <!-- Main Waveform Box (Flex-grow to occupy rest of center height) -->
-        <div class="waveform-block block-main-waveform">
-          <div class="waveform-label">MAIN WAVEFORM DISPLAY (ZOOMED & SCROLLING)</div>
-          <!-- svelte-ignore a11y-click-events-have-key-events -->
-          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-          <canvas 
-            bind:this={mainCanvas} 
-            on:mousedown={handleMainMouseDown}
-            on:wheel|passive={handleMainWheel}
-            class="main-canvas"
-          ></canvas>
-        </div>
-      </div>
-
-      <!-- Bottom controls bar (Transport & Loop controls) -->
-      <div class="controls-row">
-        <!-- Transport controls -->
-        <div class="control-group">
-          <div class="group-label">PLAYBACK</div>
-          <div class="btn-row">
-            <button class="control-btn" on:click={handleRewind} title="Rewind to start">⏮</button>
-            <button class="control-btn" on:click={jumpToPrevMarker} title="Previous Marker">⏪</button>
-            <button class="control-btn play-btn" on:click={handlePlayPause}>
-              {isPlaying ? "⏸ PAUSE" : "▶ PLAY"}
-            </button>
-            <button class="control-btn" on:click={handleStop} title="Stop">⏹</button>
-            <button class="control-btn" on:click={jumpToNextMarker} title="Next Marker">⏩</button>
-          </div>
-        </div>
-
-        <!-- Looping, markers, and Zoom controls -->
-        <div class="control-group">
-          <div class="group-label">MARKERS / LOOPING / ZOOM (Dbl-click slider resets)</div>
-          <div class="loop-zoom-grid">
-            <div class="btn-row">
-              <button class="control-btn accent-btn" on:click={addMarker}>+ Add Marker</button>
-              <button class="control-btn disabled-btn" title="Loop start (Milestone 5)">[ Loop</button>
-              <button class="control-btn disabled-btn" title="Loop end (Milestone 5)">Loop ]</button>
-            </div>
-            <div class="zoom-slider-group">
-              <span class="control-text-label">ZOOM</span>
-              <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-              <div class="zoom-track-wrapper">
-                <input 
-                  type="range" 
-                  min="0" 
-                  max="1000" 
-                  step="1" 
-                  bind:value={zoomSliderVal} 
-                  on:dblclick={() => { setZoom(target15sZoom); updateVisiblePeaks(); }}
-                  on:input={handleZoomSliderInput}
-                  class="zoom-slider" 
-                />
-                {#if duration > 15}
-                  <div 
-                    class="zoom-snap-notch" 
-                    style="left: {(zoomToSliderVal(target15sZoom) / 1000) * 100}%;" 
-                    title="15s Rehearsal View"
-                  ></div>
-                {/if}
-              </div>
-              <span class="zoom-value-label">{zoom.toFixed(0)}x</span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Lower Rehearsal Deck (Flex-grow vertical inspection area) -->
+      <!-- Upper Rehearsal Deck (Tabbed inspection area in remaining space) -->
       <div class="rehearsal-bottom-deck">
         <div class="deck-tabs-header">
           <button 
@@ -1892,6 +1787,115 @@
               {/if}
             </div>
           {/if}
+        </div>
+      </div>
+
+      <!-- Waveforms (Overview Alt 64px, Overview Main 64px, Main Waveform 256px) -->
+      <div class="waveforms-flexbox">
+        <!-- Overview Waveform (Alternate File) -->
+        <div class="waveform-block block-alt-overview">
+          <div class="waveform-label-row">
+            <span class="waveform-label">WAVEFORM OVERVIEW (ALTERNATE FILE)</span>
+            {#if alternateTrack}
+              <span class="overview-desc-tag" class:active={activeTrackMode === "alternate"}>
+                Double-click to activate
+              </span>
+            {/if}
+          </div>
+          <!-- svelte-ignore a11y-click-events-have-key-events -->
+          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+          <canvas 
+            bind:this={altOverviewCanvas} 
+            on:mousedown={(e) => handleOverviewMouseDown(e, "alternate")}
+            on:dblclick={() => toggleActiveTrack("alternate")}
+            class="overview-canvas"
+          ></canvas>
+        </div>
+
+        <!-- Overview Waveform (Main File) -->
+        <div class="waveform-block block-main-overview">
+          <div class="waveform-label-row">
+            <span class="waveform-label">WAVEFORM OVERVIEW (MAIN FILE)</span>
+            {#if mainTrack}
+              <span class="overview-desc-tag" class:active={activeTrackMode === "main"}>
+                Double-click to activate
+              </span>
+            {/if}
+          </div>
+          <!-- svelte-ignore a11y-click-events-have-key-events -->
+          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+          <canvas 
+            bind:this={overviewCanvas} 
+            on:mousedown={(e) => handleOverviewMouseDown(e, "main")}
+            on:dblclick={() => toggleActiveTrack("main")}
+            class="overview-canvas"
+          ></canvas>
+        </div>
+
+        <!-- Main Waveform Box (256px height) -->
+        <div class="waveform-block block-main-waveform">
+          <div class="waveform-label">MAIN WAVEFORM DISPLAY (ZOOMED & SCROLLING)</div>
+          <!-- svelte-ignore a11y-click-events-have-key-events -->
+          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+          <canvas 
+            bind:this={mainCanvas} 
+            on:mousedown={handleMainMouseDown}
+            on:wheel|passive={handleMainWheel}
+            class="main-canvas"
+          ></canvas>
+        </div>
+      </div>
+
+      <!-- Bottom controls bar (Transport & Loop controls) -->
+      <div class="controls-row">
+        <!-- Transport controls -->
+        <div class="control-group">
+          <div class="group-label">PLAYBACK</div>
+          <div class="btn-row">
+            <button class="control-btn" on:click={handleRewind} title="Rewind to start">⏮</button>
+            <button class="control-btn" on:click={jumpToPrevMarker} title="Previous Marker">⏪</button>
+            <button class="control-btn play-btn" on:click={handlePlayPause}>
+              {isPlaying ? "⏸ PAUSE" : "▶ PLAY"}
+            </button>
+            <button class="control-btn" on:click={handleStop} title="Stop">⏹</button>
+            <button class="control-btn" on:click={jumpToNextMarker} title="Next Marker">⏩</button>
+          </div>
+        </div>
+
+        <!-- Looping, markers, and Zoom controls -->
+        <div class="control-group">
+          <div class="group-label">MARKERS / LOOPING / ZOOM (Dbl-click slider resets)</div>
+          <div class="loop-zoom-grid">
+            <div class="btn-row">
+              <button class="control-btn accent-btn" on:click={addMarker}>+ Add Marker</button>
+              <button class="control-btn disabled-btn" title="Loop start (Milestone 5)">[ Loop</button>
+              <button class="control-btn disabled-btn" title="Loop end (Milestone 5)">Loop ]</button>
+            </div>
+            <div class="zoom-slider-group">
+              <span class="control-text-label">ZOOM</span>
+              <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+              <div class="zoom-track-wrapper">
+                <input 
+                  type="range" 
+                  min="0" 
+                  max="1000" 
+                  step="1" 
+                  bind:value={zoomSliderVal} 
+                  on:dblclick={() => { setZoom(target15sZoom); updateVisiblePeaks(); }}
+                  on:input={handleZoomSliderInput}
+                  class="zoom-slider" 
+                />
+                {#if duration > 15}
+                  <div 
+                    class="zoom-snap-notch" 
+                    style="left: {(zoomToSliderVal(target15sZoom) / 1000) * 100}%;" 
+                    title="15s Rehearsal View"
+                  ></div>
+                {/if}
+              </div>
+              <span class="zoom-value-label">{zoom.toFixed(0)}x</span>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -2657,9 +2661,9 @@
 
   .block-main-waveform {
     flex-shrink: 0;
-    height: 145px;
-    min-height: 145px;
-    max-height: 145px;
+    height: 256px;
+    min-height: 256px;
+    max-height: 256px;
     background-color: #122a3a; 
     border: 1px solid #1b384d;
     border-radius: 4px;
