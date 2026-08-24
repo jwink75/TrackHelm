@@ -16,11 +16,6 @@
   let sampleRate = 44100;
 
   // Track Models
-  interface ChannelPeaks {
-    min: number[];
-    max: number[];
-  }
-
   interface Track {
     name: string;
     path: string;
@@ -28,7 +23,6 @@
     sampleRate: number;
     channels: number;
     overviewPeaks: number[];
-    channelPeaks: ChannelPeaks[];
   }
 
   let mainTrack: Track | null = null;
@@ -52,14 +46,12 @@
   let zoom = 1.0;                   // range 1.0 - 800.0
   $: target15sZoom = duration > 0 ? Math.max(1.0, duration / 15.0) : 1.0;
 
-  // Zoom View State (Stereo Channels)
-  interface VisibleChannelData {
+  // Zoom View State (Continuous Single Line)
+  interface VisibleWaveformData {
     isSampleLevel: boolean;
-    rawSamples: number[];
-    min: number[];
-    max: number[];
+    data: number[];
   }
-  let visibleChannels: VisibleChannelData[] = [];
+  let visibleWaveform: VisibleWaveformData = { isSampleLevel: false, data: [] };
 
   // Markers
   interface Marker {
@@ -263,8 +255,7 @@
         duration: metadata.duration_seconds,
         sampleRate: metadata.sample_rate,
         channels: metadata.channels,
-        overviewPeaks: metadata.overview_peaks || [],
-        channelPeaks: metadata.channel_peaks || []
+        overviewPeaks: metadata.overview_peaks || []
       };
 
       if (target === "main") {
@@ -519,11 +510,14 @@
     return null;
   }
 
-  // Dynamic Peak Slice fetcher (Stereo Channels)
+  // Dynamic Peak Slice fetcher (Continuous Mono Single Line)
   async function updateVisiblePeaks() {
     const track = getActiveTrack();
-    if (!track || !mainCanvas) {
-      visibleChannels = [];
+    if (!track || !mainCanvas || duration === 0) {
+      visibleWaveform = { isSampleLevel: false, data: [] };
+      drawMainWaveform();
+      drawOverviewWaveform();
+      drawAltOverviewWaveform();
       return;
     }
 
@@ -538,78 +532,21 @@
     const startFrame = Math.floor(startProgress * totalFrames);
     const endFrame = Math.floor(endProgress * totalFrames);
 
-    const visibleFrames = (endProgress - startProgress) * totalFrames;
-    const isSampleLevel = visibleFrames < 1500;
-
-    if (!isSampleLevel) {
-      // Slicing locally from track.channelPeaks
-      const newChannels: VisibleChannelData[] = [];
-      for (let c = 0; c < track.channelPeaks.length; c++) {
-        const cPeaks = track.channelPeaks[c];
-        const peakLen = cPeaks.min.length;
-        const startIdx = Math.floor(startProgress * peakLen);
-        const endIdx = Math.floor(endProgress * peakLen);
-        
-        const minSlice = cPeaks.min.slice(startIdx, endIdx);
-        const maxSlice = cPeaks.max.slice(startIdx, endIdx);
-
-        if (minSlice.length <= numPoints) {
-          newChannels.push({
-            isSampleLevel: false,
-            rawSamples: [],
-            min: minSlice,
-            max: maxSlice
-          });
-        } else {
-          const downsampledMin: number[] = [];
-          const downsampledMax: number[] = [];
-          const chunkSize = minSlice.length / numPoints;
-          for (let i = 0; i < numPoints; i++) {
-            const chunkStart = Math.floor(i * chunkSize);
-            const chunkEnd = Math.min(Math.floor((i + 1) * chunkSize), minSlice.length);
-            if (chunkStart >= chunkEnd) break;
-            let minVal = 0.0;
-            let maxVal = 0.0;
-            for (let j = chunkStart; j < chunkEnd; j++) {
-              if (minSlice[j] < minVal) minVal = minSlice[j];
-              if (maxSlice[j] > maxVal) maxVal = maxSlice[j];
-            }
-            downsampledMin.push(minVal);
-            downsampledMax.push(maxVal);
-          }
-          newChannels.push({
-            isSampleLevel: false,
-            rawSamples: [],
-            min: downsampledMin,
-            max: downsampledMax
-          });
-        }
-      }
-      visibleChannels = newChannels;
+    try {
+      const result: any = await invoke("get_waveform_slice", {
+        startFrame,
+        endFrame,
+        numPoints
+      });
+      visibleWaveform = {
+        isSampleLevel: result.is_sample_level || false,
+        data: result.data || []
+      };
       drawMainWaveform();
       drawOverviewWaveform();
       drawAltOverviewWaveform();
-    } else {
-      // Zoomed in extremely deep: fetch raw samples from backend
-      try {
-        const result: any = await invoke("get_waveform_slice", {
-          startFrame: startFrame,
-          endFrame: endFrame,
-          numPoints: numPoints
-        });
-        const channelsData: number[][] = result.channels || [];
-        visibleChannels = channelsData.map(samples => ({
-          isSampleLevel: true,
-          rawSamples: samples,
-          min: [],
-          max: []
-        }));
-        drawMainWaveform();
-        drawOverviewWaveform();
-        drawAltOverviewWaveform();
-      } catch (err) {
-        console.error("Failed to fetch raw samples", err);
-      }
+    } catch (err) {
+      console.error("Failed to fetch waveform slice", err);
     }
   }
 
@@ -828,15 +765,6 @@
     }
   }
 
-  function getActivePeaks(): number[] {
-    if (activeTrackMode === "main" && mainTrack) {
-      return mainTrack.peaks;
-    } else if (activeTrackMode === "alternate" && alternateTrack) {
-      return alternateTrack.peaks;
-    }
-    return [];
-  }
-
   function setupCanvasResolution(canvas: HTMLCanvasElement, rect: DOMRect) {
     const dpr = window.devicePixelRatio || 1;
     const canvasWidth = Math.floor(rect.width * dpr);
@@ -865,7 +793,7 @@
     }
   }
 
-  // Draw Main Waveform (Split Stereo, Dynamic Time Ruler, Oscillating Curve)
+  // Draw Main Waveform (Full Height Mono, Dynamic Time Ruler, Continuous Single Line)
   function drawMainWaveform() {
     if (!mainCanvas) return;
     const ctx = mainCanvas.getContext("2d");
@@ -887,7 +815,7 @@
     ctx.fillRect(0, 0, width, height);
 
     const track = getActiveTrack();
-    if (!track || visibleChannels.length === 0 || duration === 0) {
+    if (!track || visibleWaveform.data.length === 0 || duration === 0) {
       ctx.fillStyle = "#888888";
       ctx.font = "13px sans-serif";
       ctx.fillText("No active track loaded (Drag & Drop file to load)", width / 2 - 140, height / 2 + 4);
@@ -975,86 +903,69 @@
       ctx.fillText(label, x + 4, rulerHeight - 7);
     }
 
-    // 4. Split Stereo Channels Waveform
+    // 4. Mono Continuous Single Line Waveform
     const waveTop = rulerHeight;
     const waveHeight = height - rulerHeight;
-    const numChannels = visibleChannels.length;
-    const channelHeight = waveHeight / numChannels;
+    const halfHeight = waveTop + waveHeight / 2;
 
-    for (let c = 0; c < numChannels; c++) {
-      const chData = visibleChannels[c];
-      const chTop = waveTop + c * channelHeight;
-      const chCenter = chTop + channelHeight / 2;
+    // Zero-Crossing Baseline
+    ctx.strokeStyle = "rgba(59, 153, 252, 0.25)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, halfHeight);
+    ctx.lineTo(width, halfHeight);
+    ctx.stroke();
 
-      // Channel boundary line
-      if (c > 0) {
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(0, chTop);
-        ctx.lineTo(width, chTop);
-        ctx.stroke();
-      }
+    if (visibleWaveform.isSampleLevel && visibleWaveform.data.length > 0) {
+      // High Zoom / Sample Level: Single continuous oscillating line
+      const samples = visibleWaveform.data;
+      const step = width / (samples.length - 1 || 1);
 
-      // Zero-Crossing Baseline
-      ctx.strokeStyle = "rgba(59, 153, 252, 0.25)";
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = "#3b99fc";
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.moveTo(0, chCenter);
-      ctx.lineTo(width, chCenter);
+      for (let i = 0; i < samples.length; i++) {
+        const x = i * step;
+        const y = halfHeight - samples[i] * (waveHeight * 0.44);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
       ctx.stroke();
 
-      // Channel Badge (L / R)
-      if (numChannels > 1) {
-        ctx.fillStyle = "#4a6c87";
-        ctx.font = "bold 9px sans-serif";
-        ctx.fillText(c === 0 ? "L" : "R", 8, chTop + 14);
-      }
-
-      // Signal Plotting
-      if (chData.isSampleLevel && chData.rawSamples.length > 0) {
-        // Sample Level: Smooth continuous oscillating signal line
-        const samples = chData.rawSamples;
-        const step = width / (samples.length - 1 || 1);
-
-        ctx.strokeStyle = "#3b99fc";
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        for (let i = 0; i < samples.length; i++) {
-          const x = i * step;
-          const y = chCenter - samples[i] * (channelHeight * 0.44);
-          if (i === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-        }
-        ctx.stroke();
-
-        // Sample Node Dots
+      // Sample Node Dots if highly zoomed
+      if (samples.length < 250) {
         ctx.fillStyle = "#8fc4fa";
         for (let i = 0; i < samples.length; i++) {
           const x = i * step;
-          const y = chCenter - samples[i] * (channelHeight * 0.44);
+          const y = halfHeight - samples[i] * (waveHeight * 0.44);
           ctx.fillRect(x - 2, y - 2, 4, 4);
         }
-      } else if (chData.min.length > 0) {
-        // True Bipolar Min/Max Vertical Envelope Bars
-        const step = width / chData.min.length;
-        const gap = step > 4 ? 1.5 : (step > 2 ? 1 : 0);
-        const barWidth = Math.max(1, step - gap);
+      }
+    } else if (visibleWaveform.data.length > 0) {
+      // Standard / Zoomed Out: Continuous line zig-zagging min/max per pixel
+      const data = visibleWaveform.data;
+      const numCols = data.length / 2;
+      const step = width / (numCols - 1 || 1);
 
-        ctx.fillStyle = "#3b99fc";
+      ctx.strokeStyle = "#3b99fc";
+      ctx.lineWidth = 1.0;
+      ctx.beginPath();
+      for (let i = 0; i < numCols; i++) {
+        const minVal = data[i * 2];
+        const maxVal = data[i * 2 + 1];
+        const x = i * step;
+        const yTop = halfHeight - maxVal * (waveHeight * 0.44);
+        const yBottom = halfHeight - minVal * (waveHeight * 0.44);
 
-        for (let i = 0; i < chData.min.length; i++) {
-          const minVal = chData.min[i]; // Negative or 0
-          const maxVal = chData.max[i]; // Positive or 0
-          const x = i * step;
-
-          const yTop = chCenter - maxVal * (channelHeight * 0.44);
-          const yBottom = chCenter - minVal * (channelHeight * 0.44);
-          const barH = Math.max(1, yBottom - yTop);
-
-          ctx.fillRect(x, yTop, barWidth, barH);
+        if (i === 0) {
+          ctx.moveTo(x, yTop);
+          ctx.lineTo(x, yBottom);
+        } else {
+          ctx.lineTo(x, yTop);
+          ctx.lineTo(x, yBottom);
         }
       }
+      ctx.stroke();
     }
 
     // 5. Markers

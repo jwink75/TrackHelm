@@ -11,24 +11,18 @@ struct AppState {
     active_audio: Mutex<Option<Arc<DecodedAudio>>>,
 }
 
-#[derive(serde::Serialize, Clone)]
-struct ChannelPeaks {
-    min: Vec<f32>,
-    max: Vec<f32>,
-}
-
 #[derive(serde::Serialize)]
 struct TrackMetadata {
     duration_seconds: f64,
     sample_rate: u32,
     channels: usize,
     overview_peaks: Vec<f32>,
-    channel_peaks: Vec<ChannelPeaks>,
 }
 
 #[derive(serde::Serialize)]
 struct WaveformSliceResult {
-    channels: Vec<Vec<f32>>,
+    is_sample_level: bool,
+    data: Vec<f32>,
 }
 
 #[derive(serde::Serialize)]
@@ -247,44 +241,55 @@ fn get_waveform_slice(
     let end = std::cmp::min(end_frame, total_frames);
     
     if start >= end {
-        return Ok(WaveformSliceResult { channels: Vec::new() });
+        return Ok(WaveformSliceResult { is_sample_level: false, data: Vec::new() });
     }
 
     let slice_len = end - start;
-    let mut channel_results = Vec::with_capacity(channels);
 
-    for c in 0..channels {
-        let channel_data = &audio.channel_samples[c];
-        let mut result = Vec::new();
-
-        if slice_len <= num_points {
-            // Sample level: return raw values
-            for i in start..end {
-                result.push(channel_data[i]);
+    if slice_len <= num_points {
+        // Sample level: return raw averaged values (L+R)/2
+        let mut data = Vec::with_capacity(slice_len);
+        for i in start..end {
+            let mut sum = 0.0f32;
+            for c in 0..channels {
+                sum += audio.channel_samples[c][i];
             }
-        } else {
-            // Downsample slice
-            let chunk_size = slice_len / num_points;
-            for i in 0..num_points {
-                let chunk_start = start + i * chunk_size;
-                let chunk_end = std::cmp::min(chunk_start + chunk_size, end);
-                if chunk_start >= chunk_end {
-                    break;
-                }
-                let mut peak_val: f32 = 0.0;
-                for j in chunk_start..chunk_end {
-                    let val = channel_data[j];
-                    if val.abs() > peak_val.abs() {
-                        peak_val = val;
-                    }
-                }
-                result.push(peak_val);
-            }
+            data.push(sum / channels as f32);
         }
-        channel_results.push(result);
-    }
+        Ok(WaveformSliceResult { is_sample_level: true, data })
+    } else {
+        // Downsample: return alternating (min, max) pairs for each pixel column
+        let chunk_size = slice_len / num_points;
+        let mut data = Vec::with_capacity(num_points * 2);
 
-    Ok(WaveformSliceResult { channels: channel_results })
+        for i in 0..num_points {
+            let chunk_start = start + i * chunk_size;
+            let chunk_end = std::cmp::min(chunk_start + chunk_size, end);
+            if chunk_start >= chunk_end {
+                break;
+            }
+            let mut min_val = 0.0f32;
+            let mut max_val = 0.0f32;
+
+            for j in chunk_start..chunk_end {
+                let mut sum = 0.0f32;
+                for c in 0..channels {
+                    sum += audio.channel_samples[c][j];
+                }
+                let val = sum / channels as f32;
+
+                if val < min_val {
+                    min_val = val;
+                }
+                if val > max_val {
+                    max_val = val;
+                }
+            }
+            data.push(min_val);
+            data.push(max_val);
+        }
+        Ok(WaveformSliceResult { is_sample_level: false, data })
+    }
 }
 
 #[tauri::command]
@@ -295,7 +300,7 @@ fn load_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata,
     let sample_rate = audio.sample_rate;
     let channels = audio.channels;
 
-    let (overview_peaks, channel_peaks) = compute_peaks(&audio, 8000);
+    let overview_peaks = compute_peaks(&audio, 1000);
     let audio_arc = Arc::new(audio);
 
     let mut active_audio = state.active_audio.lock().unwrap();
@@ -308,7 +313,6 @@ fn load_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata,
         sample_rate,
         channels,
         overview_peaks,
-        channel_peaks,
     })
 }
 
@@ -378,55 +382,35 @@ fn get_playback_status(state: State<'_, AppState>) -> PlaybackStatus {
     }
 }
 
-fn compute_peaks(audio: &DecodedAudio, num_peaks: usize) -> (Vec<f32>, Vec<ChannelPeaks>) {
+fn compute_peaks(audio: &DecodedAudio, num_peaks: usize) -> Vec<f32> {
     let channels = audio.channels;
     let len = audio.channel_samples[0].len();
     let chunk_size = (len / num_peaks).max(1);
 
     let mut overview_peaks = Vec::with_capacity(num_peaks);
-    let mut channel_peaks = Vec::with_capacity(channels);
-    for _ in 0..channels {
-        channel_peaks.push(ChannelPeaks {
-            min: Vec::with_capacity(num_peaks),
-            max: Vec::with_capacity(num_peaks),
-        });
-    }
 
     for i in 0..num_peaks {
         let start = i * chunk_size;
         let end = std::cmp::min(start + chunk_size, len);
         if start >= len {
             overview_peaks.push(0.0);
-            for c in 0..channels {
-                channel_peaks[c].min.push(0.0);
-                channel_peaks[c].max.push(0.0);
-            }
             continue;
         }
 
         let mut mono_max = 0.0f32;
-        for c in 0..channels {
-            let mut c_min = 0.0f32;
-            let mut c_max = 0.0f32;
-            for sample_idx in start..end {
-                let val = audio.channel_samples[c][sample_idx];
-                if val < c_min {
-                    c_min = val;
-                }
-                if val > c_max {
-                    c_max = val;
-                }
-                let abs_val = val.abs();
-                if abs_val > mono_max {
-                    mono_max = abs_val;
-                }
+        for j in start..end {
+            let mut sum = 0.0f32;
+            for c in 0..channels {
+                sum += audio.channel_samples[c][j];
             }
-            channel_peaks[c].min.push(c_min);
-            channel_peaks[c].max.push(c_max);
+            let val = (sum / channels as f32).abs();
+            if val > mono_max {
+                mono_max = val;
+            }
         }
         overview_peaks.push(mono_max);
     }
-    (overview_peaks, channel_peaks)
+    overview_peaks
 }
 
 fn main() {
