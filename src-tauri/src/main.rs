@@ -5,10 +5,13 @@ use std::time::Duration;
 use tauri::State;
 use trackhelm_engine::{Command, CommandBus, SharedEngineState, DecodedAudio, decode_file};
 
+use std::collections::HashMap;
+
 struct AppState {
     command_bus: CommandBus,
     shared_engine_state: Arc<SharedEngineState>,
     active_audio: Mutex<Option<Arc<DecodedAudio>>>,
+    track_cache: Mutex<HashMap<String, Arc<DecodedAudio>>>,
 }
 
 #[derive(serde::Serialize)]
@@ -302,16 +305,42 @@ fn get_raw_samples(
 }
 
 #[tauri::command]
-fn load_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata, String> {
-    println!("Loading track: {}", path);
-    let audio = decode_file(&path)?;
-    let duration_seconds = audio.duration_seconds;
-    let sample_rate = audio.sample_rate;
-    let channels = audio.channels;
+async fn preload_track(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    {
+        let cache = state.track_cache.lock().unwrap();
+        if cache.contains_key(&path) {
+            return Ok(());
+        }
+    }
+    let p = path.clone();
+    let decoded_res = tauri::async_runtime::spawn_blocking(move || decode_file(&p)).await;
+    if let Ok(Ok(audio)) = decoded_res {
+        let mut cache = state.track_cache.lock().unwrap();
+        cache.insert(path, Arc::new(audio));
+    }
+    Ok(())
+}
 
-    let overview_peaks = compute_peaks(&audio, 1000);
-    let pyramid_peaks = compute_pyramid_peaks(&audio, 32768);
-    let audio_arc = Arc::new(audio);
+#[tauri::command]
+fn load_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata, String> {
+    let audio_arc = {
+        let mut cache = state.track_cache.lock().unwrap();
+        if let Some(cached) = cache.get(&path) {
+            cached.clone()
+        } else {
+            let audio = decode_file(&path)?;
+            let arc = Arc::new(audio);
+            cache.insert(path.clone(), arc.clone());
+            arc
+        }
+    };
+
+    let duration_seconds = audio_arc.duration_seconds;
+    let sample_rate = audio_arc.sample_rate;
+    let channels = audio_arc.channels;
+
+    let overview_peaks = compute_peaks(&audio_arc, 1000);
+    let pyramid_peaks = compute_pyramid_peaks(&audio_arc, 32768);
 
     let mut active_audio = state.active_audio.lock().unwrap();
     *active_audio = Some(audio_arc.clone());
@@ -477,9 +506,11 @@ fn main() {
             command_bus,
             shared_engine_state: shared_state,
             active_audio: Mutex::new(None),
+            track_cache: Mutex::new(HashMap::new()),
         })
         .invoke_handler(tauri::generate_handler![
             load_track,
+            preload_track,
             play,
             pause,
             stop,

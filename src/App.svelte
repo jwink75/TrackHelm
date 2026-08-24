@@ -63,14 +63,27 @@
   let visibleSamples: number[] = [];
   let visibleSampleFrames = 0;
 
-  // Markers
+  // Markers & Regions
   interface Marker {
     id: number;
     name: string;
     time: number;
+    color?: string;
   }
   let markers: Marker[] = [];
   let nextMarkerId = 1;
+
+  const MARKER_COLORS = [
+    "#ff9500", // Amber / Orange
+    "#3b99fc", // Blue / Cyan
+    "#34c759", // Green
+    "#af52de", // Purple
+    "#ff3b30", // Red
+    "#ffd60a", // Yellow
+  ];
+
+  let editingMarkerId: number | null = null;
+  let editingMarkerName = "";
 
   // OS Folder Browser State
   let currentPath = "";
@@ -511,9 +524,12 @@
     }
   }
 
-  // Handle Multi-select File Clicks
+  // Handle Multi-select File Clicks & Background Prefetching
   function handleFileClick(e: MouseEvent, entry: any) {
     if (entry.is_dir) return;
+
+    // Trigger instant background pre-decoding in Rust
+    invoke("preload_track", { path: entry.path }).catch(() => {});
 
     if (e.metaKey || e.ctrlKey) {
       // Toggle selection
@@ -965,16 +981,50 @@
   // Markers
   function addMarker() {
     if (duration === 0) return;
+    const colorIndex = markers.length % MARKER_COLORS.length;
     const newMarker: Marker = {
       id: nextMarkerId++,
       name: `Marker ${nextMarkerId - 1}`,
-      time: currentTime
+      time: currentTime,
+      color: MARKER_COLORS[colorIndex]
     };
     markers = [...markers, newMarker].sort((a, b) => a.time - b.time);
+    saveCurrentTrackProfile(filePath);
+    drawMainWaveform();
   }
 
   function deleteMarker(id: number) {
     markers = markers.filter(m => m.id !== id);
+    saveCurrentTrackProfile(filePath);
+    drawMainWaveform();
+  }
+
+  function cycleMarkerColor(marker: Marker) {
+    const currentIndex = MARKER_COLORS.indexOf(marker.color || "#ff9500");
+    const nextIndex = (currentIndex + 1) % MARKER_COLORS.length;
+    marker.color = MARKER_COLORS[nextIndex];
+    markers = [...markers];
+    saveCurrentTrackProfile(filePath);
+    drawMainWaveform();
+  }
+
+  function startRenameMarker(marker: Marker) {
+    editingMarkerId = marker.id;
+    editingMarkerName = marker.name;
+  }
+
+  function saveRenameMarker(marker: Marker) {
+    if (editingMarkerId === marker.id) {
+      marker.name = editingMarkerName.trim() || marker.name;
+      editingMarkerId = null;
+      markers = [...markers];
+      saveCurrentTrackProfile(filePath);
+      drawMainWaveform();
+    }
+  }
+
+  function cancelRenameMarker() {
+    editingMarkerId = null;
   }
 
   function seekToMarker(time: number) {
@@ -1213,19 +1263,33 @@
       }
     }
 
-    // 5. Markers
+    // 5. Markers & Regions
     for (const marker of markers) {
       const markerPct = marker.time / duration;
       if (markerPct >= startProgress && markerPct <= endProgress) {
         const markerX = ((markerPct - startProgress) / windowWidth) * width;
-        ctx.strokeStyle = "#ff9500"; 
-        ctx.lineWidth = 1;
+        const color = marker.color || "#ff9500";
+
+        // Vertical Marker Line
+        ctx.strokeStyle = color; 
+        ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.moveTo(markerX, rulerHeight);
         ctx.lineTo(markerX, height);
         ctx.stroke();
         
-        ctx.fillStyle = "#ff9500";
+        // Ruler Top Flag
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(markerX, 0);
+        ctx.lineTo(markerX + 8, 0);
+        ctx.lineTo(markerX + 8, rulerHeight - 3);
+        ctx.lineTo(markerX, rulerHeight);
+        ctx.closePath();
+        ctx.fill();
+
+        // Label Badge
+        ctx.fillStyle = color;
         ctx.font = "bold 9px sans-serif";
         ctx.fillText(marker.name, markerX + 4, rulerHeight + 12);
       }
@@ -1748,13 +1812,58 @@
             <div class="placeholder-text">No markers set. Click "+ Add Marker" during playback.</div>
           {:else}
             {#each markers as marker}
-              <div class="marker-item">
+              <div class="marker-item" style="border-left: 3px solid {marker.color || '#ff9500'};">
+                <!-- Color Dot Switcher -->
                 <!-- svelte-ignore a11y-click-events-have-key-events -->
                 <!-- svelte-ignore a11y-no-static-element-interactions -->
-                <span class="marker-name-btn" on:click={() => seekToMarker(marker.time)}>
-                  📍 {marker.name} ({formatTime(marker.time)})
-                </span>
-                <button class="delete-marker-btn" on:click={() => deleteMarker(marker.id)}>×</button>
+                <span 
+                  class="marker-color-dot" 
+                  style="background-color: {marker.color || '#ff9500'};"
+                  title="Click to cycle color"
+                  on:click={() => cycleMarkerColor(marker)}
+                ></span>
+
+                {#if editingMarkerId === marker.id}
+                  <input
+                    type="text"
+                    class="marker-rename-input"
+                    bind:value={editingMarkerName}
+                    on:keydown={(e) => {
+                      if (e.key === "Enter") saveRenameMarker(marker);
+                      if (e.key === "Escape") cancelRenameMarker();
+                    }}
+                    on:blur={() => saveRenameMarker(marker)}
+                    autofocus
+                  />
+                {:else}
+                  <!-- svelte-ignore a11y-click-events-have-key-events -->
+                  <!-- svelte-ignore a11y-no-static-element-interactions -->
+                  <span 
+                    class="marker-name-btn" 
+                    on:click={() => seekToMarker(marker.time)}
+                    on:dblclick={() => startRenameMarker(marker)}
+                    title="Click to seek • Double-click to rename"
+                  >
+                    {marker.name} <span class="marker-time-tag">({formatTime(marker.time)})</span>
+                  </span>
+                {/if}
+
+                <div class="marker-item-actions">
+                  <button 
+                    class="marker-action-btn" 
+                    title="Rename marker" 
+                    on:click={() => startRenameMarker(marker)}
+                  >
+                    ✏️
+                  </button>
+                  <button 
+                    class="delete-marker-btn" 
+                    title="Delete marker"
+                    on:click={() => deleteMarker(marker.id)}
+                  >
+                    ×
+                  </button>
+                </div>
               </div>
             {/each}
           {/if}
@@ -1777,6 +1886,7 @@
           >
             <span class="knob-label">Threshold</span>
             <div class="knob-circle">
+              <div class="knob-zero-tick"></div>
               <div class="knob-marker" style="transform: rotate({getKnobRotation(compressorThreshold, -60, 0)}deg)"></div>
             </div>
             <span class="knob-value">{compressorThreshold} dB</span>
@@ -1792,6 +1902,7 @@
           >
             <span class="knob-label">Ratio</span>
             <div class="knob-circle">
+              <div class="knob-zero-tick"></div>
               <div class="knob-marker" style="transform: rotate({getKnobRotation(compressorRatio, 1.0, 20.0)}deg)"></div>
             </div>
             <span class="knob-value">{compressorRatio.toFixed(1)}:1</span>
@@ -1807,6 +1918,7 @@
           >
             <span class="knob-label">Makeup</span>
             <div class="knob-circle">
+              <div class="knob-zero-tick"></div>
               <div class="knob-marker" style="transform: rotate({getKnobRotation(compressorMakeup, 0, 24)}deg)"></div>
             </div>
             <span class="knob-value">+{compressorMakeup.toFixed(1)} dB</span>
@@ -1825,6 +1937,7 @@
           >
             <span class="knob-label">Bass</span>
             <div class="knob-circle">
+              <div class="knob-zero-tick"></div>
               <div class="knob-marker" style="transform: rotate({getKnobRotation(eqBass, -12, 12)}deg)"></div>
             </div>
             <span class="knob-value">{eqBass > 0 ? "+" : ""}{eqBass.toFixed(1)} dB</span>
@@ -1840,6 +1953,7 @@
           >
             <span class="knob-label">Treble</span>
             <div class="knob-circle">
+              <div class="knob-zero-tick"></div>
               <div class="knob-marker" style="transform: rotate({getKnobRotation(eqTreble, -12, 12)}deg)"></div>
             </div>
             <span class="knob-value">{eqTreble > 0 ? "+" : ""}{eqTreble.toFixed(1)} dB</span>
@@ -1858,6 +1972,7 @@
           >
             <span class="knob-label">Speed</span>
             <div class="knob-circle">
+              <div class="knob-zero-tick"></div>
               <div class="knob-marker" style="transform: rotate({getKnobRotation(speed, 0.25, 4.00)}deg)"></div>
             </div>
             <span class="knob-value">{Math.round(speed * 100)}%</span>
@@ -1873,6 +1988,7 @@
           >
             <span class="knob-label">Pitch Shift</span>
             <div class="knob-circle">
+              <div class="knob-zero-tick"></div>
               <div class="knob-marker" style="transform: rotate({getKnobRotation(pitch, -24, 24)}deg)"></div>
             </div>
             <span class="knob-value">{pitch > 0 ? "+" : ""}{pitch} st</span>
@@ -2738,20 +2854,72 @@
     padding: 3px 6px;
     border-radius: 4px;
     font-size: 0.75rem;
+    gap: 6px;
+  }
+
+  .marker-color-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    cursor: pointer;
+    flex-shrink: 0;
+    border: 1px solid rgba(255, 255, 255, 0.4);
+    transition: transform 0.1s ease;
+  }
+
+  .marker-color-dot:hover {
+    transform: scale(1.3);
   }
 
   .marker-name-btn {
     cursor: pointer;
     font-weight: 600;
-    color: #ff9500;
+    color: #ffffff;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    width: 200px;
+    flex-grow: 1;
+  }
+
+  .marker-time-tag {
+    font-size: 0.65rem;
+    font-weight: normal;
+    color: #8e8e8e;
+    margin-left: 3px;
   }
 
   .marker-name-btn:hover {
-    text-decoration: underline;
+    color: #3b99fc;
+  }
+
+  .marker-rename-input {
+    flex-grow: 1;
+    background: #141414;
+    border: 1px solid #3b99fc;
+    color: #ffffff;
+    font-size: 0.75rem;
+    padding: 1px 4px;
+    border-radius: 2px;
+    outline: none;
+  }
+
+  .marker-item-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .marker-action-btn {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    font-size: 0.75rem;
+    padding: 0 2px;
+    opacity: 0.6;
+  }
+
+  .marker-action-btn:hover {
+    opacity: 1;
   }
 
   .delete-marker-btn {
@@ -2858,6 +3026,17 @@
     box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
     margin-bottom: 2px;
     transition: border-color 0.15s ease;
+  }
+
+  .knob-zero-tick {
+    position: absolute;
+    top: 1px;
+    left: calc(50% - 0.75px);
+    width: 1.5px;
+    height: 3px;
+    background-color: rgba(255, 255, 255, 0.4);
+    border-radius: 1px;
+    pointer-events: none;
   }
 
   .knob-container:hover .knob-circle {

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-preload-track"
+description = "Enables the preload_track command without any pre-configured scope."
+commands.allow = ["preload_track"]
+
+[[permission]]
+identifier = "deny-preload-track"
+description = "Denies the preload_track command without any pre-configured scope."
+commands.deny = ["preload_track"]

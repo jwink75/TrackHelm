@@ -8,6 +8,7 @@
     "dialog:default",
     "window-state:default",
     "allow-load-track",
+    "allow-preload-track",
     "allow-play",
     "allow-pause",
     "allow-stop",

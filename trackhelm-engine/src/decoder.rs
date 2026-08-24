@@ -5,7 +5,7 @@ use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
 use symphonia::core::conv::FromSample;
 use symphonia::core::errors::Error;
 use symphonia::core::formats::FormatOptions;
-use symphonia::core::io::MediaSourceStream;
+use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use symphonia::default::get_probe;
@@ -20,7 +20,10 @@ pub struct DecodedAudio {
 pub fn decode_file<P: AsRef<Path>>(path: P) -> Result<DecodedAudio, String> {
     let path_ref = path.as_ref();
     let file = File::open(path_ref).map_err(|e| format!("Failed to open file: {}", e))?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let mss_opts = MediaSourceStreamOptions {
+        buffer_len: 128 * 1024,
+    };
+    let mss = MediaSourceStream::new(Box::new(file), mss_opts);
 
     let mut hint = Hint::new();
     if let Some(ext) = path_ref.extension().and_then(|s| s.to_str()) {
@@ -75,7 +78,7 @@ pub fn decode_file<P: AsRef<Path>>(path: P) -> Result<DecodedAudio, String> {
             let spec = decoded.spec();
             channels = spec.channels.count();
             sample_rate = spec.rate;
-            channel_samples = vec![Vec::new(); channels];
+            channel_samples = vec![Vec::with_capacity(500_000); channels];
         }
 
         copy_samples_to_f32(&decoded, &mut channel_samples);

@@ -5,3 +5,6 @@ members = [
     "trackhelm-engine",
     "signalsmith-stretch-rs",
 ]
+
+[profile.dev.package."*"]
+opt-level = 3

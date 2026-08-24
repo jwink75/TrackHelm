@@ -5,6 +5,7 @@ fn main() {
                 tauri_build::AppManifest::new()
                     .commands(&[
                         "load_track",
+                        "preload_track",
                         "play",
                         "pause",
                         "stop",

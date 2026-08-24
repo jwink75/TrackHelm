@@ -219,6 +219,12 @@
           "markdownDescription": "Enables the play command without any pre-configured scope."
         },
         {
+          "description": "Enables the preload_track command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-preload-track",
+          "markdownDescription": "Enables the preload_track command without any pre-configured scope."
+        },
+        {
           "description": "Enables the read_dir command without any pre-configured scope.",
           "type": "string",
           "const": "allow-read-dir",
@@ -295,6 +301,12 @@
           "type": "string",
           "const": "deny-play",
           "markdownDescription": "Denies the play command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the preload_track command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-preload-track",
+          "markdownDescription": "Denies the preload_track command without any pre-configured scope."
         },
         {
           "description": "Denies the read_dir command without any pre-configured scope.",
