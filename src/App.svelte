@@ -864,25 +864,35 @@
       ctx.lineTo(width, halfHeight);
       ctx.stroke();
     } else {
-      ctx.fillStyle = "#ffffff";
-      ctx.beginPath();
-      ctx.moveTo(0, halfHeight);
-
+      // Professional vertical column bars rendering (AnyTune / RX style)
       const step = width / visiblePeaks.length;
+      
+      // Calculate dynamic bar width with a small gap (e.g. 1px or 1.5px)
+      // If step is very small (zoomed out), clamp bar width to minimum 1px.
+      const gap = step > 4 ? 1.5 : (step > 2 ? 1 : 0);
+      const barWidth = Math.max(1, step - gap);
+
+      ctx.fillStyle = "#a8c3d8"; // Elegant silver-blue
+
       for (let i = 0; i < visiblePeaks.length; i++) {
         const val = visiblePeaks[i];
         const x = i * step;
-        const y = halfHeight - val * (halfHeight * 0.85);
-        ctx.lineTo(x, y);
+        
+        // Calculate peak height
+        const peakHeight = Math.max(1, val * (halfHeight * 0.85));
+        const yTop = halfHeight - peakHeight;
+        
+        // Draw the vertical bar column symmetrically around zero-crossing
+        ctx.fillRect(x, yTop, barWidth, peakHeight * 2);
       }
-      for (let i = visiblePeaks.length - 1; i >= 0; i--) {
-        const val = visiblePeaks[i];
-        const x = i * step;
-        const y = halfHeight + val * (halfHeight * 0.85);
-        ctx.lineTo(x, y);
-      }
-      ctx.closePath();
-      ctx.fill();
+
+      // Draw Zero-Crossing Center Line
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, halfHeight);
+      ctx.lineTo(width, halfHeight);
+      ctx.stroke();
     }
 
     for (const marker of markers) {
@@ -943,7 +953,7 @@
 
     const barWidth = width / track.peaks.length;
     const halfHeight = height / 2;
-    ctx.fillStyle = isActive ? "#567c94" : "#444444";
+    ctx.fillStyle = isActive ? "#a8c3d8" : "#556673";
     for (let i = 0; i < track.peaks.length; i += 2) {
       const val = track.peaks[i];
       const barHeight = val * (height * 0.7);
