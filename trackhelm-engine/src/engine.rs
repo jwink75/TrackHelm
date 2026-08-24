@@ -69,6 +69,13 @@ impl AudioEngine {
             let mut active_audio: Option<Arc<DecodedAudio>> = None;
             let mut playback_frame: usize = 0;
             let mut is_playing = false;
+            let mut current_speed: f32 = 1.0;
+            let mut current_pitch: f32 = 0.0;
+            let mut stretch: Option<signalsmith_stretch_rs::SignalsmithStretch> = None;
+            let mut stretch_channels: usize = 2;
+
+            let mut stretch_in_buffers: Vec<Vec<f32>> = vec![Vec::new(); 2];
+            let mut stretch_out_buffers: Vec<Vec<f32>> = vec![Vec::new(); 2];
 
             let shared_is_playing = shared_state.is_playing.clone();
             let shared_current_frame = shared_state.current_frame.clone();
@@ -104,6 +111,9 @@ impl AudioEngine {
                                         playback_frame = 0;
                                         shared_is_playing.store(false, Ordering::SeqCst);
                                         shared_current_frame.store(0, Ordering::SeqCst);
+                                        if let Some(ref mut s) = stretch {
+                                            s.reset();
+                                        }
                                     }
                                     Command::Seek(duration) => {
                                         if let Some(ref audio) = active_audio {
@@ -112,10 +122,22 @@ impl AudioEngine {
                                             let total = audio.channel_samples[0].len();
                                             playback_frame = std::cmp::min(target_frame, total);
                                             shared_current_frame.store(playback_frame, Ordering::SeqCst);
+                                            if let Some(ref mut s) = stretch {
+                                                s.reset();
+                                            }
                                         }
                                     }
                                     Command::SetVolume(vol) => {
                                         shared_volume_raw.store((vol.max(0.0) * 1000.0) as usize, Ordering::SeqCst);
+                                    }
+                                    Command::SetPitch(pitch) => {
+                                        current_pitch = pitch;
+                                        if let Some(ref s) = stretch {
+                                            s.set_transpose_semitones(current_pitch);
+                                        }
+                                    }
+                                    Command::SetTempo(speed) => {
+                                        current_speed = speed.clamp(0.25, 4.0);
                                     }
                                     Command::LoadAudio(audio) => {
                                         let total = audio.channel_samples[0].len();
@@ -123,48 +145,98 @@ impl AudioEngine {
                                         shared_total_frames.store(total, Ordering::SeqCst);
                                         shared_sample_rate.store(rate as usize, Ordering::SeqCst);
                                         shared_current_frame.store(0, Ordering::SeqCst);
+                                        
+                                        let ch = audio.channels.max(1);
+                                        stretch_channels = ch;
+                                        let s = signalsmith_stretch_rs::SignalsmithStretch::new(ch, rate as f32);
+                                        s.set_transpose_semitones(current_pitch);
+                                        stretch = Some(s);
+                                        stretch_in_buffers = vec![Vec::new(); ch];
+                                        stretch_out_buffers = vec![Vec::new(); ch];
+
                                         active_audio = Some(audio);
                                         playback_frame = 0;
-                                    }
-                                    Command::SetPitch(_) | Command::SetTempo(_) => {
-                                        // Handled in Milestone 2
                                     }
                                 }
                             }
 
                             // 2. Render samples
-                            let num_frames = data.len() / output_channels;
-                            let mut samples_to_write = [0.0f32; 16]; // Real-time safe stack allocation
-                            let channels_to_copy = std::cmp::min(output_channels, 16);
+                            let num_out_frames = data.len() / output_channels;
 
-                            for frame_idx in 0..num_frames {
-                                // Clear samples
-                                for c in 0..channels_to_copy {
-                                    samples_to_write[c] = 0.0;
+                            if !is_playing || active_audio.is_none() {
+                                for sample in data.iter_mut() {
+                                    *sample = 0.0;
                                 }
+                            } else if let Some(ref audio) = active_audio {
+                                let audio_len = audio.channel_samples[0].len();
+                                let audio_channels = audio.channels;
 
-                                if is_playing {
-                                    if let Some(ref audio) = active_audio {
-                                        let audio_len = audio.channel_samples[0].len();
-                                        let audio_channels = audio.channels;
+                                if playback_frame >= audio_len {
+                                    is_playing = false;
+                                    shared_is_playing.store(false, Ordering::SeqCst);
+                                    for sample in data.iter_mut() {
+                                        *sample = 0.0;
+                                    }
+                                } else {
+                                    let is_passthrough = (current_speed - 1.0).abs() < 0.001 && current_pitch.abs() < 0.001;
 
-                                        if playback_frame < audio_len {
-                                            for out_c in 0..channels_to_copy {
-                                                let in_c = out_c % audio_channels;
-                                                samples_to_write[out_c] = audio.channel_samples[in_c][playback_frame] * volume;
+                                    if is_passthrough {
+                                        // Direct playback without stretch
+                                        for frame_idx in 0..num_out_frames {
+                                            if playback_frame < audio_len {
+                                                for out_c in 0..output_channels {
+                                                    let in_c = out_c % audio_channels;
+                                                    data[frame_idx * output_channels + out_c] = audio.channel_samples[in_c][playback_frame] * volume;
+                                                }
+                                                playback_frame += 1;
+                                            } else {
+                                                for out_c in 0..output_channels {
+                                                    data[frame_idx * output_channels + out_c] = 0.0;
+                                                }
+                                                is_playing = false;
+                                                shared_is_playing.store(false, Ordering::SeqCst);
                                             }
-                                            playback_frame += 1;
-                                        } else {
+                                        }
+                                    } else if let Some(ref stretch_inst) = stretch {
+                                        // Stretch processing
+                                        let num_in_frames = ((num_out_frames as f32) * current_speed).round() as usize;
+
+                                        for ch in 0..stretch_channels {
+                                            stretch_in_buffers[ch].resize(num_in_frames, 0.0);
+                                            stretch_out_buffers[ch].resize(num_out_frames, 0.0);
+                                        }
+
+                                        for i in 0..num_in_frames {
+                                            let curr_f = playback_frame + i;
+                                            if curr_f < audio_len {
+                                                for ch in 0..stretch_channels {
+                                                    stretch_in_buffers[ch][i] = audio.channel_samples[ch % audio_channels][curr_f];
+                                                }
+                                            } else {
+                                                for ch in 0..stretch_channels {
+                                                    stretch_in_buffers[ch][i] = 0.0;
+                                                }
+                                            }
+                                        }
+
+                                        let in_slices: Vec<&[f32]> = stretch_in_buffers.iter().map(|v| v.as_slice()).collect();
+                                        let mut out_slices: Vec<&mut [f32]> = stretch_out_buffers.iter_mut().map(|v| v.as_mut_slice()).collect();
+
+                                        stretch_inst.process(&in_slices, &mut out_slices);
+
+                                        for frame_idx in 0..num_out_frames {
+                                            for out_c in 0..output_channels {
+                                                let in_c = out_c % stretch_channels;
+                                                data[frame_idx * output_channels + out_c] = stretch_out_buffers[in_c][frame_idx] * volume;
+                                            }
+                                        }
+
+                                        playback_frame += num_in_frames;
+                                        if playback_frame >= audio_len {
                                             is_playing = false;
                                             shared_is_playing.store(false, Ordering::SeqCst);
                                         }
                                     }
-                                }
-
-                                // Write to the output buffer
-                                for out_c in 0..output_channels {
-                                    let write_val = if out_c < 16 { samples_to_write[out_c] } else { 0.0 };
-                                    data[frame_idx * output_channels + out_c] = write_val;
                                 }
                             }
 

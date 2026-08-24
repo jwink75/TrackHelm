@@ -18,7 +18,6 @@ struct TrackMetadata {
     channels: usize,
     overview_peaks: Vec<f32>,
     pyramid_peaks: Vec<f32>,
-    mono_samples: Vec<f32>,
 }
 
 #[derive(serde::Serialize)]
@@ -312,17 +311,6 @@ fn load_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata,
 
     let overview_peaks = compute_peaks(&audio, 1000);
     let pyramid_peaks = compute_pyramid_peaks(&audio, 32768);
-
-    let total_frames = audio.channel_samples[0].len();
-    let mut mono_samples = Vec::with_capacity(total_frames);
-    for i in 0..total_frames {
-        let mut sum = 0.0f32;
-        for c in 0..audio.channels {
-            sum += audio.channel_samples[c][i];
-        }
-        mono_samples.push(sum / audio.channels as f32);
-    }
-
     let audio_arc = Arc::new(audio);
 
     let mut active_audio = state.active_audio.lock().unwrap();
@@ -336,7 +324,6 @@ fn load_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata,
         channels,
         overview_peaks,
         pyramid_peaks,
-        mono_samples,
     })
 }
 
@@ -363,6 +350,16 @@ fn seek(state: State<'_, AppState>, seconds: f64) -> Result<(), String> {
 #[tauri::command]
 fn set_volume(state: State<'_, AppState>, volume: f32) -> Result<(), String> {
     state.command_bus.send(Command::SetVolume(volume))
+}
+
+#[tauri::command]
+fn set_speed(state: State<'_, AppState>, speed: f32) -> Result<(), String> {
+    state.command_bus.send(Command::SetTempo(speed))
+}
+
+#[tauri::command]
+fn set_pitch(state: State<'_, AppState>, pitch: f32) -> Result<(), String> {
+    state.command_bus.send(Command::SetPitch(pitch))
 }
 
 #[tauri::command]
@@ -488,6 +485,8 @@ fn main() {
             stop,
             seek,
             set_volume,
+            set_speed,
+            set_pitch,
             get_playback_status,
             read_dir,
             get_waveform_slice,

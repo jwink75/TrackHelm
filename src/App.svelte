@@ -24,7 +24,6 @@
     channels: number;
     overviewPeaks: number[];
     pyramidPeaks: number[];
-    monoSamples: number[];
   }
 
   let mainTrack: Track | null = null;
@@ -111,6 +110,103 @@
   let pdfChartPath = "";
   let pdfChartName = "";
   let associatedVersions: PlaylistItem[] = [];
+
+  // Per-Track Persistent Project Profiles (AnyTune style)
+  interface TrackProfile {
+    dbVolume: number;
+    speed: number;
+    pitch: number;
+    eqBass: number;
+    eqTreble: number;
+    compressorThreshold: number;
+    compressorRatio: number;
+    compressorMakeup: number;
+    markers: Marker[];
+    nextMarkerId: number;
+    pdfChartPath: string;
+    pdfChartName: string;
+    associatedVersions: PlaylistItem[];
+    alternateTrackPath?: string | null;
+  }
+
+  function getProfilesStore(): Record<string, TrackProfile> {
+    try {
+      const data = localStorage.getItem("th_track_profiles");
+      return data ? JSON.parse(data) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveCurrentTrackProfile(trackPath: string | null) {
+    if (!trackPath) return;
+    const store = getProfilesStore();
+    store[trackPath] = {
+      dbVolume,
+      speed,
+      pitch,
+      eqBass,
+      eqTreble,
+      compressorThreshold,
+      compressorRatio,
+      compressorMakeup,
+      markers,
+      nextMarkerId,
+      pdfChartPath,
+      pdfChartName,
+      associatedVersions,
+      alternateTrackPath: alternateTrack ? alternateTrack.path : null
+    };
+    localStorage.setItem("th_track_profiles", JSON.stringify(store));
+  }
+
+  async function loadTrackProfile(trackPath: string) {
+    const store = getProfilesStore();
+    const profile = store[trackPath];
+    if (profile) {
+      dbVolume = typeof profile.dbVolume === "number" ? profile.dbVolume : 0.0;
+      speed = typeof profile.speed === "number" ? profile.speed : 1.0;
+      pitch = typeof profile.pitch === "number" ? profile.pitch : 0;
+      eqBass = typeof profile.eqBass === "number" ? profile.eqBass : 0;
+      eqTreble = typeof profile.eqTreble === "number" ? profile.eqTreble : 0;
+      compressorThreshold = typeof profile.compressorThreshold === "number" ? profile.compressorThreshold : -20;
+      compressorRatio = typeof profile.compressorRatio === "number" ? profile.compressorRatio : 2.0;
+      compressorMakeup = typeof profile.compressorMakeup === "number" ? profile.compressorMakeup : 0;
+      markers = Array.isArray(profile.markers) ? profile.markers : [];
+      nextMarkerId = typeof profile.nextMarkerId === "number" ? profile.nextMarkerId : (markers.length + 1);
+      pdfChartPath = profile.pdfChartPath || "";
+      pdfChartName = profile.pdfChartName || (pdfChartPath ? (pdfChartPath.split("/").pop() || "") : "");
+      associatedVersions = Array.isArray(profile.associatedVersions) ? profile.associatedVersions : [];
+      
+      if (profile.alternateTrackPath && profile.alternateTrackPath !== trackPath) {
+        loadAudioPath(profile.alternateTrackPath, "alternate", false);
+      } else {
+        alternateTrack = null;
+      }
+    } else {
+      // Default clean settings for newly loaded song
+      dbVolume = 0.0;
+      speed = 1.0;
+      pitch = 0;
+      eqBass = 0;
+      eqTreble = 0;
+      compressorThreshold = -20;
+      compressorRatio = 2.0;
+      compressorMakeup = 0;
+      markers = [];
+      nextMarkerId = 1;
+      pdfChartPath = "";
+      pdfChartName = "";
+      associatedVersions = [];
+      alternateTrack = null;
+    }
+
+    // Apply restored volume, speed, and pitch directly to audio engine
+    const linearVol = dbVolume <= -59 ? 0 : Math.pow(10, dbVolume / 20);
+    await invoke("set_volume", { volume: linearVol });
+    await invoke("set_speed", { speed });
+    await invoke("set_pitch", { pitch });
+  }
 
   // Canvas elements
   let mainCanvas: HTMLCanvasElement;
@@ -281,8 +377,13 @@
   }
 
   // Load a file into main or alternate track slots
-  async function loadAudioPath(path: string, target: "main" | "alternate") {
+  async function loadAudioPath(path: string, target: "main" | "alternate", switchActive = true) {
     try {
+      // Save current track profile before switching
+      if (target === "main" && mainTrack && mainTrack.path !== path) {
+        saveCurrentTrackProfile(mainTrack.path);
+      }
+
       const metadata: any = await invoke("load_track", { path });
       const track: Track = {
         name: path.split("/").pop() || path,
@@ -291,8 +392,7 @@
         sampleRate: metadata.sample_rate,
         channels: metadata.channels,
         overviewPeaks: metadata.overview_peaks || [],
-        pyramidPeaks: metadata.pyramid_peaks || [],
-        monoSamples: metadata.mono_samples || []
+        pyramidPeaks: metadata.pyramid_peaks || []
       };
 
       if (target === "main") {
@@ -301,34 +401,38 @@
       } else {
         alternateTrack = track;
         localStorage.setItem("th_last_alt_track_path", path);
+        if (mainTrack) {
+          saveCurrentTrackProfile(mainTrack.path);
+        }
       }
 
-      filePath = path;
-      fileName = track.name;
-      duration = track.duration;
-      sampleRate = track.sampleRate;
-      channels = track.channels;
-      activeTrackMode = target;
-      localStorage.setItem("th_last_active_track_mode", target);
+      if (switchActive || target === "main") {
+        filePath = path;
+        fileName = track.name;
+        duration = track.duration;
+        sampleRate = track.sampleRate;
+        channels = track.channels;
+        activeTrackMode = target;
+        localStorage.setItem("th_last_active_track_mode", target);
 
-      // Clear local sample cache
-      localSampleCache = { startFrame: -1, endFrame: -1, samples: [] };
+        // Clear local sample cache
+        localSampleCache = { startFrame: -1, endFrame: -1, samples: [] };
 
-      // Default zoom: 15 seconds rehearsal chunk view
-      if (duration > 0) {
-        const targetZoom = Math.max(1.0, duration / 15.0);
-        setZoom(targetZoom);
-      } else {
-        setZoom(1.0);
+        // Default zoom: 15 seconds rehearsal chunk view
+        if (duration > 0) {
+          const targetZoom = Math.max(1.0, duration / 15.0);
+          setZoom(targetZoom);
+        } else {
+          setZoom(1.0);
+        }
+
+        // Restore saved Track Profile (Knobs, Markers, PDF, Associated Versions)
+        await loadTrackProfile(path);
+
+        setTimeout(() => {
+          updateVisiblePeaks();
+        }, 30);
       }
-
-      // Reset markers for new track
-      markers = [];
-      nextMarkerId = 1;
-
-      setTimeout(() => {
-        updateVisiblePeaks();
-      }, 50);
     } catch (err) {
       alert("Failed to load file: " + err);
     }
@@ -570,7 +674,7 @@
     zoomSliderVal = zoomToSliderVal(zoom);
   }
 
-  // Dynamic Peak Slice & Waveform updater (100% Synchronous Local Slicing)
+  // Dynamic Peak Slice & Waveform updater (Fast Synchronous Slicing with Background Sample Cache)
   function updateVisiblePeaks() {
     const track = getActiveTrack();
     if (!track || !mainCanvas || duration === 0) {
@@ -600,23 +704,70 @@
     const visibleFrames = Math.max(1, endFrame - startFrame);
     visibleSampleFrames = visibleFrames;
 
-    const mono = track.monoSamples;
-    if (mono && mono.length > 0) {
-      if (visibleFrames <= numPoints) {
-        // Sample Level / Deep Zoom (down to 9 samples): Exact raw samples!
-        visibleSamples = mono.slice(startFrame, endFrame);
+    // If visibleFrames <= 3000: Deep zoom / sample level
+    if (visibleFrames <= 3000) {
+      if (
+        localSampleCache.samples.length > 0 &&
+        startFrame >= localSampleCache.startFrame &&
+        endFrame <= localSampleCache.endFrame
+      ) {
+        const offset = startFrame - localSampleCache.startFrame;
+        visibleSamples = localSampleCache.samples.slice(offset, offset + visibleFrames);
       } else {
-        // Zoomed Out: Downsample to exactly numPoints
-        const downsampled: number[] = new Array(numPoints);
-        const step = visibleFrames / numPoints;
-        for (let i = 0; i < numPoints; i++) {
-          const idx = Math.min(mono.length - 1, Math.floor(startFrame + i * step));
-          downsampled[i] = mono[idx];
+        // Use slice from pyramid temporarily
+        const pyramid = track.pyramidPeaks;
+        if (pyramid && pyramid.length > 0) {
+          const startIdx = Math.floor(startProgress * pyramid.length);
+          const endIdx = Math.max(startIdx + 1, Math.floor(endProgress * pyramid.length));
+          visibleSamples = pyramid.slice(startIdx, endIdx);
         }
-        visibleSamples = downsampled;
+
+        // Fetch sample window in background without blocking UI
+        if (!isFetchingRawChunk) {
+          isFetchingRawChunk = true;
+          const fetchPadding = Math.max(6000, visibleFrames * 4);
+          const fetchStart = Math.max(0, startFrame - Math.floor(fetchPadding / 2));
+          const fetchCount = Math.min(totalTrackFrames - fetchStart, visibleFrames + fetchPadding);
+
+          invoke("get_raw_samples", { startFrame: fetchStart, count: fetchCount })
+            .then((res: any) => {
+              const samples: number[] = res || [];
+              localSampleCache = {
+                startFrame: fetchStart,
+                endFrame: fetchStart + samples.length,
+                samples
+              };
+              isFetchingRawChunk = false;
+              updateVisiblePeaks();
+            })
+            .catch(err => {
+              console.error("Failed to fetch raw samples", err);
+              isFetchingRawChunk = false;
+            });
+        }
       }
     } else {
-      visibleSamples = [];
+      // Slicing from pyramidPeaks (32,768 precalculated single samples) synchronously in JS in 0.002ms!
+      const pyramid = track.pyramidPeaks;
+      if (pyramid && pyramid.length > 0) {
+        const startIdx = Math.floor(startProgress * pyramid.length);
+        const endIdx = Math.max(startIdx + 1, Math.floor(endProgress * pyramid.length));
+        const sliceLen = endIdx - startIdx;
+
+        if (sliceLen <= numPoints) {
+          visibleSamples = pyramid.slice(startIdx, endIdx);
+        } else {
+          const downsampled: number[] = new Array(numPoints);
+          const step = sliceLen / numPoints;
+          for (let i = 0; i < numPoints; i++) {
+            const idx = Math.min(pyramid.length - 1, Math.floor(startIdx + i * step));
+            downsampled[i] = pyramid[idx];
+          }
+          visibleSamples = downsampled;
+        }
+      } else {
+        visibleSamples = [];
+      }
     }
 
     drawMainWaveform();
@@ -1217,12 +1368,36 @@
     newVal = Math.max(activeKnob.min, Math.min(activeKnob.max, newVal));
     newVal = Math.round(newVal / activeKnob.step) * activeKnob.step;
     activeKnob.setValue(newVal);
+
+    if (activeKnob.id === "speed") {
+      invoke("set_speed", { speed: newVal });
+    } else if (activeKnob.id === "pitch") {
+      invoke("set_pitch", { pitch: newVal });
+    }
   }
 
   function handleKnobMouseup() {
+    if (activeKnob) {
+      if (activeKnob.id === "speed") {
+        invoke("set_speed", { speed });
+      } else if (activeKnob.id === "pitch") {
+        invoke("set_pitch", { pitch });
+      }
+      saveCurrentTrackProfile(filePath);
+    }
     activeKnob = null;
     window.removeEventListener("mousemove", handleKnobMousemove);
     window.removeEventListener("mouseup", handleKnobMouseup);
+  }
+
+  function resetKnob(id: string, defaultVal: number, setValue: (v: number) => void) {
+    setValue(defaultVal);
+    if (id === "speed") {
+      invoke("set_speed", { speed: defaultVal });
+    } else if (id === "pitch") {
+      invoke("set_pitch", { pitch: defaultVal });
+    }
+    saveCurrentTrackProfile(filePath);
   }
 
   function getKnobRotation(val: number, min: number, max: number) {
@@ -1597,7 +1772,7 @@
           <div 
             class="knob-container" 
             on:mousedown={(e) => handleKnobMousedown(e, "comp_thresh", compressorThreshold, -60, 0, 1, (v) => compressorThreshold = v)}
-            on:dblclick={() => compressorThreshold = -20}
+            on:dblclick={() => resetKnob("comp_thresh", -20, (v) => compressorThreshold = v)}
             title="Double-click resets to -20 dB"
           >
             <span class="knob-label">Threshold</span>
@@ -1612,7 +1787,7 @@
           <div 
             class="knob-container" 
             on:mousedown={(e) => handleKnobMousedown(e, "comp_ratio", compressorRatio, 1.0, 20.0, 0.5, (v) => compressorRatio = v)}
-            on:dblclick={() => compressorRatio = 2.0}
+            on:dblclick={() => resetKnob("comp_ratio", 2.0, (v) => compressorRatio = v)}
             title="Double-click resets to 2.0:1"
           >
             <span class="knob-label">Ratio</span>
@@ -1627,7 +1802,7 @@
           <div 
             class="knob-container" 
             on:mousedown={(e) => handleKnobMousedown(e, "comp_makeup", compressorMakeup, 0, 24, 0.5, (v) => compressorMakeup = v)}
-            on:dblclick={() => compressorMakeup = 0}
+            on:dblclick={() => resetKnob("comp_makeup", 0, (v) => compressorMakeup = v)}
             title="Double-click resets to 0 dB"
           >
             <span class="knob-label">Makeup</span>
@@ -1645,7 +1820,7 @@
           <div 
             class="knob-container" 
             on:mousedown={(e) => handleKnobMousedown(e, "eq_bass", eqBass, -12, 12, 0.5, (v) => eqBass = v)}
-            on:dblclick={() => eqBass = 0}
+            on:dblclick={() => resetKnob("eq_bass", 0, (v) => eqBass = v)}
             title="Double-click resets to 0 dB"
           >
             <span class="knob-label">Bass</span>
@@ -1660,7 +1835,7 @@
           <div 
             class="knob-container" 
             on:mousedown={(e) => handleKnobMousedown(e, "eq_treble", eqTreble, -12, 12, 0.5, (v) => eqTreble = v)}
-            on:dblclick={() => eqTreble = 0}
+            on:dblclick={() => resetKnob("eq_treble", 0, (v) => eqTreble = v)}
             title="Double-click resets to 0 dB"
           >
             <span class="knob-label">Treble</span>
@@ -1678,7 +1853,7 @@
           <div 
             class="knob-container" 
             on:mousedown={(e) => handleKnobMousedown(e, "speed", speed, 0.25, 4.00, 0.05, (v) => speed = v)}
-            on:dblclick={() => speed = 1.0}
+            on:dblclick={() => resetKnob("speed", 1.0, (v) => speed = v)}
             title="Double-click resets to 100%"
           >
             <span class="knob-label">Speed</span>
@@ -1693,7 +1868,7 @@
           <div 
             class="knob-container" 
             on:mousedown={(e) => handleKnobMousedown(e, "pitch", pitch, -24, 24, 1, (v) => pitch = v)}
-            on:dblclick={() => pitch = 0}
+            on:dblclick={() => resetKnob("pitch", 0, (v) => pitch = v)}
             title="Double-click resets to 0 semitones"
           >
             <span class="knob-label">Pitch Shift</span>
