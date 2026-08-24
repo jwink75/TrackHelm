@@ -60,12 +60,8 @@
   let localSampleCache: SampleCache = { startFrame: -1, endFrame: -1, samples: [] };
   let isFetchingRawChunk = false;
 
-  interface VisibleWaveformData {
-    isSampleLevel: boolean;
-    data: number[];
-    visibleFrames: number;
-  }
-  let visibleWaveform: VisibleWaveformData = { isSampleLevel: false, data: [], visibleFrames: 0 };
+  let visibleSamples: number[] = [];
+  let visibleSampleFrames = 0;
 
   // Markers
   interface Marker {
@@ -552,7 +548,8 @@
   function updateVisiblePeaks() {
     const track = getActiveTrack();
     if (!track || !mainCanvas || duration === 0) {
-      visibleWaveform = { isSampleLevel: false, data: [], visibleFrames: 0 };
+      visibleSamples = [];
+      visibleSampleFrames = 0;
       drawMainWaveform();
       drawOverviewWaveform();
       drawAltOverviewWaveform();
@@ -564,15 +561,21 @@
 
     const totalTrackFrames = duration * sampleRate;
     const windowWidth = 1.0 / zoom;
-    const startProgress = Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2));
-    const endProgress = startProgress + windowWidth;
+    
+    let startProgress = 0;
+    if (zoom > 1.001) {
+      const halfWindow = windowWidth / 2;
+      startProgress = Math.max(0, Math.min(1.0 - windowWidth, progress - halfWindow));
+    }
+    const endProgress = Math.min(1.0, startProgress + windowWidth);
 
     const startFrame = Math.floor(startProgress * totalTrackFrames);
     const endFrame = Math.floor(endProgress * totalTrackFrames);
     const visibleFrames = Math.max(1, endFrame - startFrame);
+    visibleSampleFrames = visibleFrames;
 
-    // If visibleFrames <= 2000: We are in deep zoom / sample level!
-    if (visibleFrames <= 2000) {
+    // If visibleFrames <= 4000: We are in deep zoom / sample level!
+    if (visibleFrames <= 4000) {
       // Check if inside localSampleCache
       if (
         localSampleCache.samples.length > 0 &&
@@ -581,11 +584,7 @@
       ) {
         const offset = startFrame - localSampleCache.startFrame;
         const rawSlice = localSampleCache.samples.slice(offset, offset + visibleFrames);
-        visibleWaveform = {
-          isSampleLevel: true,
-          data: rawSlice,
-          visibleFrames
-        };
+        visibleSamples = rawSlice;
         drawMainWaveform();
         drawOverviewWaveform();
         drawAltOverviewWaveform();
@@ -616,47 +615,27 @@
         }
       }
     } else {
-      // Standard / Zoomed Out view: Slice from pyramidPeaks (32,768 min/max pairs) synchronously in JS!
+      // Slicing from pyramidPeaks (32,768 single samples) synchronously in JS!
       const pyramid = track.pyramidPeaks;
       if (pyramid && pyramid.length > 0) {
-        const numPairs = pyramid.length / 2;
-        const startIdx = Math.floor(startProgress * numPairs);
-        const endIdx = Math.max(startIdx + 1, Math.floor(endProgress * numPairs));
-        const slicePairs = endIdx - startIdx;
+        const startIdx = Math.floor(startProgress * pyramid.length);
+        const endIdx = Math.max(startIdx + 1, Math.floor(endProgress * pyramid.length));
+        const sliceLen = endIdx - startIdx;
 
-        if (slicePairs <= numPoints) {
-          // Direct slice
-          const sliceData = pyramid.slice(startIdx * 2, endIdx * 2);
-          visibleWaveform = {
-            isSampleLevel: false,
-            data: sliceData,
-            visibleFrames
-          };
+        if (sliceLen <= numPoints) {
+          visibleSamples = pyramid.slice(startIdx, endIdx);
         } else {
-          // Downsample to numPoints
           const downsampled: number[] = [];
-          const chunkSize = slicePairs / numPoints;
+          const step = sliceLen / numPoints;
           for (let i = 0; i < numPoints; i++) {
-            const cStart = Math.floor(startIdx + i * chunkSize);
-            const cEnd = Math.min(Math.floor(startIdx + (i + 1) * chunkSize), endIdx);
-            if (cStart >= cEnd) break;
-            let minVal = 1.0;
-            let maxVal = -1.0;
-            for (let j = cStart; j < cEnd; j++) {
-              const minP = pyramid[j * 2];
-              const maxP = pyramid[j * 2 + 1];
-              if (minP < minVal) minVal = minP;
-              if (maxP > maxVal) maxVal = maxP;
-            }
-            downsampled.push(minVal);
-            downsampled.push(maxVal);
+            const idx = Math.floor(startIdx + i * step);
+            if (idx >= endIdx || idx >= pyramid.length) break;
+            downsampled.push(pyramid[idx]);
           }
-          visibleWaveform = {
-            isSampleLevel: false,
-            data: downsampled,
-            visibleFrames
-          };
+          visibleSamples = downsampled;
         }
+      } else {
+        visibleSamples = [];
       }
 
       drawMainWaveform();
@@ -718,24 +697,26 @@
 
   function handleMainMouseMove(e: MouseEvent) {
     if (!isPanning || !mainCanvas) return;
-    const rect = mainCanvas.getBoundingClientRect();
-    const width = rect.width;
-    const windowWidth = 1.0 / zoom;
     const deltaX = e.clientX - panStartX;
-
     if (Math.abs(deltaX) > 3) {
       hasDraggedMain = true;
     }
 
-    const progressChange = -(deltaX / width) * windowWidth;
-    let newProgress = panStartProgress + progressChange;
-    const halfWindow = windowWidth / 2;
-    newProgress = Math.max(halfWindow, Math.min(1.0 - halfWindow, newProgress));
+    // Only allow panning if zoomed in
+    if (zoom > 1.001) {
+      const rect = mainCanvas.getBoundingClientRect();
+      const width = rect.width;
+      const windowWidth = 1.0 / zoom;
+      const progressChange = -(deltaX / width) * windowWidth;
+      let newProgress = panStartProgress + progressChange;
+      const halfWindow = windowWidth / 2;
+      newProgress = Math.max(halfWindow, Math.min(1.0 - halfWindow, newProgress));
 
-    progress = newProgress;
-    currentTime = progress * duration;
+      progress = newProgress;
+      currentTime = progress * duration;
 
-    updateVisiblePeaks();
+      updateVisiblePeaks();
+    }
   }
 
   async function handleMainMouseUp(e: MouseEvent) {
@@ -745,18 +726,29 @@
       window.removeEventListener("mouseup", handleMainMouseUp);
 
       if (!hasDraggedMain && mainCanvas) {
-        // Simple Click: seek playhead to exactly where they clicked
+        // Simple Click: seek playhead instantly to clicked point!
         const rect = mainCanvas.getBoundingClientRect();
         const clickX = e.clientX - rect.left;
-        const pct = clickX / rect.width;
+        const clickPct = Math.max(0, Math.min(1, clickX / rect.width));
         
         const windowWidth = 1.0 / zoom;
-        const startProgress = Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2));
-        const targetPct = startProgress + pct * windowWidth;
-        const targetSeconds = targetPct * duration;
+        let startProgress = 0;
+        if (zoom > 1.001) {
+          const halfWindow = windowWidth / 2;
+          startProgress = Math.max(0, Math.min(1.0 - windowWidth, progress - halfWindow));
+        }
+        const targetProgress = Math.max(0, Math.min(1.0, startProgress + clickPct * windowWidth));
+        const targetSeconds = targetProgress * duration;
+
+        // Instant local update (0ms delay)
+        progress = targetProgress;
+        currentTime = targetSeconds;
+        updateVisiblePeaks();
+
+        // Background seek
         await invoke("seek", { seconds: targetSeconds });
-      } else {
-        // Drag finished: send the final seek position to synchronise audio engine playhead
+      } else if (hasDraggedMain) {
+        // Drag finished: sync audio engine playhead
         await invoke("seek", { seconds: progress * duration });
       }
     }
@@ -930,7 +922,7 @@
     ctx.fillRect(0, 0, width, height);
 
     const track = getActiveTrack();
-    if (!track || visibleWaveform.data.length === 0 || duration === 0) {
+    if (!track || visibleSamples.length === 0 || duration === 0) {
       ctx.fillStyle = "#888888";
       ctx.font = "13px sans-serif";
       ctx.fillText("No active track loaded (Drag & Drop file to load)", width / 2 - 140, height / 2 + 4);
@@ -939,8 +931,12 @@
     }
 
     const windowWidth = 1.0 / zoom;
-    const startProgress = Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2));
-    const endProgress = startProgress + windowWidth;
+    let startProgress = 0;
+    if (zoom > 1.001) {
+      const halfWindow = windowWidth / 2;
+      startProgress = Math.max(0, Math.min(1.0 - windowWidth, progress - halfWindow));
+    }
+    const endProgress = Math.min(1.0, startProgress + windowWidth);
 
     const startTime = startProgress * duration;
     const endTime = endProgress * duration;
@@ -1031,37 +1027,35 @@
     ctx.lineTo(width, halfHeight);
     ctx.stroke();
 
-    if (visibleWaveform.isSampleLevel && visibleWaveform.data.length > 0) {
-      // Sample Level: Smooth continuous oscillating signal line
-      const samples = visibleWaveform.data;
-      const numSamples = samples.length;
+    if (visibleSamples.length > 0) {
+      const numSamples = visibleSamples.length;
       const step = width / (numSamples - 1 || 1);
 
+      // Single continuous unbroken oscillating line
       ctx.strokeStyle = "#3b99fc";
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       for (let i = 0; i < numSamples; i++) {
         const x = i * step;
-        const y = halfHeight - samples[i] * (waveHeight * 0.44);
+        const y = halfHeight - visibleSamples[i] * (waveHeight * 0.44);
         if (i === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       }
       ctx.stroke();
 
-      // Progressive Sample Node Squares (RX style)
-      // When visible samples <= 400, render square nodes that grow as you zoom down to 9 samples!
-      if (numSamples <= 400) {
+      // Progressive Sample Node Squares (RX style when <= 400 samples on screen)
+      if (visibleSampleFrames <= 400 && visibleSampleFrames === numSamples) {
         let nodeSize = 1.5;
-        if (numSamples <= 40) {
+        if (visibleSampleFrames <= 40) {
           nodeSize = 6.0;
-        } else if (numSamples <= 150) {
+        } else if (visibleSampleFrames <= 150) {
           nodeSize = 3.5;
         }
 
         ctx.fillStyle = "#8fc4fa";
         for (let i = 0; i < numSamples; i++) {
           const x = i * step;
-          const y = halfHeight - samples[i] * (waveHeight * 0.44);
+          const y = halfHeight - visibleSamples[i] * (waveHeight * 0.44);
           ctx.fillRect(x - nodeSize / 2, y - nodeSize / 2, nodeSize, nodeSize);
           if (nodeSize >= 5) {
             ctx.strokeStyle = "#162837";
@@ -1070,31 +1064,6 @@
           }
         }
       }
-    } else if (visibleWaveform.data.length > 0) {
-      // Standard / Zoomed Out: Continuous line tracing min and max per pixel column
-      const data = visibleWaveform.data;
-      const numCols = data.length / 2;
-      const step = width / (numCols - 1 || 1);
-
-      ctx.strokeStyle = "#3b99fc";
-      ctx.lineWidth = 1.0;
-      ctx.beginPath();
-      for (let i = 0; i < numCols; i++) {
-        const minVal = data[i * 2];
-        const maxVal = data[i * 2 + 1];
-        const x = i * step;
-        const yTop = halfHeight - maxVal * (waveHeight * 0.44);
-        const yBottom = halfHeight - minVal * (waveHeight * 0.44);
-
-        if (i === 0) {
-          ctx.moveTo(x, yTop);
-          ctx.lineTo(x, yBottom);
-        } else {
-          ctx.lineTo(x, yTop);
-          ctx.lineTo(x, yBottom);
-        }
-      }
-      ctx.stroke();
     }
 
     // 5. Markers

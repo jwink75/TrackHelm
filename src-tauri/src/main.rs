@@ -21,12 +21,6 @@ struct TrackMetadata {
 }
 
 #[derive(serde::Serialize)]
-struct WaveformSliceResult {
-    is_sample_level: bool,
-    data: Vec<f32>,
-}
-
-#[derive(serde::Serialize)]
 struct PlaybackStatus {
     is_playing: bool,
     current_time: f64,
@@ -231,7 +225,7 @@ fn get_waveform_slice(
     start_frame: usize,
     end_frame: usize,
     num_points: usize
-) -> Result<WaveformSliceResult, String> {
+) -> Result<Vec<f32>, String> {
     let active_opt = state.active_audio.lock().unwrap();
     let audio = active_opt.as_ref().ok_or_else(|| "No active track loaded".to_string())?;
 
@@ -242,14 +236,13 @@ fn get_waveform_slice(
     let end = std::cmp::min(end_frame, total_frames);
     
     if start >= end {
-        return Ok(WaveformSliceResult { is_sample_level: false, data: Vec::new() });
+        return Ok(Vec::new());
     }
 
     let slice_len = end - start;
+    let mut data = Vec::with_capacity(num_points);
 
     if slice_len <= num_points {
-        // Sample level: return raw averaged values (L+R)/2
-        let mut data = Vec::with_capacity(slice_len);
         for i in start..end {
             let mut sum = 0.0f32;
             for c in 0..channels {
@@ -257,44 +250,22 @@ fn get_waveform_slice(
             }
             data.push(sum / channels as f32);
         }
-        Ok(WaveformSliceResult { is_sample_level: true, data })
     } else {
-        // Downsample: return alternating (min, max) pairs for each pixel column
-        let chunk_size = slice_len / num_points;
-        let mut data = Vec::with_capacity(num_points * 2);
-
+        let chunk_size = slice_len as f64 / num_points as f64;
         for i in 0..num_points {
-            let chunk_start = start + i * chunk_size;
-            let chunk_end = std::cmp::min(chunk_start + chunk_size, end);
-            if chunk_start >= chunk_end {
+            let idx = start + (i as f64 * chunk_size) as usize;
+            if idx >= end {
                 break;
             }
-            let mut min_val = f32::INFINITY;
-            let mut max_val = f32::NEG_INFINITY;
-
-            for j in chunk_start..chunk_end {
-                let mut sum = 0.0f32;
-                for c in 0..channels {
-                    sum += audio.channel_samples[c][j];
-                }
-                let val = sum / channels as f32;
-
-                if val < min_val {
-                    min_val = val;
-                }
-                if val > max_val {
-                    max_val = val;
-                }
+            let mut sum = 0.0f32;
+            for c in 0..channels {
+                sum += audio.channel_samples[c][idx];
             }
-            if min_val.is_infinite() {
-                min_val = 0.0;
-                max_val = 0.0;
-            }
-            data.push(min_val);
-            data.push(max_val);
+            data.push(sum / channels as f32);
         }
-        Ok(WaveformSliceResult { is_sample_level: false, data })
     }
+
+    Ok(data)
 }
 
 #[tauri::command]
@@ -456,43 +427,24 @@ fn compute_peaks(audio: &DecodedAudio, num_peaks: usize) -> Vec<f32> {
 fn compute_pyramid_peaks(audio: &DecodedAudio, num_peaks: usize) -> Vec<f32> {
     let channels = audio.channels;
     let len = audio.channel_samples[0].len();
-    let chunk_size = (len / num_peaks).max(1);
+    let step = len as f64 / num_peaks as f64;
 
-    let mut pyramid = Vec::with_capacity(num_peaks * 2);
+    let mut samples = Vec::with_capacity(num_peaks);
 
     for i in 0..num_peaks {
-        let start = i * chunk_size;
-        let end = std::cmp::min(start + chunk_size, len);
-        if start >= len {
-            pyramid.push(0.0);
-            pyramid.push(0.0);
+        let idx = (i as f64 * step) as usize;
+        if idx >= len {
+            samples.push(0.0);
             continue;
         }
 
-        let mut min_val = f32::INFINITY;
-        let mut max_val = f32::NEG_INFINITY;
-
-        for j in start..end {
-            let mut sum = 0.0f32;
-            for c in 0..channels {
-                sum += audio.channel_samples[c][j];
-            }
-            let val = sum / channels as f32;
-            if val < min_val {
-                min_val = val;
-            }
-            if val > max_val {
-                max_val = val;
-            }
+        let mut sum = 0.0f32;
+        for c in 0..channels {
+            sum += audio.channel_samples[c][idx];
         }
-        if min_val.is_infinite() {
-            min_val = 0.0;
-            max_val = 0.0;
-        }
-        pyramid.push(min_val);
-        pyramid.push(max_val);
+        samples.push(sum / channels as f32);
     }
-    pyramid
+    samples
 }
 
 fn main() {
