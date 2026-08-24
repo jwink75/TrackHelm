@@ -1556,8 +1556,8 @@
     align-items: center;
     background-color: #202021;
     border-bottom: 1px solid #3c3c3c;
-    padding: 6px 12px;
-    font-size: 0.8rem;
+    padding: 3px 8px;
+    font-size: 0.72rem;
   }
 
   .current-dir-label {
@@ -1584,10 +1584,10 @@
     border: 1px solid #3c3c3c;
     border-radius: 4px;
     color: #ffffff;
-    padding: 6px 10px;
-    font-size: 0.8rem;
-    margin: 8px 12px;
-    width: calc(100% - 24px);
+    padding: 3px 8px;
+    font-size: 0.72rem;
+    margin: 4px 8px;
+    width: calc(100% - 16px);
     box-sizing: border-box;
     outline: none;
     transition: border-color 0.15s ease;
@@ -1606,11 +1606,10 @@
   .browser-item {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 6px 12px;
-    font-size: 0.8rem;
+    gap: 4px;
+    padding: 2px 8px;
+    font-size: 0.72rem;
     cursor: pointer;
-    border-bottom: 1px solid #282829;
     color: #ffffff; /* White text */
     transition: background-color 0.15s ease;
   }
@@ -1685,11 +1684,10 @@
   .playlist-item-sidebar {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 6px 12px;
-    font-size: 0.8rem;
+    gap: 4px;
+    padding: 2px 10px;
+    font-size: 0.72rem;
     cursor: pointer;
-    border-bottom: 1px solid #282829;
     color: #cccccc;
     transition: background-color 0.15s ease;
   }
