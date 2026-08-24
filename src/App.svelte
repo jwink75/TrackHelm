@@ -515,9 +515,9 @@
 
     try {
       const slice: any = await invoke("get_waveform_slice", {
-        start_frame: startFrame,
-        end_frame: endFrame,
-        num_points: numPoints
+        startFrame: startFrame,
+        endFrame: endFrame,
+        numPoints: numPoints
       });
       visiblePeaks = slice;
     } catch (err) {
