@@ -989,29 +989,6 @@
             </div>
           {/each}
         </div>
-
-        <div class="assign-panel">
-          {#if selectedFilePaths.size > 0 && lastSelectedEntry}
-            <span class="selected-filename" title={lastSelectedEntry.name}>
-              Selected: {selectedFilePaths.size} file(s)
-            </span>
-            <div class="btn-row">
-              <button class="action-btn file-btn" on:click={() => lastSelectedEntry && loadAudioPath(lastSelectedEntry.path, "main")}>
-                Set as Main
-              </button>
-              <button class="action-btn alt-btn" on:click={() => lastSelectedEntry && loadAudioPath(lastSelectedEntry.path, "alternate")}>
-                Set as Alt
-              </button>
-            </div>
-            <button class="action-btn playlist-add-btn" on:click={addSelectedToPlaylist}>
-              Add to Playlist
-            </button>
-          {:else}
-            <span class="browser-help-text">
-              Dbl-click folder to open, file to set as Main. Right-click for options. Cmd/Ctrl-click to multi-select.
-            </span>
-          {/if}
-        </div>
       {:else}
         <!-- Tab Content: Playlist -->
         <div class="playlist-list">
@@ -1667,31 +1644,6 @@
     color: #ffffff;
   }
 
-  .assign-panel {
-    background-color: #202021;
-    border-top: 1px solid #3c3c3c;
-    padding: 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .selected-filename {
-    font-size: 0.75rem;
-    font-weight: bold;
-    color: #ffffff;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .browser-help-text {
-    font-size: 0.7rem;
-    color: #717171;
-    font-style: italic;
-    line-height: 1.3;
-  }
-
   /* Playlist Sidebar mode */
   .playlist-list {
     flex-grow: 1;
@@ -1785,46 +1737,7 @@
     color: #ffffff;
   }
 
-  .action-btn {
-    border: none;
-    padding: 8px;
-    font-weight: 600;
-    font-size: 0.8rem;
-    cursor: pointer;
-    width: 100%;
-    box-sizing: border-box;
-    text-align: center;
-    border-radius: 4px;
-  }
 
-  .file-btn {
-    background-color: #3b99fc;
-    color: #ffffff;
-  }
-
-  .file-btn:hover {
-    background-color: #258bf5;
-  }
-
-  .alt-btn {
-    background-color: #ff9500;
-    color: #000000;
-  }
-
-  .alt-btn:hover {
-    background-color: #ffaa33;
-  }
-
-  .playlist-add-btn {
-    background-color: #2e2e2f;
-    color: #d1d1d1;
-    border: 1px solid #3c3c3c;
-  }
-
-  .playlist-add-btn:hover {
-    background-color: #3c3c3e;
-    color: #ffffff;
-  }
 
   /* Center Workspace area styling */
   .center-content {

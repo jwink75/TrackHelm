@@ -322,8 +322,16 @@ fn set_volume(state: State<'_, AppState>, volume: f32) -> Result<(), String> {
 fn get_playback_status(state: State<'_, AppState>) -> PlaybackStatus {
     let is_playing = state.shared_engine_state.is_playing.load(std::sync::atomic::Ordering::SeqCst);
     let current_frame = state.shared_engine_state.current_frame.load(std::sync::atomic::Ordering::SeqCst);
-    let total_frames = state.shared_engine_state.total_frames.load(std::sync::atomic::Ordering::SeqCst);
-    let sample_rate = state.shared_engine_state.sample_rate.load(std::sync::atomic::Ordering::SeqCst);
+    
+    // Read from the active audio lock first for accurate synchronous metadata
+    let active_opt = state.active_audio.lock().unwrap();
+    let (total_frames, sample_rate) = if let Some(audio) = active_opt.as_ref() {
+        (audio.channel_samples[0].len(), audio.sample_rate as usize)
+    } else {
+        let total_frames = state.shared_engine_state.total_frames.load(std::sync::atomic::Ordering::SeqCst);
+        let sample_rate = state.shared_engine_state.sample_rate.load(std::sync::atomic::Ordering::SeqCst);
+        (total_frames, sample_rate)
+    };
 
     let duration_seconds = if sample_rate > 0 {
         total_frames as f64 / sample_rate as f64
