@@ -16,13 +16,19 @@
   let sampleRate = 44100;
 
   // Track Models
+  interface ChannelPeaks {
+    min: number[];
+    max: number[];
+  }
+
   interface Track {
     name: string;
     path: string;
     duration: number;
     sampleRate: number;
     channels: number;
-    peaks: number[];
+    overviewPeaks: number[];
+    channelPeaks: ChannelPeaks[];
   }
 
   let mainTrack: Track | null = null;
@@ -43,10 +49,17 @@
   
   // Slider State (Dbl-click resets)
   let dbVolume = 0.0;               // range -60 - +12 dB
-  let zoom = 1.0;                   // range 1.0 - 1000.0 (logarithmic or linear)
+  let zoom = 1.0;                   // range 1.0 - 800.0
+  $: target15sZoom = duration > 0 ? Math.max(1.0, duration / 15.0) : 1.0;
 
-  // Zoom View State
-  let visiblePeaks: number[] = [];
+  // Zoom View State (Stereo Channels)
+  interface VisibleChannelData {
+    isSampleLevel: boolean;
+    rawSamples: number[];
+    min: number[];
+    max: number[];
+  }
+  let visibleChannels: VisibleChannelData[] = [];
 
   // Markers
   interface Marker {
@@ -250,7 +263,8 @@
         duration: metadata.duration_seconds,
         sampleRate: metadata.sample_rate,
         channels: metadata.channels,
-        peaks: metadata.peaks
+        overviewPeaks: metadata.overview_peaks || [],
+        channelPeaks: metadata.channel_peaks || []
       };
 
       if (target === "main") {
@@ -268,6 +282,11 @@
       channels = track.channels;
       activeTrackMode = target;
       localStorage.setItem("th_last_active_track_mode", target);
+
+      // Default zoom: 15 seconds rehearsal chunk view
+      if (duration > 0) {
+        zoom = Math.max(1.0, duration / 15.0);
+      }
 
       // Reset markers for new track
       markers = [];
@@ -494,11 +513,17 @@
     await loadAudioPath(path, "alternate");
   }
 
-  // Dynamic Peak Slice fetcher
+  function getActiveTrack(): Track | null {
+    if (activeTrackMode === "main") return mainTrack;
+    if (activeTrackMode === "alternate") return alternateTrack;
+    return null;
+  }
+
+  // Dynamic Peak Slice fetcher (Stereo Channels)
   async function updateVisiblePeaks() {
-    const activePeaks = getActivePeaks();
-    if (activePeaks.length === 0 || !mainCanvas) {
-      visiblePeaks = [];
+    const track = getActiveTrack();
+    if (!track || !mainCanvas) {
+      visibleChannels = [];
       return;
     }
 
@@ -517,44 +542,68 @@
     const isSampleLevel = visibleFrames < 1500;
 
     if (!isSampleLevel) {
-      // Slicing locally from activePeaks cache (8000 points)
-      const startIdx = Math.floor(startProgress * activePeaks.length);
-      const endIdx = Math.floor(endProgress * activePeaks.length);
-      const slice = activePeaks.slice(startIdx, endIdx);
+      // Slicing locally from track.channelPeaks
+      const newChannels: VisibleChannelData[] = [];
+      for (let c = 0; c < track.channelPeaks.length; c++) {
+        const cPeaks = track.channelPeaks[c];
+        const peakLen = cPeaks.min.length;
+        const startIdx = Math.floor(startProgress * peakLen);
+        const endIdx = Math.floor(endProgress * peakLen);
+        
+        const minSlice = cPeaks.min.slice(startIdx, endIdx);
+        const maxSlice = cPeaks.max.slice(startIdx, endIdx);
 
-      // Downsampling locally to target canvas width
-      if (slice.length <= numPoints) {
-        visiblePeaks = slice;
-      } else {
-        const localSlice = [];
-        const chunkSize = slice.length / numPoints;
-        for (let i = 0; i < numPoints; i++) {
-          const chunkStart = Math.floor(i * chunkSize);
-          const chunkEnd = Math.min(Math.floor((i + 1) * chunkSize), slice.length);
-          if (chunkStart >= chunkEnd) break;
-          let maxVal = 0.0;
-          for (let j = chunkStart; j < chunkEnd; j++) {
-            const val = Math.abs(slice[j]);
-            if (val > maxVal) maxVal = val;
+        if (minSlice.length <= numPoints) {
+          newChannels.push({
+            isSampleLevel: false,
+            rawSamples: [],
+            min: minSlice,
+            max: maxSlice
+          });
+        } else {
+          const downsampledMin: number[] = [];
+          const downsampledMax: number[] = [];
+          const chunkSize = minSlice.length / numPoints;
+          for (let i = 0; i < numPoints; i++) {
+            const chunkStart = Math.floor(i * chunkSize);
+            const chunkEnd = Math.min(Math.floor((i + 1) * chunkSize), minSlice.length);
+            if (chunkStart >= chunkEnd) break;
+            let minVal = 0.0;
+            let maxVal = 0.0;
+            for (let j = chunkStart; j < chunkEnd; j++) {
+              if (minSlice[j] < minVal) minVal = minSlice[j];
+              if (maxSlice[j] > maxVal) maxVal = maxSlice[j];
+            }
+            downsampledMin.push(minVal);
+            downsampledMax.push(maxVal);
           }
-          localSlice.push(maxVal);
+          newChannels.push({
+            isSampleLevel: false,
+            rawSamples: [],
+            min: downsampledMin,
+            max: downsampledMax
+          });
         }
-        visiblePeaks = localSlice;
       }
-
-      // Redraw immediately for 60fps responsiveness
+      visibleChannels = newChannels;
       drawMainWaveform();
       drawOverviewWaveform();
       drawAltOverviewWaveform();
     } else {
       // Zoomed in extremely deep: fetch raw samples from backend
       try {
-        const slice: any = await invoke("get_waveform_slice", {
+        const result: any = await invoke("get_waveform_slice", {
           startFrame: startFrame,
           endFrame: endFrame,
           numPoints: numPoints
         });
-        visiblePeaks = slice;
+        const channelsData: number[][] = result.channels || [];
+        visibleChannels = channelsData.map(samples => ({
+          isSampleLevel: true,
+          rawSamples: samples,
+          min: [],
+          max: []
+        }));
         drawMainWaveform();
         drawOverviewWaveform();
         drawAltOverviewWaveform();
@@ -670,10 +719,30 @@
     let newZoom = zoom * factor;
     newZoom = Math.max(1.0, Math.min(800.0, newZoom));
     
+    // Soft snap to 15s notch if scrolling close to it
+    if (Math.abs(newZoom - target15sZoom) < target15sZoom * 0.05) {
+      newZoom = target15sZoom;
+    }
+
     if (newZoom !== zoom) {
       zoom = newZoom;
       updateVisiblePeaks();
     }
+  }
+
+  function getNotchPercent(val: number, min = 1.0, max = 800.0): number {
+    return Math.max(0, Math.min(100, ((val - min) / (max - min)) * 100));
+  }
+
+  function handleZoomInput(e: Event) {
+    const inputVal = parseFloat((e.target as HTMLInputElement).value);
+    const diff = Math.abs(inputVal - target15sZoom);
+    if (diff < target15sZoom * 0.06) {
+      zoom = target15sZoom;
+    } else {
+      zoom = inputVal;
+    }
+    updateVisiblePeaks();
   }
 
   // Overview Waveform: Drag highlighted window center
@@ -779,7 +848,24 @@
     }
   }
 
-  // Draw Waveform canvases
+  function formatRulerTime(seconds: number, stepSec: number): string {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    if (stepSec >= 1) {
+      const s = Math.floor(secs);
+      return `${mins}:${s < 10 ? '0' : ''}${s}`;
+    } else if (stepSec >= 0.1) {
+      const s = secs.toFixed(1);
+      const prefix = secs < 10 ? '0' : '';
+      return `${mins}:${prefix}${s}`;
+    } else {
+      const s = secs.toFixed(2);
+      const prefix = secs < 10 ? '0' : '';
+      return `${mins}:${prefix}${s}`;
+    }
+  }
+
+  // Draw Main Waveform (Split Stereo, Dynamic Time Ruler, Oscillating Curve)
   function drawMainWaveform() {
     if (!mainCanvas) return;
     const ctx = mainCanvas.getContext("2d");
@@ -791,29 +877,17 @@
     const dpr = window.devicePixelRatio || 1;
     const width = rect.width;
     const height = rect.height;
-    const halfHeight = height / 2;
 
     ctx.clearRect(0, 0, mainCanvas.width, mainCanvas.height);
     ctx.save();
     ctx.scale(dpr, dpr);
 
-    const gradient = ctx.createLinearGradient(0, 0, 0, height);
-    gradient.addColorStop(0, "#162837");
-    gradient.addColorStop(1, "#0d1822");
-    ctx.fillStyle = gradient;
+    // 1. Background Fill
+    ctx.fillStyle = "#0c151e";
     ctx.fillRect(0, 0, width, height);
 
-    ctx.strokeStyle = "#1b3547";
-    ctx.lineWidth = 1;
-    for (let x = 50; x < width; x += 100) {
-      ctx.beginPath();
-      ctx.moveTo(x, 0);
-      ctx.lineTo(x, height);
-      ctx.stroke();
-    }
-
-    const activePeaks = getActivePeaks();
-    if (activePeaks.length === 0 || visiblePeaks.length === 0) {
+    const track = getActiveTrack();
+    if (!track || visibleChannels.length === 0 || duration === 0) {
       ctx.fillStyle = "#888888";
       ctx.font = "13px sans-serif";
       ctx.fillText("No active track loaded (Drag & Drop file to load)", width / 2 - 140, height / 2 + 4);
@@ -821,104 +895,208 @@
       return;
     }
 
-    const totalFrames = duration * sampleRate;
     const windowWidth = 1.0 / zoom;
     const startProgress = Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2));
     const endProgress = startProgress + windowWidth;
-    const visibleFrames = (endProgress - startProgress) * totalFrames;
 
-    const isSampleLevel = visibleFrames < 1500;
+    const startTime = startProgress * duration;
+    const endTime = endProgress * duration;
+    const visibleSec = endTime - startTime;
 
-    if (isSampleLevel) {
-      ctx.strokeStyle = "#ffffff";
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
+    // 2. Ruler & Grid Configuration
+    const rulerHeight = 20;
+    let majorStep = 10;
+    let minorStep = 2;
 
-      const step = width / visiblePeaks.length;
-      for (let i = 0; i < visiblePeaks.length; i++) {
-        const val = visiblePeaks[i];
-        const x = i * step;
-        const y = halfHeight - val * (halfHeight * 0.8);
-        if (i === 0) {
-          ctx.moveTo(x, y);
-        } else {
-          ctx.lineTo(x, y);
-        }
-      }
-      ctx.stroke();
-
-      ctx.fillStyle = "#3b99fc";
-      for (let i = 0; i < visiblePeaks.length; i++) {
-        const val = visiblePeaks[i];
-        const x = i * step;
-        const y = halfHeight - val * (halfHeight * 0.8);
-        ctx.beginPath();
-        ctx.arc(x, y, 3, 0, 2 * Math.PI);
-        ctx.fill();
-      }
-
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(0, halfHeight);
-      ctx.lineTo(width, halfHeight);
-      ctx.stroke();
+    if (visibleSec > 180) {
+      majorStep = 60;
+      minorStep = 30;
+    } else if (visibleSec > 60) {
+      majorStep = 30;
+      minorStep = 10;
+    } else if (visibleSec > 20) {
+      majorStep = 10;
+      minorStep = 2;
+    } else if (visibleSec > 8) {
+      majorStep = 5;
+      minorStep = 1;
+    } else if (visibleSec > 2) {
+      majorStep = 1;
+      minorStep = 0.2;
+    } else if (visibleSec > 0.5) {
+      majorStep = 0.5;
+      minorStep = 0.1;
     } else {
-      // Professional vertical column bars rendering (AnyTune / RX style)
-      const step = width / visiblePeaks.length;
-      
-      // Calculate dynamic bar width with a small gap (e.g. 1px or 1.5px)
-      // If step is very small (zoomed out), clamp bar width to minimum 1px.
-      const gap = step > 4 ? 1.5 : (step > 2 ? 1 : 0);
-      const barWidth = Math.max(1, step - gap);
+      majorStep = 0.1;
+      minorStep = 0.02;
+    }
 
-      ctx.fillStyle = "#a8c3d8"; // Elegant silver-blue
+    // Draw Background Grid Lines
+    const firstMinor = Math.floor(startTime / minorStep) * minorStep;
+    for (let t = firstMinor; t <= endTime + minorStep; t += minorStep) {
+      if (t < startTime || t > endTime) continue;
+      const x = ((t - startTime) / visibleSec) * width;
+      const isMajor = Math.abs(Math.round(t / majorStep) * majorStep - t) < 0.0001;
 
-      for (let i = 0; i < visiblePeaks.length; i++) {
-        const val = visiblePeaks[i];
-        const x = i * step;
-        
-        // Calculate peak height
-        const peakHeight = Math.max(1, val * (halfHeight * 0.85));
-        const yTop = halfHeight - peakHeight;
-        
-        // Draw the vertical bar column symmetrically around zero-crossing
-        ctx.fillRect(x, yTop, barWidth, peakHeight * 2);
-      }
-
-      // Draw Zero-Crossing Center Line
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+      ctx.strokeStyle = isMajor ? "rgba(255, 255, 255, 0.12)" : "rgba(255, 255, 255, 0.04)";
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(0, halfHeight);
-      ctx.lineTo(width, halfHeight);
+      ctx.moveTo(x, rulerHeight);
+      ctx.lineTo(x, height);
       ctx.stroke();
     }
 
+    // 3. Top Ruler Header Bar
+    ctx.fillStyle = "#091017";
+    ctx.fillRect(0, 0, width, rulerHeight);
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+    ctx.beginPath();
+    ctx.moveTo(0, rulerHeight);
+    ctx.lineTo(width, rulerHeight);
+    ctx.stroke();
+
+    // Ruler Ticks and Labels
+    ctx.fillStyle = "#7b9bb6";
+    ctx.font = "9px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+    const firstMajor = Math.floor(startTime / majorStep) * majorStep;
+    for (let t = firstMajor; t <= endTime + majorStep; t += majorStep) {
+      if (t < startTime || t > endTime) continue;
+      const x = ((t - startTime) / visibleSec) * width;
+      
+      // Tick mark
+      ctx.strokeStyle = "#5a7a94";
+      ctx.beginPath();
+      ctx.moveTo(x, rulerHeight - 5);
+      ctx.lineTo(x, rulerHeight);
+      ctx.stroke();
+
+      // Text label
+      const label = formatRulerTime(t, majorStep);
+      ctx.fillText(label, x + 4, rulerHeight - 7);
+    }
+
+    // 4. Split Stereo Channels Waveform
+    const waveTop = rulerHeight;
+    const waveHeight = height - rulerHeight;
+    const numChannels = visibleChannels.length;
+    const channelHeight = waveHeight / numChannels;
+
+    for (let c = 0; c < numChannels; c++) {
+      const chData = visibleChannels[c];
+      const chTop = waveTop + c * channelHeight;
+      const chCenter = chTop + channelHeight / 2;
+
+      // Channel boundary line
+      if (c > 0) {
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.1)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, chTop);
+        ctx.lineTo(width, chTop);
+        ctx.stroke();
+      }
+
+      // Zero-Crossing Baseline
+      ctx.strokeStyle = "rgba(59, 153, 252, 0.25)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, chCenter);
+      ctx.lineTo(width, chCenter);
+      ctx.stroke();
+
+      // Channel Badge (L / R)
+      if (numChannels > 1) {
+        ctx.fillStyle = "#4a6c87";
+        ctx.font = "bold 9px sans-serif";
+        ctx.fillText(c === 0 ? "L" : "R", 8, chTop + 14);
+      }
+
+      // Signal Plotting
+      if (chData.isSampleLevel && chData.rawSamples.length > 0) {
+        // Sample Level: Smooth continuous oscillating signal line
+        const samples = chData.rawSamples;
+        const step = width / (samples.length - 1 || 1);
+
+        ctx.strokeStyle = "#3b99fc";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        for (let i = 0; i < samples.length; i++) {
+          const x = i * step;
+          const y = chCenter - samples[i] * (channelHeight * 0.44);
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+
+        // Sample Node Dots
+        ctx.fillStyle = "#8fc4fa";
+        for (let i = 0; i < samples.length; i++) {
+          const x = i * step;
+          const y = chCenter - samples[i] * (channelHeight * 0.44);
+          ctx.fillRect(x - 2, y - 2, 4, 4);
+        }
+      } else if (chData.min.length > 0) {
+        // True Bipolar Min/Max Vertical Envelope Bars
+        const step = width / chData.min.length;
+        const gap = step > 4 ? 1.5 : (step > 2 ? 1 : 0);
+        const barWidth = Math.max(1, step - gap);
+
+        ctx.fillStyle = "#3b99fc";
+
+        for (let i = 0; i < chData.min.length; i++) {
+          const minVal = chData.min[i]; // Negative or 0
+          const maxVal = chData.max[i]; // Positive or 0
+          const x = i * step;
+
+          const yTop = chCenter - maxVal * (channelHeight * 0.44);
+          const yBottom = chCenter - minVal * (channelHeight * 0.44);
+          const barH = Math.max(1, yBottom - yTop);
+
+          ctx.fillRect(x, yTop, barWidth, barH);
+        }
+      }
+    }
+
+    // 5. Markers
     for (const marker of markers) {
       const markerPct = marker.time / duration;
       if (markerPct >= startProgress && markerPct <= endProgress) {
         const markerX = ((markerPct - startProgress) / windowWidth) * width;
         ctx.strokeStyle = "#ff9500"; 
+        ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(markerX, 0);
+        ctx.moveTo(markerX, rulerHeight);
         ctx.lineTo(markerX, height);
         ctx.stroke();
         
         ctx.fillStyle = "#ff9500";
         ctx.font = "bold 9px sans-serif";
-        ctx.fillText(marker.name, markerX + 4, 12);
+        ctx.fillText(marker.name, markerX + 4, rulerHeight + 12);
       }
     }
 
+    // 6. Playhead Indicator (with Ruler Pointer Triangle)
     const playheadPct = (progress - startProgress) / windowWidth;
     const playheadX = playheadPct * width;
-    ctx.strokeStyle = "#3b99fc"; 
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(playheadX, 0);
-    ctx.lineTo(playheadX, height);
-    ctx.stroke();
+
+    if (playheadPct >= 0 && playheadPct <= 1.0) {
+      // Playhead Line
+      ctx.strokeStyle = "#ffcc00"; 
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(playheadX, 0);
+      ctx.lineTo(playheadX, height);
+      ctx.stroke();
+
+      // Top Ruler Triangle Head
+      ctx.fillStyle = "#ffcc00";
+      ctx.beginPath();
+      ctx.moveTo(playheadX - 5, 0);
+      ctx.lineTo(playheadX + 5, 0);
+      ctx.lineTo(playheadX, 7);
+      ctx.closePath();
+      ctx.fill();
+    }
 
     ctx.restore();
   }
@@ -951,11 +1129,12 @@
       return;
     }
 
-    const barWidth = width / track.peaks.length;
+    const peaks = track.overviewPeaks || [];
+    const barWidth = width / peaks.length;
     const halfHeight = height / 2;
     ctx.fillStyle = isActive ? "#a8c3d8" : "#556673";
-    for (let i = 0; i < track.peaks.length; i += 2) {
-      const val = track.peaks[i];
+    for (let i = 0; i < peaks.length; i += 2) {
+      const val = peaks[i];
       const barHeight = val * (height * 0.7);
       const x = i * barWidth;
       const y = halfHeight - barHeight / 2;
@@ -1292,16 +1471,25 @@
             <div class="zoom-slider-group">
               <span class="control-text-label">ZOOM</span>
               <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-              <input 
-                type="range" 
-                min="1.0" 
-                max="800.0" 
-                step="1.0" 
-                bind:value={zoom} 
-                on:dblclick={() => { zoom = 1.0; updateVisiblePeaks(); }}
-                on:input={updateVisiblePeaks}
-                class="zoom-slider" 
-              />
+              <div class="zoom-track-wrapper">
+                <input 
+                  type="range" 
+                  min="1.0" 
+                  max="800.0" 
+                  step="0.5" 
+                  bind:value={zoom} 
+                  on:dblclick={() => { zoom = target15sZoom; updateVisiblePeaks(); }}
+                  on:input={handleZoomInput}
+                  class="zoom-slider" 
+                />
+                {#if duration > 15}
+                  <div 
+                    class="zoom-snap-notch" 
+                    style="left: {getNotchPercent(target15sZoom)}%;" 
+                    title="15s Rehearsal View"
+                  ></div>
+                {/if}
+              </div>
               <span class="zoom-value-label">{zoom.toFixed(0)}x</span>
             </div>
           </div>
@@ -2124,6 +2312,24 @@
     border-radius: 20px;
   }
 
+  .zoom-track-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .zoom-snap-notch {
+    position: absolute;
+    top: -3px;
+    width: 2px;
+    height: 10px;
+    background-color: #ff9500;
+    opacity: 0.8;
+    pointer-events: none;
+    transform: translateX(-50%);
+    border-radius: 1px;
+  }
+
   .control-text-label {
     font-size: 0.65rem;
     font-weight: 800;
@@ -2148,6 +2354,8 @@
     border-radius: 50%;
     background: #ff9500;
     cursor: pointer;
+    position: relative;
+    z-index: 2;
   }
 
   .zoom-value-label {
