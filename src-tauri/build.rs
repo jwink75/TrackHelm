@@ -18,7 +18,9 @@ fn main() {
                         "get_waveform_slice",
                         "get_raw_samples",
                         "get_cloud_folders",
-                        "open_file_external"
+                        "open_file_external",
+                        "read_audio_metadata",
+                        "save_audio_metadata"
                     ])
             )
     ).expect("failed to run tauri-build");

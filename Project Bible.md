@@ -95,9 +95,24 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
 ### 2.13 Rehearsal Workstation Knob & Hardware Reference Controls
 * **Decision:** Custom analog-style virtual knobs with vertical drag sensitivity and hardware zero-point reference marks.
 * **Features:**
-  * **Zero/Center Ticks:** Top 12 o'clock center tick marks (`.knob-zero-tick`) on all parameter dials (Speed, Pitch, Bass, Treble, Threshold, Ratio, Makeup) for precise visual alignment.
+  * **Zero/Center Ticks:** Top 12 o'clock center tick marks (`.knob-zero-tick`) on all parameter dials (Speed, Pitch, Fine Tune, Bass, Mid, Treble, Threshold, Ratio, Makeup) for precise visual alignment.
   * **Double-Click Reset:** Double-clicking any knob or slider instantly resets it to its unity default value.
   * **Real-time DSP Dispatch:** Live knob movements dispatch parameter updates to `SignalsmithStretch` on the native audio thread with zero stutter.
+
+### 2.14 Full Audio Tag Metadata Inspector & In-Place Editor (Lofty Integration)
+* **Decision:** Integrated native audio tag reading and non-destructive writing via `lofty-rs` (v0.21) across ID3v1/v2, Vorbis Comments, MP4/M4A atoms, and FLAC/RIFF chunks.
+* **Editable Tag Fields:** Song Title, Artist/Performer, Album/Project, Grouping (Movement/Act/Scene/Band), Composer/Arranger, Genre, Year, Track Number, and Comments/Notes.
+* **Inspector:** Dedicated `ℹ️ METADATA` split-view tab in the Rehearsal Deck displaying editable tags on the left and technical stream specs (sample rate, channels, duration, file path) on the right.
+
+### 2.15 Dual-Mode Stable Waveform Rendering (Peak Bars vs. Sample Interpolation)
+* **Decision:** Dual-phase waveform visualization combining solid peak-holding column bars when zoomed out with continuous sample interpolation and RX-style node squares when zoomed in.
+* **Acoustic Rationale:** Single-point subsampling of high-frequency audio oscillations during scrolling playback causes phase-aliasing jitter (visual "fluttering"). Calculating max absolute peak per pixel column eliminates flutter at all zoom levels (including the 15-second rehearsal view).
+* **Sample-Level Transition:** When zoomed in to $< 400$ frames on screen, the display automatically transitions to the unbroken continuous sample line with draggable node points.
+
+### 2.16 3-Knob Pitch & Time Shifting Interface (Speed, Semitones, Fine Tune Cents)
+* **Decision:** 3-dial hardware-style row with dedicated Fine Tune ($\pm 100\text{ cents}$) adjustment, placing Semitone transposition in the middle and Speed on the left.
+* **Formula:** $\text{Effective Semitones} = \text{Semitones} + \frac{\text{Cents}}{100.0}$.
+* **Persistence:** Both coarse semitone shifts and fine-tune cent adjustments are saved to the persistent `TrackProfile` and updated in real-time on `SignalsmithStretch`.
 
 ---
 

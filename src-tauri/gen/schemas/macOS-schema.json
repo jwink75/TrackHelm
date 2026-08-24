@@ -231,10 +231,22 @@
           "markdownDescription": "Enables the preload_track command without any pre-configured scope."
         },
         {
+          "description": "Enables the read_audio_metadata command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-read-audio-metadata",
+          "markdownDescription": "Enables the read_audio_metadata command without any pre-configured scope."
+        },
+        {
           "description": "Enables the read_dir command without any pre-configured scope.",
           "type": "string",
           "const": "allow-read-dir",
           "markdownDescription": "Enables the read_dir command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_audio_metadata command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-audio-metadata",
+          "markdownDescription": "Enables the save_audio_metadata command without any pre-configured scope."
         },
         {
           "description": "Enables the seek command without any pre-configured scope.",
@@ -321,10 +333,22 @@
           "markdownDescription": "Denies the preload_track command without any pre-configured scope."
         },
         {
+          "description": "Denies the read_audio_metadata command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-read-audio-metadata",
+          "markdownDescription": "Denies the read_audio_metadata command without any pre-configured scope."
+        },
+        {
           "description": "Denies the read_dir command without any pre-configured scope.",
           "type": "string",
           "const": "deny-read-dir",
           "markdownDescription": "Denies the read_dir command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_audio_metadata command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-audio-metadata",
+          "markdownDescription": "Denies the save_audio_metadata command without any pre-configured scope."
         },
         {
           "description": "Denies the seek command without any pre-configured scope.",

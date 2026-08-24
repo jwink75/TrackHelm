@@ -35,7 +35,8 @@
 
   // Rehearsal Workstation Knob State (Double-click resets)
   let speed = 1.0;                  // range 0.25 - 4.0 (25% - 400%)
-  let pitch = 0;                    // range -24 - +24 semitones
+  let pitch = 0;                    // range -24 - +24 semitones (in the middle)
+  let pitchCents = 0;               // range -100 - +100 cents (fine tune)
   let eqBass = 0;                   // Low Shelf: 100 Hz (-12 - +12 dB)
   let eqMid = 0;                    // Mid Parametric Bell: 1 kHz (-12 - +12 dB)
   let eqTreble = 0;                 // High Shelf: 8 kHz (-12 - +12 dB)
@@ -43,10 +44,26 @@
   let compressorRatio = 2.0;        // range 1.0 - 20.0 (Ratio)
   let compressorMakeup = 0;         // range 0 - 24 dB
   
-  // Center Lower Deck tabs
+  // Center Lower Deck tabs & Metadata
   let activeCenterTab: "notes" | "lyrics" | "metadata" | "pdf" = "notes";
   let songNotes = "";
   let songLyrics = "";
+
+  interface AudioTagMeta {
+    title?: string;
+    artist?: string;
+    album?: string;
+    grouping?: string;
+    composer?: string;
+    genre?: string;
+    year?: number;
+    track_number?: number;
+    comment?: string;
+    is_editable?: boolean;
+  }
+  let audioTags: AudioTagMeta = {};
+  let isSavingTags = false;
+  let tagSaveFeedback = "";
   
   // Slider State (Dbl-click resets)
   let dbVolume = 0.0;               // range -60 - +12 dB
@@ -135,6 +152,7 @@
     dbVolume: number;
     speed: number;
     pitch: number;
+    pitchCents?: number;
     eqBass: number;
     eqMid: number;
     eqTreble: number;
@@ -167,6 +185,7 @@
       dbVolume,
       speed,
       pitch,
+      pitchCents,
       eqBass,
       eqMid,
       eqTreble,
@@ -185,6 +204,31 @@
     localStorage.setItem("th_track_profiles", JSON.stringify(store));
   }
 
+  async function updatePitchEngine() {
+    const totalSemitones = pitch + (pitchCents / 100.0);
+    await invoke("set_pitch", { pitch: totalSemitones });
+    saveCurrentTrackProfile(filePath);
+  }
+
+  async function saveAudioTags() {
+    if (!filePath) return;
+    isSavingTags = true;
+    tagSaveFeedback = "";
+    try {
+      await invoke("save_audio_metadata", { path: filePath, metadata: audioTags });
+      tagSaveFeedback = "✓ Saved tags to audio file!";
+      setTimeout(() => tagSaveFeedback = "", 3500);
+      // If title changed, update displayed title
+      if (audioTags.title && mainTrack && activeTrackMode === "main") {
+        fileName = audioTags.title;
+      }
+    } catch (err) {
+      alert("Failed to save audio tags: " + err);
+    } finally {
+      isSavingTags = false;
+    }
+  }
+
   async function loadTrackProfile(trackPath: string) {
     const store = getProfilesStore();
     const profile = store[trackPath];
@@ -192,6 +236,7 @@
       dbVolume = typeof profile.dbVolume === "number" ? profile.dbVolume : 0.0;
       speed = typeof profile.speed === "number" ? profile.speed : 1.0;
       pitch = typeof profile.pitch === "number" ? profile.pitch : 0;
+      pitchCents = typeof profile.pitchCents === "number" ? profile.pitchCents : 0;
       eqBass = typeof profile.eqBass === "number" ? profile.eqBass : 0;
       eqMid = typeof profile.eqMid === "number" ? profile.eqMid : 0;
       eqTreble = typeof profile.eqTreble === "number" ? profile.eqTreble : 0;
@@ -216,6 +261,7 @@
       dbVolume = 0.0;
       speed = 1.0;
       pitch = 0;
+      pitchCents = 0;
       eqBass = 0;
       eqMid = 0;
       eqTreble = 0;
@@ -236,7 +282,8 @@
     const linearVol = dbVolume <= -59 ? 0 : Math.pow(10, dbVolume / 20);
     await invoke("set_volume", { volume: linearVol });
     await invoke("set_speed", { speed });
-    await invoke("set_pitch", { pitch });
+    const totalSemitones = pitch + (pitchCents / 100.0);
+    await invoke("set_pitch", { pitch: totalSemitones });
   }
 
   // Canvas elements
@@ -459,6 +506,16 @@
 
         // Restore saved Track Profile (Knobs, Markers, PDF, Associated Versions)
         await loadTrackProfile(path);
+
+        // Read audio tags
+        invoke("read_audio_metadata", { path }).then((res: any) => {
+          audioTags = res || {};
+          if (audioTags.title) {
+            fileName = audioTags.title;
+          }
+        }).catch(() => {
+          audioTags = {};
+        });
 
         setTimeout(() => {
           updateVisiblePeaks();
@@ -805,8 +862,19 @@
           const downsampled: number[] = new Array(numPoints);
           const step = sliceLen / numPoints;
           for (let i = 0; i < numPoints; i++) {
-            const idx = Math.min(pyramid.length - 1, Math.floor(startIdx + i * step));
-            downsampled[i] = pyramid[idx];
+            const bStart = Math.floor(startIdx + i * step);
+            const bEnd = Math.min(pyramid.length, Math.max(bStart + 1, Math.floor(startIdx + (i + 1) * step)));
+            let maxAbs = 0;
+            let bestVal = 0;
+            for (let j = bStart; j < bEnd; j++) {
+              const val = pyramid[j];
+              const abs = Math.abs(val);
+              if (abs > maxAbs) {
+                maxAbs = abs;
+                bestVal = val;
+              }
+            }
+            downsampled[i] = bestVal;
           }
           visibleSamples = downsampled;
         }
@@ -1261,20 +1329,29 @@
       const numSamples = visibleSamples.length;
       const step = width / (numSamples - 1 || 1);
 
-      // Single continuous unbroken oscillating line
-      ctx.strokeStyle = "#3b99fc";
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      for (let i = 0; i < numSamples; i++) {
-        const x = i * step;
-        const y = halfHeight - visibleSamples[i] * maxAmplitude;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
+      if (visibleSampleFrames > 400) {
+        // Studio Workstation Peak Bars (Rock-solid, zero fluttering during scrolling playback)
+        ctx.fillStyle = "#3b99fc";
+        const barWidth = Math.max(1.2, step);
+        for (let i = 0; i < numSamples; i++) {
+          const x = i * step;
+          const amp = Math.max(1, Math.abs(visibleSamples[i]) * maxAmplitude);
+          ctx.fillRect(x - barWidth / 2, halfHeight - amp, barWidth, amp * 2);
+        }
+      } else {
+        // Deep Zoom Sample Level (< 400 samples): Single unbroken line + node squares
+        ctx.strokeStyle = "#3b99fc";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        for (let i = 0; i < numSamples; i++) {
+          const x = i * step;
+          const y = halfHeight - visibleSamples[i] * maxAmplitude;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
 
-      // Progressive Sample Node Squares (RX style when <= 400 samples on screen)
-      if (visibleSampleFrames <= 400) {
+        // Progressive Sample Node Squares (RX style when <= 400 samples on screen)
         let nodeSize = 2.5;
         if (visibleSampleFrames <= 40) {
           nodeSize = 6.0;
@@ -1468,8 +1545,8 @@
 
     if (activeKnob.id === "speed") {
       invoke("set_speed", { speed: newVal });
-    } else if (activeKnob.id === "pitch") {
-      invoke("set_pitch", { pitch: newVal });
+    } else if (activeKnob.id === "pitch" || activeKnob.id === "pitch_cents") {
+      updatePitchEngine();
     }
   }
 
@@ -1477,8 +1554,8 @@
     if (activeKnob) {
       if (activeKnob.id === "speed") {
         invoke("set_speed", { speed });
-      } else if (activeKnob.id === "pitch") {
-        invoke("set_pitch", { pitch });
+      } else if (activeKnob.id === "pitch" || activeKnob.id === "pitch_cents") {
+        updatePitchEngine();
       }
       saveCurrentTrackProfile(filePath);
     }
@@ -1491,8 +1568,8 @@
     setValue(defaultVal);
     if (id === "speed") {
       invoke("set_speed", { speed: defaultVal });
-    } else if (id === "pitch") {
-      invoke("set_pitch", { pitch: defaultVal });
+    } else if (id === "pitch" || id === "pitch_cents") {
+      updatePitchEngine();
     }
     saveCurrentTrackProfile(filePath);
   }
@@ -1718,38 +1795,165 @@
             </div>
           {:else if activeCenterTab === "metadata"}
             <div class="tab-pane metadata-pane">
-              <div class="metadata-grid">
-                <div class="meta-item">
-                  <span class="meta-label">Track Title:</span>
-                  <span class="meta-value">{fileName || "None"}</span>
+              <div class="metadata-split-layout">
+                <!-- Left: Editable Audio Tags (Lofty ID3 / Vorbis / MP4 / FLAC) -->
+                <div class="metadata-edit-section">
+                  <div class="meta-section-header">
+                    <span class="meta-section-title">AUDIO TAGS (EDITABLE)</span>
+                    <div class="meta-save-row">
+                      {#if tagSaveFeedback}
+                        <span class="tag-save-feedback">{tagSaveFeedback}</span>
+                      {/if}
+                      <button 
+                        class="save-tags-btn" 
+                        on:click={saveAudioTags}
+                        disabled={isSavingTags || !filePath}
+                      >
+                        {isSavingTags ? "Saving..." : "💾 Save Tags to Audio File"}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div class="meta-form-grid">
+                    <div class="meta-field-group">
+                      <label class="meta-field-label" for="tag-title">Title</label>
+                      <input 
+                        id="tag-title"
+                        type="text" 
+                        class="meta-input" 
+                        placeholder="Song Title" 
+                        bind:value={audioTags.title} 
+                      />
+                    </div>
+
+                    <div class="meta-field-group">
+                      <label class="meta-field-label" for="tag-artist">Artist</label>
+                      <input 
+                        id="tag-artist"
+                        type="text" 
+                        class="meta-input" 
+                        placeholder="Artist / Performer" 
+                        bind:value={audioTags.artist} 
+                      />
+                    </div>
+
+                    <div class="meta-field-group">
+                      <label class="meta-field-label" for="tag-album">Album</label>
+                      <input 
+                        id="tag-album"
+                        type="text" 
+                        class="meta-input" 
+                        placeholder="Album / Project" 
+                        bind:value={audioTags.album} 
+                      />
+                    </div>
+
+                    <div class="meta-field-group">
+                      <label class="meta-field-label" for="tag-grouping">Grouping / Movement</label>
+                      <input 
+                        id="tag-grouping"
+                        type="text" 
+                        class="meta-input" 
+                        placeholder="Grouping / Scene / Act / Band" 
+                        bind:value={audioTags.grouping} 
+                      />
+                    </div>
+
+                    <div class="meta-field-group">
+                      <label class="meta-field-label" for="tag-composer">Composer</label>
+                      <input 
+                        id="tag-composer"
+                        type="text" 
+                        class="meta-input" 
+                        placeholder="Composer / Arranger" 
+                        bind:value={audioTags.composer} 
+                      />
+                    </div>
+
+                    <div class="meta-field-group">
+                      <label class="meta-field-label" for="tag-genre">Genre</label>
+                      <input 
+                        id="tag-genre"
+                        type="text" 
+                        class="meta-input" 
+                        placeholder="Genre (e.g. Jazz, Rock, Classical)" 
+                        bind:value={audioTags.genre} 
+                      />
+                    </div>
+
+                    <div class="meta-field-row">
+                      <div class="meta-field-group half">
+                        <label class="meta-field-label" for="tag-year">Year</label>
+                        <input 
+                          id="tag-year"
+                          type="number" 
+                          class="meta-input" 
+                          placeholder="YYYY" 
+                          bind:value={audioTags.year} 
+                        />
+                      </div>
+                      <div class="meta-field-group half">
+                        <label class="meta-field-label" for="tag-track">Track #</label>
+                        <input 
+                          id="tag-track"
+                          type="number" 
+                          class="meta-input" 
+                          placeholder="No." 
+                          bind:value={audioTags.track_number} 
+                        />
+                      </div>
+                    </div>
+
+                    <div class="meta-field-group full">
+                      <label class="meta-field-label" for="tag-comment">Comment / Notes</label>
+                      <input 
+                        id="tag-comment"
+                        type="text" 
+                        class="meta-input" 
+                        placeholder="Audio tag comment" 
+                        bind:value={audioTags.comment} 
+                      />
+                    </div>
+                  </div>
                 </div>
-                <div class="meta-item">
-                  <span class="meta-label">File Path:</span>
-                  <span class="meta-value" title={filePath}>{filePath || "None"}</span>
-                </div>
-                <div class="meta-item">
-                  <span class="meta-label">Duration:</span>
-                  <span class="meta-value">{formatTime(duration)} ({duration.toFixed(2)}s)</span>
-                </div>
-                <div class="meta-item">
-                  <span class="meta-label">Sample Rate:</span>
-                  <span class="meta-value">{sampleRate} Hz ({sampleRate / 1000} kHz)</span>
-                </div>
-                <div class="meta-item">
-                  <span class="meta-label">Channels:</span>
-                  <span class="meta-value">{channels === 2 ? "2 (Stereo)" : channels === 1 ? "1 (Mono)" : `${channels} Channels`}</span>
-                </div>
-                <div class="meta-item">
-                  <span class="meta-label">Active Mode:</span>
-                  <span class="meta-value active-mode">{activeTrackMode.toUpperCase()}</span>
-                </div>
-                <div class="meta-item">
-                  <span class="meta-label">Markers:</span>
-                  <span class="meta-value">{markers.length} markers</span>
-                </div>
-                <div class="meta-item">
-                  <span class="meta-label">Associated PDF:</span>
-                  <span class="meta-value">{pdfChartName || "None linked"}</span>
+
+                <!-- Right: Audio File Specs -->
+                <div class="metadata-specs-section">
+                  <span class="meta-section-title">FILE PROPERTIES</span>
+                  <div class="specs-grid">
+                    <div class="spec-row">
+                      <span class="spec-label">File:</span>
+                      <span class="spec-val" title={fileName}>{fileName || "None"}</span>
+                    </div>
+                    <div class="spec-row">
+                      <span class="spec-label">Path:</span>
+                      <span class="spec-val path-val" title={filePath}>{filePath || "None"}</span>
+                    </div>
+                    <div class="spec-row">
+                      <span class="spec-label">Duration:</span>
+                      <span class="spec-val">{formatTime(duration)} ({duration.toFixed(2)}s)</span>
+                    </div>
+                    <div class="spec-row">
+                      <span class="spec-label">Sample Rate:</span>
+                      <span class="spec-val">{sampleRate} Hz ({sampleRate / 1000} kHz)</span>
+                    </div>
+                    <div class="spec-row">
+                      <span class="spec-label">Channels:</span>
+                      <span class="spec-val">{channels === 2 ? "Stereo (2 ch)" : channels === 1 ? "Mono (1 ch)" : `${channels} ch`}</span>
+                    </div>
+                    <div class="spec-row">
+                      <span class="spec-label">Active Slot:</span>
+                      <span class="spec-val active-slot">{activeTrackMode.toUpperCase()}</span>
+                    </div>
+                    <div class="spec-row">
+                      <span class="spec-label">Markers:</span>
+                      <span class="spec-val">{markers.length} markers</span>
+                    </div>
+                    <div class="spec-row">
+                      <span class="spec-label">Sheet Music:</span>
+                      <span class="spec-val">{pdfChartName || "None linked"}</span>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -2135,7 +2339,7 @@
           </div>
         </div>
 
-        <!-- 2. Speed and Pitch Knobs (Knobs on same line) -->
+        <!-- 2. Speed, Pitch, and Fine Tune Knobs (3 knobs on same line) -->
         <div class="knobs-row active-knobs">
           <!-- Speed Knob -->
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
@@ -2143,7 +2347,7 @@
             class="knob-container" 
             on:mousedown={(e) => handleKnobMousedown(e, "speed", speed, 0.25, 4.00, 0.05, (v) => speed = v)}
             on:dblclick={() => resetKnob("speed", 1.0, (v) => speed = v)}
-            title="Double-click resets to 100%"
+            title="Speed Tempo • Double-click resets to 100%"
           >
             <span class="knob-label">Speed</span>
             <div class="knob-circle">
@@ -2153,20 +2357,36 @@
             <span class="knob-value">{Math.round(speed * 100)}%</span>
           </div>
 
-          <!-- Pitch Knob -->
+          <!-- Pitch Shift (Semitones) Knob in the MIDDLE -->
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
           <div 
             class="knob-container" 
             on:mousedown={(e) => handleKnobMousedown(e, "pitch", pitch, -24, 24, 1, (v) => pitch = v)}
             on:dblclick={() => resetKnob("pitch", 0, (v) => pitch = v)}
-            title="Double-click resets to 0 semitones"
+            title="Pitch Transposition (Semitones) • Double-click resets to 0 st"
           >
-            <span class="knob-label">Pitch Shift</span>
+            <span class="knob-label">Pitch</span>
             <div class="knob-circle">
               <div class="knob-zero-tick"></div>
               <div class="knob-marker" style="transform: rotate({getKnobRotation(pitch, -24, 24)}deg)"></div>
             </div>
             <span class="knob-value">{pitch > 0 ? "+" : ""}{pitch} st</span>
+          </div>
+
+          <!-- Fine Tune (Cents) Knob on the RIGHT -->
+          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+          <div 
+            class="knob-container" 
+            on:mousedown={(e) => handleKnobMousedown(e, "pitch_cents", pitchCents, -100, 100, 1, (v) => pitchCents = v)}
+            on:dblclick={() => resetKnob("pitch_cents", 0, (v) => pitchCents = v)}
+            title="Fine Tune (Cents) • Double-click resets to 0 cents"
+          >
+            <span class="knob-label">Fine</span>
+            <div class="knob-circle">
+              <div class="knob-zero-tick"></div>
+              <div class="knob-marker" style="transform: rotate({getKnobRotation(pitchCents, -100, 100)}deg)"></div>
+            </div>
+            <span class="knob-value">{pitchCents > 0 ? "+" : ""}{pitchCents} ct</span>
           </div>
         </div>
 
@@ -3216,43 +3436,176 @@
     line-height: 1.6;
   }
 
-  .metadata-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    gap: 6px 14px;
-    background-color: #18181a;
-    padding: 10px 14px;
-    border-radius: 4px;
-    border: 1px solid #2d2d2d;
+  .metadata-split-layout {
+    display: flex;
+    gap: 14px;
+    height: 100%;
     overflow-y: auto;
+    min-height: 0;
   }
 
-  .meta-item {
+  .metadata-edit-section {
+    flex: 1.6;
+    display: flex;
+    flex-direction: column;
+    background-color: #141415;
+    border: 1px solid #28282b;
+    border-radius: 4px;
+    padding: 8px 12px;
+    overflow-y: auto;
+    min-width: 0;
+  }
+
+  .metadata-specs-section {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background-color: #18181a;
+    border: 1px solid #28282b;
+    border-radius: 4px;
+    padding: 8px 12px;
+    overflow-y: auto;
+    min-width: 0;
+  }
+
+  .meta-section-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    font-size: 0.75rem;
-    border-bottom: 1px solid #242426;
-    padding: 3px 0;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+    gap: 6px;
   }
 
-  .meta-label {
+  .meta-section-title {
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: #8e8e8e;
+  }
+
+  .meta-save-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .tag-save-feedback {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: #34c759;
+  }
+
+  .save-tags-btn {
+    background-color: #3b99fc;
+    color: #ffffff;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+  }
+
+  .save-tags-btn:hover:not(:disabled) {
+    background-color: #258bf5;
+  }
+
+  .save-tags-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .meta-form-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 10px;
+  }
+
+  .meta-field-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .meta-field-group.full {
+    grid-column: 1 / -1;
+  }
+
+  .meta-field-row {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: 10px;
+  }
+
+  .meta-field-group.half {
+    flex: 1;
+  }
+
+  .meta-field-label {
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: #7b9bb6;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .meta-input {
+    background-color: #0c0c0d;
+    border: 1px solid #2d2d30;
+    border-radius: 3px;
+    color: #ffffff;
+    font-size: 0.78rem;
+    padding: 4px 6px;
+    outline: none;
+    transition: border-color 0.15s ease;
+  }
+
+  .meta-input:focus {
+    border-color: #3b99fc;
+    background-color: #121214;
+  }
+
+  .specs-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 6px;
+  }
+
+  .spec-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.72rem;
+    padding: 2px 0;
+    border-bottom: 1px solid #222225;
+  }
+
+  .spec-label {
     color: #8e8e8e;
     font-weight: 600;
   }
 
-  .meta-value {
-    color: #ffffff;
+  .spec-val {
+    color: #d1d1d1;
     font-family: monospace;
+    font-size: 0.72rem;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    max-width: 180px;
+    max-width: 150px;
   }
 
-  .meta-value.active-mode {
+  .spec-val.path-val {
+    max-width: 130px;
+    font-size: 0.68rem;
+  }
+
+  .spec-val.active-slot {
     color: #3b99fc;
-    font-weight: 700;
+    font-weight: bold;
   }
 
   .pdf-viewer-container {

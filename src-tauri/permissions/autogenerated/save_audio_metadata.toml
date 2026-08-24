@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-save-audio-metadata"
+description = "Enables the save_audio_metadata command without any pre-configured scope."
+commands.allow = ["save_audio_metadata"]
+
+[[permission]]
+identifier = "deny-save-audio-metadata"
+description = "Denies the save_audio_metadata command without any pre-configured scope."
+commands.deny = ["save_audio_metadata"]

@@ -496,6 +496,109 @@ fn open_file_external(path: String) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone, Debug)]
+pub struct AudioTagMetadata {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub grouping: Option<String>,
+    pub composer: Option<String>,
+    pub genre: Option<String>,
+    pub year: Option<u32>,
+    pub track_number: Option<u32>,
+    pub comment: Option<String>,
+    pub is_editable: bool,
+}
+
+#[tauri::command]
+fn read_audio_metadata(path: String) -> Result<AudioTagMetadata, String> {
+    use lofty::file::TaggedFileExt;
+    use lofty::probe::Probe;
+    use lofty::tag::{Accessor, ItemKey};
+
+    let tagged_file = match Probe::open(&path) {
+        Ok(probe) => match probe.read() {
+            Ok(tf) => tf,
+            Err(_) => return Ok(AudioTagMetadata { is_editable: false, ..Default::default() }),
+        },
+        Err(_) => return Ok(AudioTagMetadata { is_editable: false, ..Default::default() }),
+    };
+
+    let tag = tagged_file.primary_tag().or_else(|| tagged_file.first_tag());
+
+    let mut meta = AudioTagMetadata {
+        is_editable: true,
+        ..Default::default()
+    };
+
+    if let Some(tag) = tag {
+        meta.title = tag.title().as_deref().map(|s| s.to_string());
+        meta.artist = tag.artist().as_deref().map(|s| s.to_string());
+        meta.album = tag.album().as_deref().map(|s| s.to_string());
+        meta.genre = tag.genre().as_deref().map(|s| s.to_string());
+        meta.year = tag.year();
+        meta.track_number = tag.track();
+        meta.comment = tag.comment().as_deref().map(|s| s.to_string());
+        meta.grouping = tag.get_string(&ItemKey::ContentGroup).map(|s| s.to_string());
+        meta.composer = tag.get_string(&ItemKey::Composer).map(|s| s.to_string());
+    }
+
+    Ok(meta)
+}
+
+#[tauri::command]
+fn save_audio_metadata(path: String, metadata: AudioTagMetadata) -> Result<(), String> {
+    use lofty::config::WriteOptions;
+    use lofty::file::TaggedFileExt;
+    use lofty::probe::Probe;
+    use lofty::tag::{Accessor, ItemKey, Tag, TagExt};
+
+    let mut tagged_file = Probe::open(&path)
+        .map_err(|e| e.to_string())?
+        .read()
+        .map_err(|e| e.to_string())?;
+
+    let tag_type = tagged_file.primary_tag_type();
+    let tag = match tagged_file.tag_mut(tag_type) {
+        Some(t) => t,
+        None => {
+            tagged_file.insert_tag(Tag::new(tag_type));
+            tagged_file.tag_mut(tag_type).ok_or("Failed to create tag")?
+        }
+    };
+
+    if let Some(title) = metadata.title {
+        tag.set_title(title);
+    }
+    if let Some(artist) = metadata.artist {
+        tag.set_artist(artist);
+    }
+    if let Some(album) = metadata.album {
+        tag.set_album(album);
+    }
+    if let Some(genre) = metadata.genre {
+        tag.set_genre(genre);
+    }
+    if let Some(year) = metadata.year {
+        tag.set_year(year);
+    }
+    if let Some(track_num) = metadata.track_number {
+        tag.set_track(track_num);
+    }
+    if let Some(comment) = metadata.comment {
+        tag.set_comment(comment);
+    }
+    if let Some(grouping) = metadata.grouping {
+        tag.insert_text(ItemKey::ContentGroup, grouping);
+    }
+    if let Some(composer) = metadata.composer {
+        tag.insert_text(ItemKey::Composer, composer);
+    }
+
+    tag.save_to_path(&path, WriteOptions::default()).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn main() {
     let (mut engine, command_bus, shared_state) = trackhelm_engine::AudioEngine::new();
 
@@ -533,7 +636,9 @@ fn main() {
             get_waveform_slice,
             get_raw_samples,
             get_cloud_folders,
-            open_file_external
+            open_file_external,
+            read_audio_metadata,
+            save_audio_metadata
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
