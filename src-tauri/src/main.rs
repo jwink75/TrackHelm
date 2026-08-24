@@ -277,7 +277,7 @@ fn load_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata,
     let sample_rate = audio.sample_rate;
     let channels = audio.channels;
 
-    let peaks = compute_peaks(&audio, 1000);
+    let peaks = compute_peaks(&audio, 8000);
     let audio_arc = Arc::new(audio);
 
     let mut active_audio = state.active_audio.lock().unwrap();

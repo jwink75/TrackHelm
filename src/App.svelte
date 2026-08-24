@@ -513,15 +513,54 @@
     const startFrame = Math.floor(startProgress * totalFrames);
     const endFrame = Math.floor(endProgress * totalFrames);
 
-    try {
-      const slice: any = await invoke("get_waveform_slice", {
-        startFrame: startFrame,
-        endFrame: endFrame,
-        numPoints: numPoints
-      });
-      visiblePeaks = slice;
-    } catch (err) {
-      console.error("Failed to fetch waveform slice", err);
+    const visibleFrames = (endProgress - startProgress) * totalFrames;
+    const isSampleLevel = visibleFrames < 1500;
+
+    if (!isSampleLevel) {
+      // Slicing locally from activePeaks cache (8000 points)
+      const startIdx = Math.floor(startProgress * activePeaks.length);
+      const endIdx = Math.floor(endProgress * activePeaks.length);
+      const slice = activePeaks.slice(startIdx, endIdx);
+
+      // Downsampling locally to target canvas width
+      if (slice.length <= numPoints) {
+        visiblePeaks = slice;
+      } else {
+        const localSlice = [];
+        const chunkSize = slice.length / numPoints;
+        for (let i = 0; i < numPoints; i++) {
+          const chunkStart = Math.floor(i * chunkSize);
+          const chunkEnd = Math.min(Math.floor((i + 1) * chunkSize), slice.length);
+          if (chunkStart >= chunkEnd) break;
+          let maxVal = 0.0;
+          for (let j = chunkStart; j < chunkEnd; j++) {
+            const val = Math.abs(slice[j]);
+            if (val > maxVal) maxVal = val;
+          }
+          localSlice.push(maxVal);
+        }
+        visiblePeaks = localSlice;
+      }
+
+      // Redraw immediately for 60fps responsiveness
+      drawMainWaveform();
+      drawOverviewWaveform();
+      drawAltOverviewWaveform();
+    } else {
+      // Zoomed in extremely deep: fetch raw samples from backend
+      try {
+        const slice: any = await invoke("get_waveform_slice", {
+          startFrame: startFrame,
+          endFrame: endFrame,
+          numPoints: numPoints
+        });
+        visiblePeaks = slice;
+        drawMainWaveform();
+        drawOverviewWaveform();
+        drawAltOverviewWaveform();
+      } catch (err) {
+        console.error("Failed to fetch raw samples", err);
+      }
     }
   }
 
@@ -556,31 +595,129 @@
     invoke("seek", { seconds: 0 });
   }
 
-  function handleMainWaveformClick(e: MouseEvent) {
-    if (duration === 0) return;
-    const rect = mainCanvas.getBoundingClientRect();
-    const clickX = e.clientX - rect.left;
-    const pct = clickX / rect.width;
+  // Panning & Dragging State
+  let isPanning = false;
+  let panStartX = 0;
+  let panStartProgress = 0;
+  let hasDraggedMain = false;
+
+  let isDraggingOverview = false;
+
+  // Main Waveform: Mouse Drag to Pan, click to seek
+  function handleMainMouseDown(e: MouseEvent) {
+    if (duration === 0 || !mainCanvas) return;
+    isPanning = true;
+    hasDraggedMain = false;
+    panStartX = e.clientX;
+    panStartProgress = progress;
     
-    const windowWidth = 1.0 / zoom;
-    const startProgress = Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2));
-    const targetPct = startProgress + pct * windowWidth;
-    const targetSeconds = targetPct * duration;
-    invoke("seek", { seconds: targetSeconds });
+    window.addEventListener("mousemove", handleMainMouseMove);
+    window.addEventListener("mouseup", handleMainMouseUp);
   }
 
-  function handleOverviewClick(e: MouseEvent, target: "main" | "alternate") {
+  function handleMainMouseMove(e: MouseEvent) {
+    if (!isPanning || !mainCanvas) return;
+    const rect = mainCanvas.getBoundingClientRect();
+    const width = rect.width;
+    const windowWidth = 1.0 / zoom;
+    const deltaX = e.clientX - panStartX;
+
+    if (Math.abs(deltaX) > 3) {
+      hasDraggedMain = true;
+    }
+
+    const progressChange = -(deltaX / width) * windowWidth;
+    let newProgress = panStartProgress + progressChange;
+    const halfWindow = windowWidth / 2;
+    newProgress = Math.max(halfWindow, Math.min(1.0 - halfWindow, newProgress));
+
+    progress = newProgress;
+    currentTime = progress * duration;
+
+    updateVisiblePeaks();
+  }
+
+  async function handleMainMouseUp(e: MouseEvent) {
+    if (isPanning) {
+      isPanning = false;
+      window.removeEventListener("mousemove", handleMainMouseMove);
+      window.removeEventListener("mouseup", handleMainMouseUp);
+
+      if (!hasDraggedMain && mainCanvas) {
+        // Simple Click: seek playhead to exactly where they clicked
+        const rect = mainCanvas.getBoundingClientRect();
+        const clickX = e.clientX - rect.left;
+        const pct = clickX / rect.width;
+        
+        const windowWidth = 1.0 / zoom;
+        const startProgress = Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2));
+        const targetPct = startProgress + pct * windowWidth;
+        const targetSeconds = targetPct * duration;
+        await invoke("seek", { seconds: targetSeconds });
+      } else {
+        // Drag finished: send the final seek position to synchronise audio engine playhead
+        await invoke("seek", { seconds: progress * duration });
+      }
+    }
+  }
+
+  // Mouse wheel zoom on Main Waveform
+  function handleMainWheel(e: WheelEvent) {
+    if (duration === 0) return;
+    e.preventDefault();
+    // Zoom in/out logarithmically or linearly based on scroll delta
+    const factor = e.deltaY < 0 ? 1.15 : 0.85;
+    let newZoom = zoom * factor;
+    newZoom = Math.max(1.0, Math.min(800.0, newZoom));
+    
+    if (newZoom !== zoom) {
+      zoom = newZoom;
+      updateVisiblePeaks();
+    }
+  }
+
+  // Overview Waveform: Drag highlighted window center
+  function handleOverviewMouseDown(e: MouseEvent, target: "main" | "alternate") {
     if (target !== activeTrackMode) {
       toggleActiveTrack(target);
-      return;
     }
     if (duration === 0) return;
-    const canvas = target === "main" ? overviewCanvas : altOverviewCanvas;
+    isDraggingOverview = true;
+    
+    updateOverviewDrag(e);
+    window.addEventListener("mousemove", handleOverviewMouseMove);
+    window.addEventListener("mouseup", handleOverviewMouseUp);
+  }
+
+  function handleOverviewMouseMove(e: MouseEvent) {
+    if (!isDraggingOverview) return;
+    updateOverviewDrag(e);
+  }
+
+  async function handleOverviewMouseUp(e: MouseEvent) {
+    if (isDraggingOverview) {
+      isDraggingOverview = false;
+      window.removeEventListener("mousemove", handleOverviewMouseMove);
+      window.removeEventListener("mouseup", handleOverviewMouseUp);
+      // Synchronise engine playhead
+      await invoke("seek", { seconds: progress * duration });
+    }
+  }
+
+  function updateOverviewDrag(e: MouseEvent) {
+    const canvas = activeTrackMode === "main" ? overviewCanvas : altOverviewCanvas;
+    if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
-    const pct = clickX / rect.width;
-    const targetSeconds = pct * duration;
-    invoke("seek", { seconds: targetSeconds });
+    const pct = Math.max(0, Math.min(1.0, clickX / rect.width));
+
+    const windowWidth = 1.0 / zoom;
+    const halfWindow = windowWidth / 2;
+
+    progress = Math.max(halfWindow, Math.min(1.0 - halfWindow, pct));
+    currentTime = progress * duration;
+
+    updateVisiblePeaks();
   }
 
   // Markers
@@ -1077,7 +1214,7 @@
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
           <canvas 
             bind:this={altOverviewCanvas} 
-            on:click={(e) => handleOverviewClick(e, "alternate")}
+            on:mousedown={(e) => handleOverviewMouseDown(e, "alternate")}
             on:dblclick={() => toggleActiveTrack("alternate")}
             class="overview-canvas"
           ></canvas>
@@ -1097,7 +1234,7 @@
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
           <canvas 
             bind:this={overviewCanvas} 
-            on:click={(e) => handleOverviewClick(e, "main")}
+            on:mousedown={(e) => handleOverviewMouseDown(e, "main")}
             on:dblclick={() => toggleActiveTrack("main")}
             class="overview-canvas"
           ></canvas>
@@ -1110,7 +1247,8 @@
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
           <canvas 
             bind:this={mainCanvas} 
-            on:click={handleMainWaveformClick}
+            on:mousedown={handleMainMouseDown}
+            on:wheel|passive={handleMainWheel}
             class="main-canvas"
           ></canvas>
         </div>
