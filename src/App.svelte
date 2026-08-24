@@ -36,11 +36,17 @@
   // Rehearsal Workstation Knob State (Double-click resets)
   let speed = 1.0;                  // range 0.25 - 4.0 (25% - 400%)
   let pitch = 0;                    // range -24 - +24 semitones
-  let eqBass = 0;                   // range -12 - +12 dB
-  let eqTreble = 0;                 // range -12 - +12 dB
+  let eqBass = 0;                   // Low Shelf: 100 Hz (-12 - +12 dB)
+  let eqMid = 0;                    // Mid Parametric Bell: 1 kHz (-12 - +12 dB)
+  let eqTreble = 0;                 // High Shelf: 8 kHz (-12 - +12 dB)
   let compressorThreshold = -20;    // range -60 - 0 dB
   let compressorRatio = 2.0;        // range 1.0 - 20.0 (Ratio)
   let compressorMakeup = 0;         // range 0 - 24 dB
+  
+  // Center Lower Deck tabs
+  let activeCenterTab: "notes" | "lyrics" | "metadata" | "pdf" = "notes";
+  let songNotes = "";
+  let songLyrics = "";
   
   // Slider State (Dbl-click resets)
   let dbVolume = 0.0;               // range -60 - +12 dB
@@ -130,6 +136,7 @@
     speed: number;
     pitch: number;
     eqBass: number;
+    eqMid: number;
     eqTreble: number;
     compressorThreshold: number;
     compressorRatio: number;
@@ -140,6 +147,8 @@
     pdfChartName: string;
     associatedVersions: PlaylistItem[];
     alternateTrackPath?: string | null;
+    notes?: string;
+    lyrics?: string;
   }
 
   function getProfilesStore(): Record<string, TrackProfile> {
@@ -159,6 +168,7 @@
       speed,
       pitch,
       eqBass,
+      eqMid,
       eqTreble,
       compressorThreshold,
       compressorRatio,
@@ -168,7 +178,9 @@
       pdfChartPath,
       pdfChartName,
       associatedVersions,
-      alternateTrackPath: alternateTrack ? alternateTrack.path : null
+      alternateTrackPath: alternateTrack ? alternateTrack.path : null,
+      notes: songNotes,
+      lyrics: songLyrics
     };
     localStorage.setItem("th_track_profiles", JSON.stringify(store));
   }
@@ -181,6 +193,7 @@
       speed = typeof profile.speed === "number" ? profile.speed : 1.0;
       pitch = typeof profile.pitch === "number" ? profile.pitch : 0;
       eqBass = typeof profile.eqBass === "number" ? profile.eqBass : 0;
+      eqMid = typeof profile.eqMid === "number" ? profile.eqMid : 0;
       eqTreble = typeof profile.eqTreble === "number" ? profile.eqTreble : 0;
       compressorThreshold = typeof profile.compressorThreshold === "number" ? profile.compressorThreshold : -20;
       compressorRatio = typeof profile.compressorRatio === "number" ? profile.compressorRatio : 2.0;
@@ -190,6 +203,8 @@
       pdfChartPath = profile.pdfChartPath || "";
       pdfChartName = profile.pdfChartName || (pdfChartPath ? (pdfChartPath.split("/").pop() || "") : "");
       associatedVersions = Array.isArray(profile.associatedVersions) ? profile.associatedVersions : [];
+      songNotes = profile.notes || "";
+      songLyrics = profile.lyrics || "";
       
       if (profile.alternateTrackPath && profile.alternateTrackPath !== trackPath) {
         loadAudioPath(profile.alternateTrackPath, "alternate", false);
@@ -202,6 +217,7 @@
       speed = 1.0;
       pitch = 0;
       eqBass = 0;
+      eqMid = 0;
       eqTreble = 0;
       compressorThreshold = -20;
       compressorRatio = 2.0;
@@ -211,6 +227,8 @@
       pdfChartPath = "";
       pdfChartName = "";
       associatedVersions = [];
+      songNotes = "";
+      songLyrics = "";
       alternateTrack = null;
     }
 
@@ -629,6 +647,7 @@
         pdfChartPath = selected;
         pdfChartName = selected.split("/").pop() || selected;
         localStorage.setItem("th_pdf_path", selected);
+        saveCurrentTrackProfile(filePath);
       }
     } catch (err) {
       alert("Failed to associate PDF: " + err);
@@ -639,6 +658,16 @@
     pdfChartPath = "";
     pdfChartName = "";
     localStorage.removeItem("th_pdf_path");
+    saveCurrentTrackProfile(filePath);
+  }
+
+  async function openPdfInExternalViewer() {
+    if (!pdfChartPath) return;
+    try {
+      await invoke("open_file_external", { path: pdfChartPath });
+    } catch (err) {
+      alert("Failed to open PDF in floating window: " + err);
+    }
   }
 
   async function associateAlternativeVersion() {
@@ -1739,6 +1768,132 @@
           </div>
         </div>
       </div>
+
+      <!-- Lower Rehearsal Deck (Flex-grow vertical inspection area) -->
+      <div class="rehearsal-bottom-deck">
+        <div class="deck-tabs-header">
+          <button 
+            class="deck-tab-btn" 
+            class:active={activeCenterTab === "notes"} 
+            on:click={() => activeCenterTab = "notes"}
+          >
+            📝 NOTES
+          </button>
+          <button 
+            class="deck-tab-btn" 
+            class:active={activeCenterTab === "lyrics"} 
+            on:click={() => activeCenterTab = "lyrics"}
+          >
+            🎤 LYRICS
+          </button>
+          <button 
+            class="deck-tab-btn" 
+            class:active={activeCenterTab === "metadata"} 
+            on:click={() => activeCenterTab = "metadata"}
+          >
+            ℹ️ METADATA
+          </button>
+          <button 
+            class="deck-tab-btn" 
+            class:active={activeCenterTab === "pdf"} 
+            on:click={() => activeCenterTab = "pdf"}
+          >
+            📄 SHEET MUSIC (PDF)
+          </button>
+        </div>
+
+        <div class="deck-tab-content">
+          {#if activeCenterTab === "notes"}
+            <div class="tab-pane notes-pane">
+              <textarea 
+                class="rehearsal-textarea notes-textarea" 
+                placeholder="Type rehearsal notes, arrangement cues, key changes, or performance reminders here (auto-saved with this song)..."
+                bind:value={songNotes}
+                on:input={() => saveCurrentTrackProfile(filePath)}
+              ></textarea>
+            </div>
+          {:else if activeCenterTab === "lyrics"}
+            <div class="tab-pane lyrics-pane">
+              <textarea 
+                class="rehearsal-textarea lyrics-textarea" 
+                placeholder="Type or paste song lyrics, vocal harmony cues, or performance text here (auto-saved with this song)..."
+                bind:value={songLyrics}
+                on:input={() => saveCurrentTrackProfile(filePath)}
+              ></textarea>
+            </div>
+          {:else if activeCenterTab === "metadata"}
+            <div class="tab-pane metadata-pane">
+              <div class="metadata-grid">
+                <div class="meta-item">
+                  <span class="meta-label">Track Title:</span>
+                  <span class="meta-value">{fileName || "None"}</span>
+                </div>
+                <div class="meta-item">
+                  <span class="meta-label">File Path:</span>
+                  <span class="meta-value" title={filePath}>{filePath || "None"}</span>
+                </div>
+                <div class="meta-item">
+                  <span class="meta-label">Duration:</span>
+                  <span class="meta-value">{formatTime(duration)} ({duration.toFixed(2)}s)</span>
+                </div>
+                <div class="meta-item">
+                  <span class="meta-label">Sample Rate:</span>
+                  <span class="meta-value">{sampleRate} Hz ({sampleRate / 1000} kHz)</span>
+                </div>
+                <div class="meta-item">
+                  <span class="meta-label">Channels:</span>
+                  <span class="meta-value">{channels === 2 ? "2 (Stereo)" : channels === 1 ? "1 (Mono)" : `${channels} Channels`}</span>
+                </div>
+                <div class="meta-item">
+                  <span class="meta-label">Active Mode:</span>
+                  <span class="meta-value active-mode">{activeTrackMode.toUpperCase()}</span>
+                </div>
+                <div class="meta-item">
+                  <span class="meta-label">Markers:</span>
+                  <span class="meta-value">{markers.length} markers</span>
+                </div>
+                <div class="meta-item">
+                  <span class="meta-label">Associated PDF:</span>
+                  <span class="meta-value">{pdfChartName || "None linked"}</span>
+                </div>
+              </div>
+            </div>
+          {:else if activeCenterTab === "pdf"}
+            <div class="tab-pane pdf-pane">
+              {#if pdfChartPath}
+                <div class="pdf-viewer-container">
+                  <div class="pdf-toolbar">
+                    <span class="pdf-title">📄 {pdfChartName}</span>
+                    <button class="popout-pdf-btn" on:click={openPdfInExternalViewer}>
+                      ⤢ Open in Floating Window
+                    </button>
+                  </div>
+                  <div class="pdf-preview-box">
+                    <div class="pdf-info-card">
+                      <span class="pdf-card-icon">🎼</span>
+                      <div class="pdf-card-details">
+                        <h4>{pdfChartName}</h4>
+                        <p class="pdf-card-path">{pdfChartPath}</p>
+                      </div>
+                      <button class="open-large-btn" on:click={openPdfInExternalViewer}>
+                        ⤢ Open Sheet Music in Preview / PDF Viewer
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              {:else}
+                <div class="no-pdf-placeholder">
+                  <span class="pdf-placeholder-icon">📄</span>
+                  <p>No sheet music or lead sheet PDF linked to this song.</p>
+                  <button class="link-pdf-btn" on:click={associatePdfChart}>
+                    + Link PDF Sheet Music / Lead Sheet...
+                  </button>
+                </div>
+              {/if}
+            </div>
+          {/if}
+        </div>
+      </div>
     </section>
 
     <!-- RIGHT SIDEBAR: Markers, FX, Project Setup (Dorico Theme) -->
@@ -1925,17 +2080,17 @@
           </div>
         </div>
 
-        <!-- 3. Equalizer knobs (Bass, Treble) -->
+        <!-- 3. Equalizer knobs (Low 100Hz, Mid 1kHz, High 8kHz) -->
         <div class="knobs-row placeholder-knobs">
-          <!-- Bass -->
+          <!-- Low Shelf (100 Hz) -->
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
           <div 
             class="knob-container" 
             on:mousedown={(e) => handleKnobMousedown(e, "eq_bass", eqBass, -12, 12, 0.5, (v) => eqBass = v)}
             on:dblclick={() => resetKnob("eq_bass", 0, (v) => eqBass = v)}
-            title="Double-click resets to 0 dB"
+            title="Low Shelf 100 Hz • Double-click resets to 0 dB"
           >
-            <span class="knob-label">Bass</span>
+            <span class="knob-label">Low 100Hz</span>
             <div class="knob-circle">
               <div class="knob-zero-tick"></div>
               <div class="knob-marker" style="transform: rotate({getKnobRotation(eqBass, -12, 12)}deg)"></div>
@@ -1943,15 +2098,31 @@
             <span class="knob-value">{eqBass > 0 ? "+" : ""}{eqBass.toFixed(1)} dB</span>
           </div>
 
-          <!-- Treble -->
+          <!-- Mid Parametric Bell (1 kHz) -->
+          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+          <div 
+            class="knob-container" 
+            on:mousedown={(e) => handleKnobMousedown(e, "eq_mid", eqMid, -12, 12, 0.5, (v) => eqMid = v)}
+            on:dblclick={() => resetKnob("eq_mid", 0, (v) => eqMid = v)}
+            title="Mid Bell 1 kHz • Double-click resets to 0 dB"
+          >
+            <span class="knob-label">Mid 1kHz</span>
+            <div class="knob-circle">
+              <div class="knob-zero-tick"></div>
+              <div class="knob-marker" style="transform: rotate({getKnobRotation(eqMid, -12, 12)}deg)"></div>
+            </div>
+            <span class="knob-value">{eqMid > 0 ? "+" : ""}{eqMid.toFixed(1)} dB</span>
+          </div>
+
+          <!-- High Shelf (8 kHz) -->
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
           <div 
             class="knob-container" 
             on:mousedown={(e) => handleKnobMousedown(e, "eq_treble", eqTreble, -12, 12, 0.5, (v) => eqTreble = v)}
             on:dblclick={() => resetKnob("eq_treble", 0, (v) => eqTreble = v)}
-            title="Double-click resets to 0 dB"
+            title="High Shelf 8 kHz • Double-click resets to 0 dB"
           >
-            <span class="knob-label">Treble</span>
+            <span class="knob-label">High 8kHz</span>
             <div class="knob-circle">
               <div class="knob-zero-tick"></div>
               <div class="knob-marker" style="transform: rotate({getKnobRotation(eqTreble, -12, 12)}deg)"></div>
@@ -2243,11 +2414,20 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 0px 8px;
+    padding: 1px 8px;
     font-size: 0.72rem;
     cursor: pointer;
     color: #ffffff; /* White text */
     transition: background-color 0.15s ease;
+    min-width: 0;
+  }
+
+  .browser-item .item-name {
+    flex-grow: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .browser-item:nth-child(even) {
@@ -2296,11 +2476,20 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 0px 10px;
+    padding: 1px 10px;
     font-size: 0.72rem;
     cursor: pointer;
     color: #cccccc;
     transition: background-color 0.15s ease;
+    min-width: 0;
+  }
+
+  .playlist-item-sidebar .item-name {
+    flex-grow: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .playlist-item-sidebar:hover {
@@ -2369,15 +2558,13 @@
     color: #ffffff;
   }
 
-
-
   /* Center Workspace area styling */
   .center-content {
     background-color: #1e1e1e;
-    padding: 16px 20px;
+    padding: 10px 16px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
     overflow: hidden;
     height: 100%;
     box-sizing: border-box;
@@ -2388,18 +2575,18 @@
     justify-content: space-between;
     align-items: center;
     border-bottom: 1px solid #2d2d2d;
-    padding-bottom: 8px;
+    padding-bottom: 6px;
     flex-shrink: 0;
   }
 
   h2 {
     margin: 0;
-    font-size: 1.35rem;
+    font-size: 1.25rem;
     font-weight: 600;
     color: #ffffff;
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
   }
 
   .track-badge {
@@ -2428,13 +2615,13 @@
     gap: 8px;
     font-family: Menlo, Monaco, Consolas, monospace;
     background-color: #141414;
-    padding: 8px 16px;
+    padding: 6px 12px;
     border-radius: 6px;
     border: 1px solid #2d2d2d;
   }
 
   .time-large {
-    font-size: 2rem;
+    font-size: 1.6rem;
     font-weight: 700;
     color: #ffffff;
   }
@@ -2444,7 +2631,7 @@
   }
 
   .time-total {
-    font-size: 1.1rem;
+    font-size: 1.0rem;
     color: #8e8e8e;
   }
 
@@ -2452,8 +2639,8 @@
   .waveforms-flexbox {
     display: flex;
     flex-direction: column;
-    flex-grow: 1;
-    gap: 10px;
+    flex-shrink: 0;
+    gap: 6px;
     overflow: hidden;
   }
 
@@ -2465,11 +2652,14 @@
 
   .block-alt-overview, .block-main-overview {
     flex-shrink: 0;
-    height: 65px;
+    height: 64px;
   }
 
   .block-main-waveform {
-    flex-grow: 1;
+    flex-shrink: 0;
+    height: 145px;
+    min-height: 145px;
+    max-height: 145px;
     background-color: #122a3a; 
     border: 1px solid #1b384d;
     border-radius: 4px;
@@ -2936,22 +3126,277 @@
     color: #ff453a;
   }
 
+  /* Lower Rehearsal Deck (Notes, Lyrics, Metadata, PDF) */
+  .rehearsal-bottom-deck {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background-color: #161617;
+    border: 1px solid #2d2d2d;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .deck-tabs-header {
+    display: flex;
+    background-color: #1f1f21;
+    border-bottom: 1px solid #2d2d2d;
+    flex-shrink: 0;
+  }
+
+  .deck-tab-btn {
+    background: transparent;
+    border: none;
+    color: #8e8e8e;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 6px 14px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s ease;
+  }
+
+  .deck-tab-btn:hover {
+    color: #d1d1d1;
+    background-color: #252528;
+  }
+
+  .deck-tab-btn.active {
+    color: #ffffff;
+    background-color: #28282b;
+    border-bottom: 2px solid #3b99fc;
+  }
+
+  .deck-tab-content {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 8px 12px;
+    min-height: 0;
+  }
+
+  .tab-pane {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+  }
+
+  .rehearsal-textarea {
+    width: 100%;
+    flex-grow: 1;
+    box-sizing: border-box;
+    background-color: #111112;
+    border: 1px solid #2a2a2c;
+    border-radius: 4px;
+    color: #e0e0e0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    padding: 8px 12px;
+    resize: none;
+    outline: none;
+  }
+
+  .rehearsal-textarea:focus {
+    border-color: #3b99fc;
+  }
+
+  .lyrics-textarea {
+    font-family: Menlo, Monaco, Consolas, monospace;
+    font-size: 0.85rem;
+    line-height: 1.6;
+  }
+
+  .metadata-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 6px 14px;
+    background-color: #18181a;
+    padding: 10px 14px;
+    border-radius: 4px;
+    border: 1px solid #2d2d2d;
+    overflow-y: auto;
+  }
+
+  .meta-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.75rem;
+    border-bottom: 1px solid #242426;
+    padding: 3px 0;
+  }
+
+  .meta-label {
+    color: #8e8e8e;
+    font-weight: 600;
+  }
+
+  .meta-value {
+    color: #ffffff;
+    font-family: monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 180px;
+  }
+
+  .meta-value.active-mode {
+    color: #3b99fc;
+    font-weight: 700;
+  }
+
+  .pdf-viewer-container {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    gap: 6px;
+  }
+
+  .pdf-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background-color: #222225;
+    padding: 4px 10px;
+    border-radius: 4px;
+    border: 1px solid #333336;
+    flex-shrink: 0;
+  }
+
+  .pdf-title {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #ffffff;
+  }
+
+  .popout-pdf-btn {
+    background-color: #3b99fc;
+    color: #ffffff;
+    border: none;
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+  }
+
+  .popout-pdf-btn:hover {
+    background-color: #5faeff;
+  }
+
+  .pdf-preview-box {
+    flex-grow: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 0;
+  }
+
+  .pdf-info-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background-color: #18181a;
+    border: 1px dashed #3a3a3d;
+    border-radius: 6px;
+    padding: 16px 24px;
+    text-align: center;
+    gap: 8px;
+    width: 80%;
+    max-width: 480px;
+  }
+
+  .pdf-card-icon {
+    font-size: 2rem;
+  }
+
+  .pdf-card-details h4 {
+    margin: 0;
+    color: #ffffff;
+    font-size: 0.9rem;
+  }
+
+  .pdf-card-path {
+    margin: 2px 0 0 0;
+    font-size: 0.68rem;
+    color: #8e8e8e;
+    font-family: monospace;
+    word-break: break-all;
+  }
+
+  .open-large-btn {
+    background-color: #2a2a2e;
+    border: 1px solid #444448;
+    color: #ffffff;
+    padding: 6px 14px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    font-weight: 600;
+    margin-top: 4px;
+  }
+
+  .open-large-btn:hover {
+    background-color: #3b99fc;
+    border-color: #3b99fc;
+  }
+
+  .no-pdf-placeholder {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: #717171;
+    gap: 6px;
+    padding: 12px;
+    text-align: center;
+  }
+
+  .pdf-placeholder-icon {
+    font-size: 1.8rem;
+  }
+
+  .link-pdf-btn {
+    background-color: #2c2c2e;
+    border: 1px dashed #4a4a4e;
+    color: #d1d1d1;
+    padding: 5px 12px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+
+  .link-pdf-btn:hover {
+    background-color: #3b99fc;
+    border-color: #3b99fc;
+    color: #ffffff;
+  }
+
   /* DSP Panel Knobs styling */
   .dsp-section {
-    padding-bottom: 6px;
+    padding-bottom: 2px;
   }
 
   .dsp-control {
-    padding: 4px 12px;
+    padding: 2px 10px;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 2px;
   }
 
   .dsp-label-row {
     display: flex;
     justify-content: space-between;
-    font-size: 0.7rem;
+    font-size: 0.68rem;
     font-weight: 700;
   }
 
@@ -2995,7 +3440,7 @@
   .knobs-row {
     display: flex;
     justify-content: space-around;
-    padding: 6px 4px;
+    padding: 3px 2px;
     background-color: #1e1e1f;
     border-bottom: 1px solid #2d2d2d;
   }
@@ -3005,26 +3450,26 @@
     flex-direction: column;
     align-items: center;
     cursor: ns-resize;
-    width: 55px;
+    width: 48px;
   }
 
   .knob-label {
-    font-size: 0.6rem;
+    font-size: 0.58rem;
     color: #8e8e8e;
-    margin-bottom: 2px;
+    margin-bottom: 1px;
     text-align: center;
     white-space: nowrap;
   }
 
   .knob-circle {
-    width: 22px;
-    height: 22px;
+    width: 19px;
+    height: 19px;
     border-radius: 50%;
     background-color: #333333;
     border: 1.5px solid #555555;
     position: relative;
     box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
-    margin-bottom: 2px;
+    margin-bottom: 1px;
     transition: border-color 0.15s ease;
   }
 
@@ -3045,7 +3490,7 @@
 
   .knob-marker {
     width: 1.5px;
-    height: 7px;
+    height: 6px;
     background-color: #ffffff;
     position: absolute;
     top: 1.5px;
@@ -3055,7 +3500,7 @@
   }
 
   .knob-value {
-    font-size: 0.65rem;
+    font-size: 0.62rem;
     font-family: monospace;
     color: #ffffff;
     text-align: center;

@@ -20,6 +20,7 @@
     "allow-read-dir",
     "allow-get-waveform-slice",
     "allow-get-raw-samples",
-    "allow-get-cloud-folders"
+    "allow-get-cloud-folders",
+    "allow-open-file-external"
   ]
 }

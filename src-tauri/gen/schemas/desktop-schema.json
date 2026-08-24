@@ -207,6 +207,12 @@
           "markdownDescription": "Enables the load_track command without any pre-configured scope."
         },
         {
+          "description": "Enables the open_file_external command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-file-external",
+          "markdownDescription": "Enables the open_file_external command without any pre-configured scope."
+        },
+        {
           "description": "Enables the pause command without any pre-configured scope.",
           "type": "string",
           "const": "allow-pause",
@@ -289,6 +295,12 @@
           "type": "string",
           "const": "deny-load-track",
           "markdownDescription": "Denies the load_track command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_file_external command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-file-external",
+          "markdownDescription": "Denies the open_file_external command without any pre-configured scope."
         },
         {
           "description": "Denies the pause command without any pre-configured scope.",

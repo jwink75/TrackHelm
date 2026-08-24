@@ -486,6 +486,16 @@ fn compute_pyramid_peaks(audio: &DecodedAudio, num_peaks: usize) -> Vec<f32> {
     samples
 }
 
+#[tauri::command]
+fn open_file_external(path: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    std::process::Command::new("open")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn main() {
     let (mut engine, command_bus, shared_state) = trackhelm_engine::AudioEngine::new();
 
@@ -522,7 +532,8 @@ fn main() {
             read_dir,
             get_waveform_slice,
             get_raw_samples,
-            get_cloud_folders
+            get_cloud_folders,
+            open_file_external
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
