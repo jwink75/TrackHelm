@@ -52,6 +52,53 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
 * **Decision:** Tauri's built-in bundler will generate a standard macOS `.app` bundle.
 * **Convenience:** A Makefile target `make app` will trigger the build and link the generated `TrackHelm.app` to the root workspace folder so it can be dragged to the macOS Dock for testing.
 
+### 2.9 Instant Waveform Rendering & Deep Zoom Architecture
+* **Decision:** Multi-resolution precomputed single-sample peak pyramid with on-demand sample cache.
+* **Rationale:** Avoids transmitting massive raw float payloads over the IPC bridge while maintaining extreme rendering precision.
+* **Implementation Details:**
+  * `overview_peaks`: 1,000 floats for full-file overview.
+  * `pyramid_peaks`: 32,768 floats for responsive intermediate zooming.
+  * `localSampleCache`: Small synchronous slice buffer fetching raw samples dynamically only when zoomed into $< 400$ individual samples.
+  * **Continuous Unbroken Oscillating Line:** Single continuous line rendering at all zoom levels, eliminating sawtooth min/max ramp artifacts.
+  * **Progressive Sample Node Squares (RX Style):** Individual sample node squares adaptively scale from $2.5\text{px}$ up to $6.0\text{px}$ bordered boxes as the display zooms in to the 9-sample maximum limit.
+  * **Smart Playhead Centering:** Playhead locks to center screen when zoomed in for continuous tracking, but smoothly sweeps edge-to-edge when zoomed out to $1\times$.
+
+### 2.10 Zero-Delay File Loading & Background Prefetch Architecture
+* **Decision:** Stream buffer expansion, SIMD native build flags, and asynchronous background pre-decoding.
+* **Rationale:** Reading multi-minute uncompressed audio files can cause perceptible UI delays (~1s) if decoded synchronously on double-click.
+* **Implementation Details:**
+  * **Expanded Stream Buffers:** `MediaSourceStreamOptions { buffer_len: 128 * 1024 }` and preallocated vector capacity in `trackhelm-engine/src/decoder.rs`.
+  * **SIMD Native Optimization:** `[profile.dev.package."*"] opt-level = 3` in root `Cargo.toml` ensures all DSP and decoders compile with full Apple Silicon NEON vectorization even in development builds.
+  * **Single-Click Background Prefetching (`preload_track`):** Single-clicking or navigating to an audio file in the file browser or playlist dispatches a non-blocking background decode into an in-memory `track_cache`. By the time the user double-clicks or presses Space, playback starts in **$< 1\text{ms}$**.
+
+### 2.11 Per-Track Persistent Project Profiles (AnyTune Style)
+* **Decision:** Automatic per-file state serialization (`TrackProfile`) keyed by canonical file path.
+* **Rationale:** Musicians expect all adjustments made during rehearsal (volume, tempo, pitch, markers, attached chord charts, and alternate takes) to be instantly restored when returning to that song.
+* **Preserved Parameters:**
+  * `dbVolume`, `speed`, `pitch`
+  * `eqBass`, `eqTreble`
+  * `compressorThreshold`, `compressorRatio`, `compressorMakeup`
+  * `markers` (IDs, names, timestamps, and colors)
+  * `pdfChartPath`, `pdfChartName`
+  * `associatedVersions` (alternate backing tracks, stems, and live takes)
+  * `alternateTrackPath`
+* **Lifecycle:** When switching tracks, the outgoing track's profile is automatically persisted to disk, and the incoming track's profile is restored and dispatched directly to the real-time DSP engine.
+
+### 2.12 Markers & Rehearsal Regions System
+* **Decision:** Interactive, color-coded, draggable markers with synchronized multi-view feedback.
+* **Features:**
+  * **Vibrant Rehearsal Palette:** Amber/Orange (Default/Intro), Cyan/Blue (Verse), Green (Solo), Purple (Chorus), Red (Bridge/Outro), Yellow (Cues/Loops).
+  * **Inline Renaming:** Double-clicking any marker in the sidebar enables inline text editing with instant validation (`Enter` saves, `Esc` cancels).
+  * **Waveform & Ruler Synchronization:** Renders matching colored flags in the top time ruler and vertical locator lines through the waveform.
+  * **Navigation Shortcuts:** `ArrowLeft` and `ArrowRight` jump to previous and next markers during playback.
+
+### 2.13 Rehearsal Workstation Knob & Hardware Reference Controls
+* **Decision:** Custom analog-style virtual knobs with vertical drag sensitivity and hardware zero-point reference marks.
+* **Features:**
+  * **Zero/Center Ticks:** Top 12 o'clock center tick marks (`.knob-zero-tick`) on all parameter dials (Speed, Pitch, Bass, Treble, Threshold, Ratio, Makeup) for precise visual alignment.
+  * **Double-Click Reset:** Double-clicking any knob or slider instantly resets it to its unity default value.
+  * **Real-time DSP Dispatch:** Live knob movements dispatch parameter updates to `SignalsmithStretch` on the native audio thread with zero stutter.
+
 ---
 
 ## 3. Core Requirements (MVP Scope)
@@ -102,16 +149,15 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
 
 ---
 
-## 5. Milestone Plan
-
-* **Milestone 0:** Architecture Decisions & Workspace Skeleton (Current)
-* **Milestone 1:** Minimal Viable Playback Engine (loading, cpal output, waveform, seek, volume)
-* **Milestone 2:** Pitch and Time Shifting (Signalsmith integration)
-* **Milestone 3:** Loops, Markers, and Vamp Mode
-* **Milestone 4:** Persistent Projects & SQLite Database
-* **Milestone 5:** EQ and Compressor DSP
+## 5. Milestone Plan & Progress
+* **Milestone 0:** Architecture Decisions & Workspace Skeleton *(Completed)*
+* **Milestone 1:** Minimal Viable Playback Engine *(Completed — CPAL stream, dual waveform display, deep zoom, overview seek, zero-delay load)*
+* **Milestone 2:** Pitch and Time Shifting *(Completed — Native Signalsmith Stretch real-time integration, speed & pitch dials, bypass optimizations)*
+* **Milestone 3:** Loops, Markers, and Vamp Mode *(Partially Completed — Interactive color-coded markers, inline rename, jump shortcuts; active loop region in progress)*
+* **Milestone 4:** Persistent Projects & Track Profiles *(Completed — Per-track persistent AnyTune-style profiles preserving DSP, markers, charts, and associated tracks)*
+* **Milestone 5:** EQ and Compressor DSP *(In Progress — UI layout & controls ready; wiring biquad filters and dynamic gain reduction)*
 * **Milestone 6:** Nonlinear Timeline (Cuts) and Volume Envelopes
-* **Milestone 7:** Library Management, Associated Media, and Metadata
+* **Milestone 7:** Library Management, Associated Media, and Metadata *(Completed — Integrated OS folder browser, playlist management, PDF chart association, alternate audio takes)*
 * **Milestone 8:** MIDI, OSC, and QLab Integration
 * **Milestone 9:** Export Engine
 * **Milestone 10:** Practice Mode / Rehearsal Sequences
