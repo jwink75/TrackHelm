@@ -1114,6 +1114,13 @@
       } else if (e.code === "Enter" || e.code === "NumpadEnter") {
         e.preventDefault();
         handleStop();
+      } else if (e.code === "Escape") {
+        e.preventDefault();
+        showContextMenu = false;
+        colorPaletteMarker = null;
+        cancelRenameMarker();
+        typeToJumpBuffer = "";
+        handleStop();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
