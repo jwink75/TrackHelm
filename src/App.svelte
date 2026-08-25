@@ -1517,29 +1517,20 @@
       const numSamples = visibleSamples.length;
       const step = width / (numSamples - 1 || 1);
 
-      if (visibleSampleFrames > 400) {
-        // Studio Workstation Peak Bars (Rock-solid, zero fluttering during scrolling playback)
-        ctx.fillStyle = "#3b99fc";
-        const barWidth = Math.max(1.2, step);
-        for (let i = 0; i < numSamples; i++) {
-          const x = i * step;
-          const amp = Math.max(1, Math.abs(visibleSamples[i]) * maxAmplitude);
-          ctx.fillRect(x - barWidth / 2, halfHeight - amp, barWidth, amp * 2);
-        }
-      } else {
-        // Deep Zoom Sample Level (< 400 samples): Single unbroken line + node squares
-        ctx.strokeStyle = "#3b99fc";
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        for (let i = 0; i < numSamples; i++) {
-          const x = i * step;
-          const y = halfHeight - visibleSamples[i] * maxAmplitude;
-          if (i === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-        }
-        ctx.stroke();
+      // True Continuous Oscillating Waveform Line (Unified across all zoom levels)
+      ctx.strokeStyle = "#3b99fc";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let i = 0; i < numSamples; i++) {
+        const x = i * step;
+        const y = halfHeight - visibleSamples[i] * maxAmplitude;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
 
-        // Progressive Sample Node Squares (RX style when <= 400 samples on screen)
+      // Progressive Sample Node Squares (RX style when zoomed into <= 400 frames on screen)
+      if (visibleSampleFrames <= 400) {
         let nodeSize = 2.5;
         if (visibleSampleFrames <= 40) {
           nodeSize = 6.0;
