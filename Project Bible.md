@@ -63,16 +63,28 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
   * **Progressive Sample Node Squares (RX Style):** Individual sample node squares adaptively scale from $2.5\text{px}$ up to $6.0\text{px}$ bordered boxes as the display zooms in to the 9-sample maximum limit.
   * **Smart Playhead Centering:** Playhead locks to center screen when zoomed in for continuous tracking, but smoothly sweeps edge-to-edge when zoomed out to $1\times$.
 
-### 2.10 Zero-Delay File Loading & Background Prefetch Architecture
-* **Decision:** Stream buffer expansion, SIMD native build flags, and asynchronous background pre-decoding.
-* **Rationale:** Reading multi-minute uncompressed audio files can cause perceptible UI delays (~1s) if decoded synchronously on double-click.
+### 2.10 Zero-Delay File Loading & Bounded LRU Cache Architecture
+* **Decision:** Stream buffer expansion, SIMD native build flags, bounded LRU cache (`LruTrackCache`), and asynchronous background pre-decoding.
+* **Rationale:** Reading multi-minute uncompressed audio files can cause perceptible UI delays if decoded synchronously on double-click, while unbounded in-memory decoded PCM could consume gigabytes of RAM during long rehearsals.
 * **Implementation Details:**
-  * **Expanded Stream Buffers:** `MediaSourceStreamOptions { buffer_len: 128 * 1024 }` and preallocated vector capacity in `trackhelm-engine/src/decoder.rs`.
-  * **SIMD Native Optimization:** `[profile.dev.package."*"] opt-level = 3` in root `Cargo.toml` ensures all DSP and decoders compile with full Apple Silicon NEON vectorization even in development builds.
-  * **Single-Click Background Prefetching (`preload_track`):** Single-clicking or navigating to an audio file in the file browser or playlist dispatches a non-blocking background decode into an in-memory `track_cache`. By the time the user double-clicks or presses Space, playback starts in **$< 1\text{ms}$**.
+  * **Bounded LRU Cache:** Decoded audio is stored in an in-memory LRU cache (`LruTrackCache`) capped to active track + 5–6 recently used/preloaded songs (~500 MB max), automatically evicting oldest non-active tracks to guarantee bounded memory.
+  * **Non-Blocking Asynchronous Load:** `load_track` and `preload_track` check the cache under a brief lock, decode on worker threads via `spawn_blocking` without holding the mutex, and insert back under a brief lock.
+  * **Expanded Stream Buffers:** `MediaSourceStreamOptions { buffer_len: 128 * 1024 }` and preallocated vector capacity in `trackhelm-engine/src/decoder.rs` seeded from codec `n_frames` metadata.
+  * **In-Flight Preload Deduplication:** Frontend tracks ongoing preload promises in a `Set<string>` to eliminate redundant duplicate decoding requests during rapid navigation.
 
-### 2.11 Per-Track Persistent Project Profiles (AnyTune Style)
-* **Decision:** Automatic per-file state serialization (`TrackProfile`) keyed by canonical file path.
+### 2.11 Real-Time Audio Callback Safety & Parameter Coalescing
+* **Decision:** Zero heap allocations on the CPAL real-time audio thread and atomic parameter coalescing.
+* **Implementation Details:**
+  * **Zero Allocation:** Scratch buffers (`in_channel_scratch`, `out_channel_scratch`) and channel slice pointer arrays are pre-allocated with fixed maximum capacities (16,384 frames), completely eliminating `Vec` and object allocations inside the real-time audio callback.
+  * **In-Place Filter Pools:** A pre-allocated pool of 16 RBJ biquad filters is updated in-place on EQ parameter changes without vector dropping or re-allocation.
+  * **Command Coalescing:** Drains the command receiver with discrete commands (Play, Pause, Seek, LoadAudio) executed sequentially, while continuous parameter updates (Pitch, Speed, EQ, Compressor, Volume, Regions) are coalesced into a single update per audio block.
+
+### 2.12 Per-Track Persistent Project Profiles & Debounced Storage (AnyTune Style)
+* **Decision:** In-memory profile store with debounced disk persistence (`TrackProfile`) keyed by canonical file path.
+* **Implementation Details:**
+  * **In-Memory Store:** The profile database is cached in memory (`cachedProfilesStore`), providing instant reads and writes without synchronous disk or `localStorage` serialization.
+  * **Debounced Persistence:** Live parameter tweaks (knob dragging, sliders, text input) update memory instantly and debounce writes to storage by 400ms, flushing immediately on track change or window unload.
+  * **Decoupled Waveform Redraws:** Playhead animation is gated on playback/scrubbing, while heavy waveform peak re-computations only occur on zoom, pan, window resize, or dirty flags.
 * **Rationale:** Musicians expect all adjustments made during rehearsal (volume, tempo, pitch, markers, attached chord charts, and alternate takes) to be instantly restored when returning to that song.
 * **Preserved Parameters:**
   * `dbVolume`, `speed`, `pitch`

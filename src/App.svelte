@@ -134,6 +134,8 @@
   }
   let localSampleCache: SampleCache = { startFrame: -1, endFrame: -1, samples: [] };
   let isFetchingRawChunk = false;
+  let currentRawSampleReqId = 0;
+  let isWaveformDirty = true;
 
   let visibleSamples: number[] = [];
   let visibleSampleFrames = 0;
@@ -529,19 +531,38 @@
     lastCenterTab?: string;
   }
 
+  let cachedProfilesStore: Record<string, TrackProfile> | null = null;
+  let profileSaveDebounceTimer: any = null;
+
   function getProfilesStore(): Record<string, TrackProfile> {
+    if (cachedProfilesStore) return cachedProfilesStore;
     try {
       const data = localStorage.getItem("th_track_profiles");
-      return data ? JSON.parse(data) : {};
+      cachedProfilesStore = data ? JSON.parse(data) : {};
     } catch {
-      return {};
+      cachedProfilesStore = {};
+    }
+    return cachedProfilesStore;
+  }
+
+  function flushProfilesToLocalStorage() {
+    if (profileSaveDebounceTimer) {
+      clearTimeout(profileSaveDebounceTimer);
+      profileSaveDebounceTimer = null;
+    }
+    if (cachedProfilesStore) {
+      try {
+        localStorage.setItem("th_track_profiles", JSON.stringify(cachedProfilesStore));
+      } catch (e) {
+        console.error("Failed to save track profiles to localStorage:", e);
+      }
     }
   }
 
-  function saveCurrentTrackProfile(trackPath: string | null) {
+  function saveCurrentTrackProfile(trackPath: string | null, immediate = false) {
     if (!trackPath) return;
     const store = getProfilesStore();
-    const existing = store[trackPath] || {};
+    const existing = store[trackPath] || ({} as TrackProfile);
     const isMain = activeTrackMode === "main" || trackPath === mainTrack?.path;
 
     store[trackPath] = {
@@ -554,23 +575,23 @@
       eqMid,
       eqTreble,
       isEqBypassed,
-      eqNodes: JSON.parse(JSON.stringify(eqNodes)),
+      eqNodes: eqNodes.map(n => ({ ...n })),
       compressorThreshold: compStage1.thresholdDb,
       compressorRatio: compStage1.ratio,
       compressorMakeup: compStage1.makeupDb,
       isCompressorBypassed,
-      compStage1: JSON.parse(JSON.stringify(compStage1)),
-      compStage2: JSON.parse(JSON.stringify(compStage2)),
+      compStage1: { ...compStage1 },
+      compStage2: { ...compStage2 },
       compRouting,
       compParallelBlend,
-      markers: JSON.parse(JSON.stringify(markers)),
+      markers: markers.map(m => ({ ...m })),
       nextMarkerId,
-      regions: JSON.parse(JSON.stringify(regions)),
+      regions: regions.map(r => ({ ...r })),
       nextRegionId,
-      associatedFiles: isMain ? JSON.parse(JSON.stringify(associatedFiles)) : (existing.associatedFiles || []),
+      associatedFiles: isMain ? associatedFiles.map(a => ({ ...a })) : (existing.associatedFiles || []),
       pdfChartPath: isMain ? pdfChartPath : (existing.pdfChartPath || ""),
       pdfChartName: isMain ? pdfChartName : (existing.pdfChartName || ""),
-      associatedVersions: isMain ? associatedVersions : (existing.associatedVersions || []),
+      associatedVersions: isMain ? associatedVersions.map(v => ({ ...v })) : (existing.associatedVersions || []),
       alternateTrackPath: isMain ? (alternateTrack ? alternateTrack.path : null) : (existing.alternateTrackPath || null),
       notes: isMain ? songNotes : (existing.notes || ""),
       lyrics: isMain ? songLyrics : (existing.lyrics || ""),
@@ -578,7 +599,13 @@
       lyricsViewMode,
       lastCenterTab: activeCenterTab
     };
-    localStorage.setItem("th_track_profiles", JSON.stringify(store));
+
+    if (immediate) {
+      flushProfilesToLocalStorage();
+    } else {
+      if (profileSaveDebounceTimer) clearTimeout(profileSaveDebounceTimer);
+      profileSaveDebounceTimer = setTimeout(flushProfilesToLocalStorage, 400);
+    }
   }
 
   async function updatePitchEngine() {
@@ -1539,16 +1566,21 @@
     statusInterval = setInterval(async () => {
       try {
         const status: any = await invoke("get_playback_status");
+        const wasPlaying = isPlaying;
         isPlaying = status.is_playing;
         if (!isPanning && !isDraggingOverview) {
           currentTime = status.current_time;
           duration = status.duration_seconds;
           progress = status.progress;
           
-          await updateVisiblePeaks();
-
-          drawMainWaveform();
-          drawOverviewWaveform();
+          if (isPlaying || wasPlaying || isWaveformDirty) {
+            isWaveformDirty = false;
+            if (zoom > 1.001) {
+              updateVisiblePeaks();
+            }
+            drawMainWaveform();
+            drawOverviewWaveform();
+          }
 
           // Auto-scroll PDF to active anchored marker (12px below top)
           if (activeCenterTab === "pdf" && pdfContainer && isPlaying) {
@@ -1772,6 +1804,7 @@
 
   // Background Preloading Engine for Instantaneous Live Set Switching
   const preloadedTrackMetadata = new Map<string, any>();
+  const inFlightPreloads = new Set<string>();
   let isPreloading = false;
 
   async function preloadAdjacentTracks() {
@@ -1820,25 +1853,22 @@
         }
       }
 
-      // Preload candidates asynchronously without blocking the UI thread
-      const store = getProfilesStore();
+      // Preload candidates asynchronously without duplicate in-flight requests
       for (const path of candidates) {
-        if (!path) continue;
+        if (!path || preloadedTrackMetadata.has(path) || inFlightPreloads.has(path)) continue;
         
+        inFlightPreloads.add(path);
         // Background decode audio and compute peaks into memory cache
-        if (!preloadedTrackMetadata.has(path)) {
-          invoke("preload_track", { path }).then((meta: any) => {
+        invoke("preload_track", { path })
+          .then((meta: any) => {
             if (meta) {
               preloadedTrackMetadata.set(path, meta);
             }
-          }).catch(() => {});
-        }
-
-        // Background preload PDF score sheet bytes if associated
-        const prof = store[path];
-        if (prof && prof.pdfChartPath) {
-          invoke("read_file_bytes", { path: prof.pdfChartPath }).catch(() => {});
-        }
+          })
+          .catch(() => {})
+          .finally(() => {
+            inFlightPreloads.delete(path);
+          });
 
         // Background preload audio tags
         invoke("read_audio_metadata", { path }).catch(() => {});
@@ -2416,9 +2446,14 @@
           const fetchPadding = Math.max(6000, visibleFrames * 4);
           const fetchStart = Math.max(0, startFrame - Math.floor(fetchPadding / 2));
           const fetchCount = Math.min(totalTrackFrames - fetchStart, visibleFrames + fetchPadding);
+          const reqId = ++currentRawSampleReqId;
+          const reqPath = filePath;
 
           invoke("get_raw_samples", { startFrame: fetchStart, count: fetchCount })
             .then((res: any) => {
+              if (reqId !== currentRawSampleReqId || reqPath !== filePath) {
+                return; // Discard stale request after rapid track switch
+              }
               const samples: number[] = res || [];
               localSampleCache = {
                 startFrame: fetchStart,

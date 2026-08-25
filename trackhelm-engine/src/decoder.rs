@@ -45,8 +45,12 @@ pub fn decode_file<P: AsRef<Path>>(path: P) -> Result<DecodedAudio, String> {
         .tracks()
         .iter()
         .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
-        .ok_ok_or_else(|| "No audio track found in file".to_string())?
+        .ok_or_else(|| "No audio track found in file".to_string())?
         .clone();
+
+    let estimated_frames = track.codec_params.n_frames
+        .map(|n| n as usize)
+        .unwrap_or(44100 * 240); // Default to ~4 min capacity to avoid multiple reallocations
 
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &decoder_opts)
@@ -78,7 +82,7 @@ pub fn decode_file<P: AsRef<Path>>(path: P) -> Result<DecodedAudio, String> {
             let spec = decoded.spec();
             channels = spec.channels.count();
             sample_rate = spec.rate;
-            channel_samples = vec![Vec::with_capacity(500_000); channels];
+            channel_samples = vec![Vec::with_capacity(estimated_frames); channels];
         }
 
         copy_samples_to_f32(&decoded, &mut channel_samples);
@@ -106,72 +110,56 @@ fn copy_samples_to_f32(buf: &AudioBufferRef, dest: &mut Vec<Vec<f32>>) {
             let channels = buf.spec().channels.count();
             for c in 0..channels {
                 let chan = buf.chan(c);
-                for &sample in chan {
-                    dest[c].push(f32::from_sample(sample));
-                }
+                dest[c].extend(chan.iter().map(|&sample| f32::from_sample(sample)));
             }
         }
         AudioBufferRef::U16(buf) => {
             let channels = buf.spec().channels.count();
             for c in 0..channels {
                 let chan = buf.chan(c);
-                for &sample in chan {
-                    dest[c].push(f32::from_sample(sample));
-                }
+                dest[c].extend(chan.iter().map(|&sample| f32::from_sample(sample)));
             }
         }
         AudioBufferRef::S8(buf) => {
             let channels = buf.spec().channels.count();
             for c in 0..channels {
                 let chan = buf.chan(c);
-                for &sample in chan {
-                    dest[c].push(f32::from_sample(sample));
-                }
+                dest[c].extend(chan.iter().map(|&sample| f32::from_sample(sample)));
             }
         }
         AudioBufferRef::S16(buf) => {
             let channels = buf.spec().channels.count();
             for c in 0..channels {
                 let chan = buf.chan(c);
-                for &sample in chan {
-                    dest[c].push(f32::from_sample(sample));
-                }
+                dest[c].extend(chan.iter().map(|&sample| f32::from_sample(sample)));
             }
         }
         AudioBufferRef::S24(buf) => {
             let channels = buf.spec().channels.count();
             for c in 0..channels {
                 let chan = buf.chan(c);
-                for &sample in chan {
-                    dest[c].push(f32::from_sample(sample));
-                }
+                dest[c].extend(chan.iter().map(|&sample| f32::from_sample(sample)));
             }
         }
         AudioBufferRef::S32(buf) => {
             let channels = buf.spec().channels.count();
             for c in 0..channels {
                 let chan = buf.chan(c);
-                for &sample in chan {
-                    dest[c].push(f32::from_sample(sample));
-                }
+                dest[c].extend(chan.iter().map(|&sample| f32::from_sample(sample)));
             }
         }
         AudioBufferRef::U24(buf) => {
             let channels = buf.spec().channels.count();
             for c in 0..channels {
                 let chan = buf.chan(c);
-                for &sample in chan {
-                    dest[c].push(f32::from_sample(sample));
-                }
+                dest[c].extend(chan.iter().map(|&sample| f32::from_sample(sample)));
             }
         }
         AudioBufferRef::U32(buf) => {
             let channels = buf.spec().channels.count();
             for c in 0..channels {
                 let chan = buf.chan(c);
-                for &sample in chan {
-                    dest[c].push(f32::from_sample(sample));
-                }
+                dest[c].extend(chan.iter().map(|&sample| f32::from_sample(sample)));
             }
         }
         AudioBufferRef::F32(buf) => {
@@ -185,20 +173,8 @@ fn copy_samples_to_f32(buf: &AudioBufferRef, dest: &mut Vec<Vec<f32>>) {
             let channels = buf.spec().channels.count();
             for c in 0..channels {
                 let chan = buf.chan(c);
-                for &sample in chan {
-                    dest[c].push(f32::from_sample(sample));
-                }
+                dest[c].extend(chan.iter().map(|&sample| f32::from_sample(sample)));
             }
         }
-    }
-}
-
-trait OptionExt<T> {
-    fn ok_ok_or_else<F: FnOnce() -> String>(self, err: F) -> Result<T, String>;
-}
-
-impl<T> OptionExt<T> for Option<T> {
-    fn ok_ok_or_else<F: FnOnce() -> String>(self, err: F) -> Result<T, String> {
-        self.ok_or_else(err)
     }
 }

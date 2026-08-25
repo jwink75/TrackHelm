@@ -23,6 +23,50 @@ struct CachedTrack {
     file_size: u64,
 }
 
+struct LruTrackCache {
+    map: HashMap<String, Arc<CachedTrack>>,
+    order: Vec<String>,
+    max_items: usize,
+}
+
+impl LruTrackCache {
+    fn new(max_items: usize) -> Self {
+        Self {
+            map: HashMap::new(),
+            order: Vec::new(),
+            max_items: max_items.max(2),
+        }
+    }
+
+    fn get(&mut self, path: &str) -> Option<Arc<CachedTrack>> {
+        if let Some(track) = self.map.get(path).cloned() {
+            // Touch LRU order (move to most recent position)
+            if let Some(pos) = self.order.iter().position(|p| p == path) {
+                self.order.remove(pos);
+            }
+            self.order.push(path.to_string());
+            Some(track)
+        } else {
+            None
+        }
+    }
+
+    fn insert(&mut self, path: String, track: Arc<CachedTrack>) {
+        if let Some(pos) = self.order.iter().position(|p| p == &path) {
+            self.order.remove(pos);
+        }
+        self.order.push(path.clone());
+        self.map.insert(path, track);
+
+        // Evict oldest decoded tracks if over maximum bounded limit
+        while self.map.len() > self.max_items && !self.order.is_empty() {
+            let oldest_path = self.order.remove(0);
+            self.map.remove(&oldest_path);
+            eprintln!("LRU Cache evicted decoded track: {}", oldest_path);
+        }
+    }
+}
+
 fn get_file_mtime_and_size(path: &str) -> (std::time::SystemTime, u64) {
     if let Ok(meta) = std::fs::metadata(path) {
         let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
@@ -37,7 +81,7 @@ struct AppState {
     command_bus: CommandBus,
     shared_engine_state: Arc<SharedEngineState>,
     active_audio: Mutex<Option<Arc<DecodedAudio>>>,
-    track_cache: Mutex<HashMap<String, Arc<CachedTrack>>>,
+    track_cache: Mutex<LruTrackCache>,
 }
 
 #[derive(serde::Serialize)]
@@ -246,8 +290,10 @@ fn get_waveform_slice(
     end_frame: usize,
     num_points: usize
 ) -> Result<Vec<f32>, String> {
-    let active_opt = state.active_audio.lock().unwrap();
-    let audio = active_opt.as_ref().ok_or_else(|| "No active track loaded".to_string())?;
+    let audio = {
+        let active_opt = state.active_audio.lock().unwrap();
+        active_opt.clone().ok_or_else(|| "No active track loaded".to_string())?
+    };
 
     let channels = audio.channels;
     let total_frames = audio.channel_samples[0].len();
@@ -294,8 +340,10 @@ fn get_raw_samples(
     start_frame: usize,
     count: usize
 ) -> Result<Vec<f32>, String> {
-    let active_opt = state.active_audio.lock().unwrap();
-    let audio = active_opt.as_ref().ok_or_else(|| "No active track loaded".to_string())?;
+    let audio = {
+        let active_opt = state.active_audio.lock().unwrap();
+        active_opt.clone().ok_or_else(|| "No active track loaded".to_string())?
+    };
 
     let channels = audio.channels;
     let total_frames = audio.channel_samples[0].len();
@@ -325,7 +373,7 @@ fn get_raw_samples(
 async fn preload_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata, String> {
     let (current_mtime, current_size) = get_file_mtime_and_size(&path);
     {
-        let cache = state.track_cache.lock().unwrap();
+        let mut cache = state.track_cache.lock().unwrap();
         if let Some(cached) = cache.get(&path) {
             if cached.modified_time == current_mtime && cached.file_size == current_size {
                 return Ok(cached.metadata.clone());
@@ -366,16 +414,30 @@ async fn preload_track(state: State<'_, AppState>, path: String) -> Result<Track
 }
 
 #[tauri::command]
-fn load_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata, String> {
+async fn load_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata, String> {
     let (current_mtime, current_size) = get_file_mtime_and_size(&path);
-    let cached_track = {
+    
+    // 1. Check LRU cache under brief lock
+    let cached_opt = {
         let mut cache = state.track_cache.lock().unwrap();
         if let Some(cached) = cache.get(&path) {
             if cached.modified_time == current_mtime && cached.file_size == current_size {
-                cached.clone()
+                Some(cached)
             } else {
-                // File modified externally -> re-decode fresh
-                let audio = decode_file(&path)?;
+                None
+            }
+        } else {
+            None
+        }
+    };
+
+    let cached_track = match cached_opt {
+        Some(track) => track,
+        None => {
+            // 2. Decode outside the lock on a worker thread to keep the main/UI thread responsive
+            let p = path.clone();
+            let decoded_res = tauri::async_runtime::spawn_blocking(move || {
+                let audio = decode_file(&p)?;
                 let arc = Arc::new(audio);
                 let overview_peaks = compute_peaks(&arc, 1000);
                 let pyramid_peaks = compute_pyramid_peaks(&arc, 32768);
@@ -386,40 +448,33 @@ fn load_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata,
                     overview_peaks,
                     pyramid_peaks,
                 };
-                let cached = Arc::new(CachedTrack {
-                    audio: arc,
-                    metadata,
-                    modified_time: current_mtime,
-                    file_size: current_size,
-                });
-                cache.insert(path.clone(), cached.clone());
-                cached
-            }
-        } else {
-            let audio = decode_file(&path)?;
-            let arc = Arc::new(audio);
-            let overview_peaks = compute_peaks(&arc, 1000);
-            let pyramid_peaks = compute_pyramid_peaks(&arc, 32768);
-            let metadata = TrackMetadata {
-                duration_seconds: arc.duration_seconds,
-                sample_rate: arc.sample_rate,
-                channels: arc.channels,
-                overview_peaks,
-                pyramid_peaks,
+                Ok::<(Arc<DecodedAudio>, TrackMetadata), String>((arc, metadata))
+            }).await;
+
+            let (audio_arc, metadata) = match decoded_res {
+                Ok(Ok(pair)) => pair,
+                Ok(Err(e)) => return Err(e),
+                Err(e) => return Err(e.to_string()),
             };
+
             let cached = Arc::new(CachedTrack {
-                audio: arc,
+                audio: audio_arc,
                 metadata,
                 modified_time: current_mtime,
                 file_size: current_size,
             });
-            cache.insert(path.clone(), cached.clone());
+
+            // 3. Insert into LRU cache under brief lock
+            let mut cache = state.track_cache.lock().unwrap();
+            cache.insert(path, cached.clone());
             cached
         }
     };
 
-    let mut active_audio = state.active_audio.lock().unwrap();
-    *active_audio = Some(cached_track.audio.clone());
+    {
+        let mut active_audio = state.active_audio.lock().unwrap();
+        *active_audio = Some(cached_track.audio.clone());
+    }
 
     state.command_bus.send(Command::LoadAudio(cached_track.audio.clone()))?;
 
@@ -726,15 +781,9 @@ fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
 fn main() {
     let (mut engine, command_bus, shared_state) = trackhelm_engine::AudioEngine::new();
 
-    std::thread::spawn(move || {
-        if let Err(e) = engine.start() {
-            eprintln!("Audio engine failed to start: {}", e);
-            return;
-        }
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(3600));
-        }
-    });
+    if let Err(e) = engine.start() {
+        eprintln!("Audio engine failed to start: {}", e);
+    }
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -743,7 +792,7 @@ fn main() {
             command_bus,
             shared_engine_state: shared_state,
             active_audio: Mutex::new(None),
-            track_cache: Mutex::new(HashMap::new()),
+            track_cache: Mutex::new(LruTrackCache::new(6)),
         })
         .invoke_handler(tauri::generate_handler![
             load_track,
