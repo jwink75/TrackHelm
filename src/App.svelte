@@ -519,6 +519,8 @@
   let pointerDragStartX = 0;
   let pointerDragStartY = 0;
   let hasPointerDragMoved = false;
+  let dragWaveformPreviewMarker: Marker | null = null;
+  let dragWaveformPreviewX: number | null = null;
 
   function handleMarkerItemMouseDown(e: MouseEvent, marker: Marker) {
     const target = e.target as HTMLElement;
@@ -536,6 +538,8 @@
     pointerDragStartX = e.clientX;
     pointerDragStartY = e.clientY;
     hasPointerDragMoved = false;
+    dragWaveformPreviewMarker = null;
+    dragWaveformPreviewX = null;
 
     window.addEventListener("mousemove", handleMarkerPointerMouseMove);
     window.addEventListener("mouseup", handleMarkerPointerMouseUp);
@@ -559,16 +563,36 @@
       }
     }
 
-    if (pointerDragGhost) {
+    if (hasPointerDragMoved) {
       const elem = document.elementFromPoint(e.clientX, e.clientY);
       const isOverPdf = elem ? !!(elem.closest(".pdf-page-card") || elem.closest(".pdf-scroll-column")) : false;
-      if (isOverPdf) {
-        pointerDragGhost.className = "marker-pointer-drag-ghost on-pdf-preview";
+      const isOverWaveform = elem ? !!(elem.closest(".block-main-waveform") || elem.closest("#mainCanvas")) : false;
+
+      if (isOverWaveform && mainCanvas && duration > 0) {
+        dragWaveformPreviewMarker = activePointerDragMarker;
+        dragWaveformPreviewX = e.clientX;
+        drawMainWaveform();
+        if (pointerDragGhost) {
+          pointerDragGhost.style.display = "none";
+        }
       } else {
-        pointerDragGhost.className = "marker-pointer-drag-ghost";
+        if (dragWaveformPreviewMarker) {
+          dragWaveformPreviewMarker = null;
+          dragWaveformPreviewX = null;
+          drawMainWaveform();
+        }
+
+        if (pointerDragGhost) {
+          pointerDragGhost.style.display = "inline-flex";
+          if (isOverPdf) {
+            pointerDragGhost.className = "marker-pointer-drag-ghost on-pdf-preview";
+          } else {
+            pointerDragGhost.className = "marker-pointer-drag-ghost";
+          }
+          pointerDragGhost.style.left = `${e.clientX}px`;
+          pointerDragGhost.style.top = `${e.clientY}px`;
+        }
       }
-      pointerDragGhost.style.left = `${e.clientX}px`;
-      pointerDragGhost.style.top = `${e.clientY}px`;
     }
   }
 
@@ -579,6 +603,12 @@
     if (pointerDragGhost) {
       pointerDragGhost.remove();
       pointerDragGhost = null;
+    }
+
+    if (dragWaveformPreviewMarker) {
+      dragWaveformPreviewMarker = null;
+      dragWaveformPreviewX = null;
+      drawMainWaveform();
     }
 
     if (!activePointerDragMarker) return;
@@ -2244,6 +2274,42 @@
         ctx.fillStyle = color;
         ctx.font = "bold 9px sans-serif";
         ctx.fillText(marker.name, markerX + 4, rulerHeight + 12);
+      }
+    }
+
+    // 5.5 Live Ghost Marker Preview (during active drag over waveform)
+    if (dragWaveformPreviewMarker && dragWaveformPreviewX !== null) {
+      const dropX = dragWaveformPreviewX - rect.left;
+      if (dropX >= 0 && dropX <= width) {
+        const color = dragWaveformPreviewMarker.color || "#ff9500";
+        ctx.save();
+        
+        // Dashed Ghost Vertical Marker Line
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 3]);
+        ctx.beginPath();
+        ctx.moveTo(dropX, rulerHeight);
+        ctx.lineTo(dropX, height);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Ghost Ruler Top Flag
+        ctx.fillStyle = color;
+        ctx.globalAlpha = 0.9;
+        ctx.beginPath();
+        ctx.moveTo(dropX, 0);
+        ctx.lineTo(dropX + 8, 0);
+        ctx.lineTo(dropX + 8, rulerHeight - 3);
+        ctx.lineTo(dropX, rulerHeight);
+        ctx.closePath();
+        ctx.fill();
+
+        // Ghost Label Badge
+        ctx.fillStyle = color;
+        ctx.font = "bold 9px sans-serif";
+        ctx.fillText(dragWaveformPreviewMarker.name, dropX + 4, rulerHeight + 12);
+        ctx.restore();
       }
     }
 
