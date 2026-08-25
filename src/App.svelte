@@ -255,7 +255,11 @@
   function saveCurrentTrackProfile(trackPath: string | null) {
     if (!trackPath) return;
     const store = getProfilesStore();
+    const existing = store[trackPath] || {};
+    const isMain = activeTrackMode === "main" || trackPath === mainTrack?.path;
+
     store[trackPath] = {
+      ...existing,
       dbVolume,
       speed,
       pitch,
@@ -266,14 +270,14 @@
       compressorThreshold,
       compressorRatio,
       compressorMakeup,
-      markers,
+      markers: JSON.parse(JSON.stringify(markers)),
       nextMarkerId,
-      pdfChartPath,
-      pdfChartName,
-      associatedVersions,
-      alternateTrackPath: alternateTrack ? alternateTrack.path : null,
-      notes: songNotes,
-      lyrics: songLyrics,
+      pdfChartPath: isMain ? pdfChartPath : (existing.pdfChartPath || ""),
+      pdfChartName: isMain ? pdfChartName : (existing.pdfChartName || ""),
+      associatedVersions: isMain ? associatedVersions : (existing.associatedVersions || []),
+      alternateTrackPath: isMain ? (alternateTrack ? alternateTrack.path : null) : (existing.alternateTrackPath || null),
+      notes: isMain ? songNotes : (existing.notes || ""),
+      lyrics: isMain ? songLyrics : (existing.lyrics || ""),
       lastCenterTab: activeCenterTab
     };
     localStorage.setItem("th_track_profiles", JSON.stringify(store));
@@ -1053,6 +1057,84 @@
     }
   }
 
+  // Background Preloading Engine for Instantaneous Live Set Switching
+  const preloadedTrackMetadata = new Map<string, any>();
+  let isPreloading = false;
+
+  async function preloadAdjacentTracks() {
+    if (isPreloading) return;
+    isPreloading = true;
+
+    try {
+      const candidates: string[] = [];
+
+      // 1. Next & Previous track in active playlist
+      if (playlistItems.length > 0) {
+        const pIdx = playlistItems.findIndex(p => p.path === filePath);
+        if (pIdx !== -1) {
+          if (pIdx + 1 < playlistItems.length) {
+            candidates.push(playlistItems[pIdx + 1].path);
+          }
+          if (pIdx > 0) {
+            candidates.push(playlistItems[pIdx - 1].path);
+          }
+        } else {
+          candidates.push(playlistItems[0].path);
+        }
+      }
+
+      // 2. Next & Previous track in current folder browser
+      const audioEntries = filteredEntries.filter(e => !e.is_dir);
+      if (audioEntries.length > 0) {
+        const fIdx = audioEntries.findIndex(e => e.path === filePath);
+        if (fIdx !== -1) {
+          if (fIdx + 1 < audioEntries.length) {
+            candidates.push(audioEntries[fIdx + 1].path);
+          }
+          if (fIdx > 0) {
+            candidates.push(audioEntries[fIdx - 1].path);
+          }
+        }
+      }
+
+      // 3. Alternate track and associated versions
+      if (alternateTrack && alternateTrack.path && alternateTrack.path !== filePath) {
+        candidates.push(alternateTrack.path);
+      }
+      for (const assoc of associatedVersions) {
+        if (assoc.path && assoc.path !== filePath) {
+          candidates.push(assoc.path);
+        }
+      }
+
+      // Preload candidates asynchronously without blocking the UI thread
+      const store = getProfilesStore();
+      for (const path of candidates) {
+        if (!path) continue;
+        
+        // Background decode audio and compute peaks into memory cache
+        if (!preloadedTrackMetadata.has(path)) {
+          invoke("preload_track", { path }).then((meta: any) => {
+            if (meta) {
+              preloadedTrackMetadata.set(path, meta);
+            }
+          }).catch(() => {});
+        }
+
+        // Background preload PDF score sheet bytes if associated
+        const prof = store[path];
+        if (prof && prof.pdfChartPath) {
+          invoke("read_file_bytes", { path: prof.pdfChartPath }).catch(() => {});
+        }
+
+        // Background preload audio tags
+        invoke("read_audio_metadata", { path }).catch(() => {});
+      }
+    } finally {
+      isPreloading = false;
+    }
+  }
+
   // Load a file into main or alternate track slots
   async function loadAudioPath(path: string, target: "main" | "alternate", switchActive = true) {
     try {
@@ -1122,6 +1204,7 @@
 
         setTimeout(() => {
           updateVisiblePeaks();
+          preloadAdjacentTracks();
         }, 30);
       }
     } catch (err) {

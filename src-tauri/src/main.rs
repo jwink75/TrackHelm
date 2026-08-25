@@ -7,20 +7,25 @@ use trackhelm_engine::{Command, CommandBus, SharedEngineState, DecodedAudio, dec
 
 use std::collections::HashMap;
 
-struct AppState {
-    command_bus: CommandBus,
-    shared_engine_state: Arc<SharedEngineState>,
-    active_audio: Mutex<Option<Arc<DecodedAudio>>>,
-    track_cache: Mutex<HashMap<String, Arc<DecodedAudio>>>,
-}
-
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 struct TrackMetadata {
     duration_seconds: f64,
     sample_rate: u32,
     channels: usize,
     overview_peaks: Vec<f32>,
     pyramid_peaks: Vec<f32>,
+}
+
+struct CachedTrack {
+    audio: Arc<DecodedAudio>,
+    metadata: TrackMetadata,
+}
+
+struct AppState {
+    command_bus: CommandBus,
+    shared_engine_state: Arc<SharedEngineState>,
+    active_audio: Mutex<Option<Arc<DecodedAudio>>>,
+    track_cache: Mutex<HashMap<String, Arc<CachedTrack>>>,
 }
 
 #[derive(serde::Serialize)]
@@ -305,55 +310,77 @@ fn get_raw_samples(
 }
 
 #[tauri::command]
-async fn preload_track(state: State<'_, AppState>, path: String) -> Result<(), String> {
+async fn preload_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata, String> {
     {
         let cache = state.track_cache.lock().unwrap();
-        if cache.contains_key(&path) {
-            return Ok(());
+        if let Some(cached) = cache.get(&path) {
+            return Ok(cached.metadata.clone());
         }
     }
     let p = path.clone();
-    let decoded_res = tauri::async_runtime::spawn_blocking(move || decode_file(&p)).await;
-    if let Ok(Ok(audio)) = decoded_res {
-        let mut cache = state.track_cache.lock().unwrap();
-        cache.insert(path, Arc::new(audio));
+    let decoded_res = tauri::async_runtime::spawn_blocking(move || {
+        let audio = decode_file(&p)?;
+        let arc = Arc::new(audio);
+        let overview_peaks = compute_peaks(&arc, 1000);
+        let pyramid_peaks = compute_pyramid_peaks(&arc, 32768);
+        let metadata = TrackMetadata {
+            duration_seconds: arc.duration_seconds,
+            sample_rate: arc.sample_rate,
+            channels: arc.channels,
+            overview_peaks,
+            pyramid_peaks,
+        };
+        Ok::<(Arc<DecodedAudio>, TrackMetadata), String>((arc, metadata))
+    }).await;
+
+    match decoded_res {
+        Ok(Ok((audio_arc, metadata))) => {
+            let mut cache = state.track_cache.lock().unwrap();
+            let cached = Arc::new(CachedTrack {
+                audio: audio_arc,
+                metadata: metadata.clone(),
+            });
+            cache.insert(path, cached);
+            Ok(metadata)
+        }
+        Ok(Err(e)) => Err(e),
+        Err(e) => Err(e.to_string()),
     }
-    Ok(())
 }
 
 #[tauri::command]
 fn load_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata, String> {
-    let audio_arc = {
+    let cached_track = {
         let mut cache = state.track_cache.lock().unwrap();
         if let Some(cached) = cache.get(&path) {
             cached.clone()
         } else {
             let audio = decode_file(&path)?;
             let arc = Arc::new(audio);
-            cache.insert(path.clone(), arc.clone());
-            arc
+            let overview_peaks = compute_peaks(&arc, 1000);
+            let pyramid_peaks = compute_pyramid_peaks(&arc, 32768);
+            let metadata = TrackMetadata {
+                duration_seconds: arc.duration_seconds,
+                sample_rate: arc.sample_rate,
+                channels: arc.channels,
+                overview_peaks,
+                pyramid_peaks,
+            };
+            let cached = Arc::new(CachedTrack {
+                audio: arc,
+                metadata,
+            });
+            cache.insert(path.clone(), cached.clone());
+            cached
         }
     };
 
-    let duration_seconds = audio_arc.duration_seconds;
-    let sample_rate = audio_arc.sample_rate;
-    let channels = audio_arc.channels;
-
-    let overview_peaks = compute_peaks(&audio_arc, 1000);
-    let pyramid_peaks = compute_pyramid_peaks(&audio_arc, 32768);
-
     let mut active_audio = state.active_audio.lock().unwrap();
-    *active_audio = Some(audio_arc.clone());
+    *active_audio = Some(cached_track.audio.clone());
 
-    state.command_bus.send(Command::LoadAudio(audio_arc))?;
+    state.command_bus.send(Command::LoadAudio(cached_track.audio.clone()))?;
 
-    Ok(TrackMetadata {
-        duration_seconds,
-        sample_rate,
-        channels,
-        overview_peaks,
-        pyramid_peaks,
-    })
+    Ok(cached_track.metadata.clone())
 }
 
 #[tauri::command]
