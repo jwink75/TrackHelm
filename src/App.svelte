@@ -2199,9 +2199,9 @@
         </div>
       </div>
 
-      <!-- Waveforms (Single Overview 64px, Main Waveform 256px) -->
+      <!-- Waveforms (Single Overview 40px, Main Waveform 256px) -->
       <div class="waveforms-flexbox">
-        <!-- Single Dynamic Overview Waveform (64px) -->
+        <!-- Single Dynamic Overview Waveform (40px) -->
         <div class="waveform-block block-overview" title="Right-click for Main / Alternate track options">
           <span 
             class="overview-watermark-tag" 
@@ -3055,7 +3055,7 @@
 
   .block-overview {
     flex-shrink: 0;
-    height: 64px;
+    height: 40px;
   }
 
   .overview-watermark-tag {
@@ -3094,7 +3094,7 @@
   .overview-canvas {
     display: block;
     width: 100%;
-    height: 64px;
+    height: 40px;
     cursor: pointer;
     border: 1px solid #3c3c3c;
     border-radius: 4px;
