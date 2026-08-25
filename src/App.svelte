@@ -7,6 +7,7 @@
   import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
   pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
+  const openDialog = open;
 
   // Active Playback State (for the backend engine)
   let filePath = "";
@@ -18,6 +19,19 @@
   let progress = 0.0;
   let channels = 2;
   let sampleRate = 44100;
+
+  // Associated Versions & PDF Chart State
+  let associatedVersions: PlaylistItem[] = [];
+  let pdfChartPath = "";
+  let pdfChartName = "";
+  let pdfContainer: HTMLDivElement;
+  let isLoadingPdf = false;
+  let pdfTotalPages = 0;
+  let pdfCurrentPage = 1;
+  let isPdfInverted = false;
+  let pdfRenderError = "";
+  let currentRenderTaskId = 0;
+  let lastRenderedWidth = 0;
 
   // Track Models
   interface Track {
@@ -104,6 +118,10 @@
   let zoom = 1.0;
   let zoomSliderVal = 0;            // 0 - 1000 logarithmic scale
   
+  let totalFrames = 1;
+  let maxZoom = 1.0;
+  let target15sZoom = 1.0;
+
   $: totalFrames = duration > 0 && sampleRate > 0 ? duration * sampleRate : 1;
   $: maxZoom = Math.max(1.0, totalFrames / 9.0); // Exactly 9 samples on screen at max zoom!
   $: target15sZoom = duration > 0 ? Math.max(1.0, duration / 15.0) : 1.0;
@@ -161,6 +179,7 @@
   let editingMarkerName = "";
 
   // Shared Project Landmarks Pool across all versions (Main, Alt, and Associated)
+  let projectUnplacedLandmarks: Marker[] = [];
   $: projectUnplacedLandmarks = (() => {
     // Include current markers, mainTrack, alternateTrack, filePath as dependencies
     const _dep = [markers, activeTrackMode, filePath, mainTrack, alternateTrack, associatedVersions];
@@ -208,6 +227,7 @@
   
   // Search & Type to Jump State
   let searchQuery = "";
+  let filteredEntries: any[] = [];
   $: filteredEntries = browserEntries.filter(entry => 
     entry.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
@@ -324,6 +344,7 @@
     { id: "node-3", name: "High Shelf", filterType: "HighShelf", freq: 8000, gainDb: 0, q: 0.707, enabled: true, color: "#ff9500" },
   ];
   let selectedEqNodeId: string = "node-2";
+  let selEqNode: EqNodeState = eqNodes[1];
   $: selEqNode = eqNodes.find(n => n.id === selectedEqNodeId) || eqNodes[0];
   let showEqFilterMenu = false;
   let eqFilterMenuX = 0;
@@ -383,6 +404,7 @@
   let compRouting: "Series" | "Parallel" = "Series";
   let compParallelBlend: number = 0.5;
   let activeCompStageTab: 1 | 2 = 1;
+  let curCompStage: CompStageState = compStage1;
   $: curCompStage = activeCompStageTab === 1 ? compStage1 : compStage2;
 
   function getSonitusCurvePath(stage: CompStageState): string {
