@@ -1948,8 +1948,27 @@
   }
 
   function setMarkerColor(marker: Marker, color: string) {
+    const markerName = marker.name.trim();
     marker.color = color;
     markers = [...markers];
+
+    // Propagate color project-wide to all takes sharing this landmark name
+    const store = getProfilesStore();
+    let hasChanges = false;
+    for (const trackPath in store) {
+      if (store[trackPath]?.markers && Array.isArray(store[trackPath].markers)) {
+        for (const m of store[trackPath].markers) {
+          if (m.name.trim().toLowerCase() === markerName.toLowerCase()) {
+            m.color = color;
+            hasChanges = true;
+          }
+        }
+      }
+    }
+    if (hasChanges) {
+      localStorage.setItem("th_track_profiles", JSON.stringify(store));
+    }
+
     saveCurrentTrackProfile(filePath);
     drawMainWaveform();
     drawOverviewWaveform();
@@ -1966,16 +1985,58 @@
 
   function saveRenameMarker(marker: Marker) {
     if (editingMarkerId === marker.id) {
-      marker.name = editingMarkerName.trim() || marker.name;
+      const oldName = marker.name.trim();
+      const newName = editingMarkerName.trim() || marker.name;
+      marker.name = newName;
       editingMarkerId = null;
       markers = [...markers];
+
+      // Update this landmark name project-wide across all saved profiles!
+      const store = getProfilesStore();
+      let hasChanges = false;
+      for (const trackPath in store) {
+        if (store[trackPath]?.markers && Array.isArray(store[trackPath].markers)) {
+          for (const m of store[trackPath].markers) {
+            if (m.name.trim().toLowerCase() === oldName.toLowerCase()) {
+              m.name = newName;
+              hasChanges = true;
+            }
+          }
+        }
+      }
+      if (hasChanges) {
+        localStorage.setItem("th_track_profiles", JSON.stringify(store));
+      }
+
       saveCurrentTrackProfile(filePath);
       drawMainWaveform();
+      drawOverviewWaveform();
+      if (activeCenterTab === "pdf") {
+        renderPdfMarkerBadges();
+      }
     }
   }
 
   function cancelRenameMarker() {
     editingMarkerId = null;
+  }
+
+  function deleteProjectLandmark(name: string) {
+    const targetName = name.trim().toLowerCase();
+    markers = markers.filter(m => m.name.trim().toLowerCase() !== targetName);
+    const store = getProfilesStore();
+    for (const trackPath in store) {
+      if (store[trackPath]?.markers && Array.isArray(store[trackPath].markers)) {
+        store[trackPath].markers = store[trackPath].markers.filter((m: Marker) => m.name.trim().toLowerCase() !== targetName);
+      }
+    }
+    localStorage.setItem("th_track_profiles", JSON.stringify(store));
+    saveCurrentTrackProfile(filePath);
+    drawMainWaveform();
+    drawOverviewWaveform();
+    if (activeCenterTab === "pdf") {
+      renderPdfMarkerBadges();
+    }
   }
 
   function seekToMarker(time: number) {
@@ -3190,10 +3251,44 @@
                   title="Click to choose color"
                   on:click={(e) => openColorPalette(e, landmark)}
                 ></span>
-                <span class="marker-name-btn unplaced-name">
-                  {landmark.name}
-                </span>
+                {#if editingMarkerId === landmark.id}
+                  <input
+                    type="text"
+                    class="marker-rename-input"
+                    bind:value={editingMarkerName}
+                    on:keydown={(e) => {
+                      if (e.key === "Enter") saveRenameMarker(landmark);
+                      if (e.key === "Escape") cancelRenameMarker();
+                    }}
+                    on:blur={() => saveRenameMarker(landmark)}
+                    autofocus
+                  />
+                {:else}
+                  <span 
+                    class="marker-name-btn unplaced-name"
+                    on:dblclick={() => startRenameMarker(landmark)}
+                    title="Double-click to rename • Drag to waveform or score"
+                  >
+                    {landmark.name}
+                  </span>
+                {/if}
                 <span class="marker-drag-hint">⇄ Drag to place</span>
+                <div class="marker-item-actions">
+                  <button 
+                    class="marker-action-btn" 
+                    title="Rename landmark" 
+                    on:click|stopPropagation={() => startRenameMarker(landmark)}
+                  >
+                    ✏️
+                  </button>
+                  <button 
+                    class="delete-marker-btn" 
+                    title="Delete landmark from project"
+                    on:click|stopPropagation={() => deleteProjectLandmark(landmark.name)}
+                  >
+                    ×
+                  </button>
+                </div>
               </div>
             {/each}
           {/if}
