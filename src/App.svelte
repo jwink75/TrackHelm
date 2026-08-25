@@ -167,8 +167,12 @@
 
   function switchCenterTab(tab: "notes" | "lyrics" | "metadata" | "pdf") {
     activeCenterTab = tab;
+    lastScrolledMarkerId = null;
     localStorage.setItem("th_last_center_tab", tab);
     saveCurrentTrackProfile(filePath);
+    if (tab === "pdf") {
+      tick().then(() => renderPdfMarkerBadges());
+    }
   }
 
   // Per-Track Persistent Project Profiles (AnyTune style)
@@ -834,18 +838,36 @@
               }
             }
 
-            if (currentMarker && currentMarker.id !== lastScrolledMarkerId && currentMarker.pdfAnchor) {
-              lastScrolledMarkerId = currentMarker.id;
-              const markerPage = currentMarker.pdfAnchor.page;
-              const card = pdfContainer.querySelector(`.pdf-page-card[data-page-num="${markerPage}"]`) as HTMLElement;
-              if (card) {
-                const cardTop = card.offsetTop;
-                const markerYWithinCard = card.clientHeight * currentMarker.pdfAnchor.yPct;
-                const targetScrollTop = Math.max(0, cardTop + markerYWithinCard - 12);
-                pdfContainer.scrollTo({
-                  top: targetScrollTop,
-                  behavior: "smooth"
-                });
+            // Reset scrolled marker if playhead is before the marker
+            if (!currentMarker || currentTime < currentMarker.time - 0.5) {
+              lastScrolledMarkerId = null;
+            }
+
+            if (currentMarker && currentMarker.id !== lastScrolledMarkerId) {
+              let anchor = currentMarker.pdfAnchor;
+              if (!anchor && activeTrackMode === "alternate" && mainTrack) {
+                const mainMarkers = getProfilesStore()[mainTrack.path]?.markers || [];
+                const match = mainMarkers.find(mm => mm.name.trim().toLowerCase() === currentMarker!.name.trim().toLowerCase());
+                if (match && match.pdfAnchor) {
+                  anchor = match.pdfAnchor;
+                }
+              }
+
+              if (anchor) {
+                lastScrolledMarkerId = currentMarker.id;
+                const markerPage = anchor.page;
+                const card = pdfContainer.querySelector(`.pdf-page-card[data-page-num="${markerPage}"]`) as HTMLElement;
+                if (card) {
+                  const containerRect = pdfContainer.getBoundingClientRect();
+                  const cardRect = card.getBoundingClientRect();
+                  const cardTopRelativeToContainer = (cardRect.top - containerRect.top) + pdfContainer.scrollTop;
+                  const markerYWithinCard = card.clientHeight * anchor.yPct;
+                  const targetScrollTop = Math.max(0, cardTopRelativeToContainer + markerYWithinCard - 12);
+                  pdfContainer.scrollTo({
+                    top: targetScrollTop,
+                    behavior: "smooth"
+                  });
+                }
               }
             }
           }
@@ -1125,6 +1147,7 @@
       audioTags = {};
     });
 
+    lastScrolledMarkerId = null;
     await updateVisiblePeaks();
     drawMainWaveform();
     drawOverviewWaveform();
@@ -1577,7 +1600,16 @@
   }
 
   function handleRewind() {
+    lastScrolledMarkerId = null;
+    currentTime = 0;
+    progress = 0;
     invoke("seek", { seconds: 0 });
+    updateVisiblePeaks();
+    drawMainWaveform();
+    drawOverviewWaveform();
+    if (activeCenterTab === "pdf" && pdfContainer) {
+      pdfContainer.scrollTo({ top: 0, behavior: "smooth" });
+    }
   }
 
   // Panning & Dragging State
@@ -1850,12 +1882,39 @@
   }
 
   function seekToMarker(time: number) {
+    lastScrolledMarkerId = null;
     if (duration > 0) {
       currentTime = time;
       progress = time / duration;
       updateVisiblePeaks();
     }
     invoke("seek", { seconds: time });
+
+    // Instantly scroll PDF to this marker if in PDF tab
+    if (activeCenterTab === "pdf" && pdfContainer) {
+      const match = markers.find(m => Math.abs(m.time - time) < 0.2);
+      let anchor = match?.pdfAnchor;
+      if (!anchor && activeTrackMode === "alternate" && mainTrack) {
+        const mainMarkers = getProfilesStore()[mainTrack.path]?.markers || [];
+        const mm = mainMarkers.find(m => m.name.trim().toLowerCase() === match?.name.trim().toLowerCase());
+        anchor = mm?.pdfAnchor;
+      }
+      if (anchor) {
+        const markerPage = anchor.page;
+        const card = pdfContainer.querySelector(`.pdf-page-card[data-page-num="${markerPage}"]`) as HTMLElement;
+        if (card) {
+          const containerRect = pdfContainer.getBoundingClientRect();
+          const cardRect = card.getBoundingClientRect();
+          const cardTopRelativeToContainer = (cardRect.top - containerRect.top) + pdfContainer.scrollTop;
+          const markerYWithinCard = card.clientHeight * anchor.yPct;
+          const targetScrollTop = Math.max(0, cardTopRelativeToContainer + markerYWithinCard - 12);
+          pdfContainer.scrollTo({
+            top: targetScrollTop,
+            behavior: "smooth"
+          });
+        }
+      }
+    }
   }
 
   function jumpToPrevMarker() {
