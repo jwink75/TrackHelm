@@ -3035,27 +3035,24 @@
 
   .overview-watermark-tag {
     position: absolute;
-    top: 4px;
-    left: 6px;
-    font-size: 0.6rem;
+    top: 5px;
+    left: 8px;
+    font-size: 0.65rem;
     font-weight: 800;
     letter-spacing: 0.08em;
-    padding: 1px 5px;
-    border-radius: 3px;
+    padding: 0;
+    background: transparent;
+    border: none;
     pointer-events: none;
     z-index: 2;
   }
 
   .overview-watermark-tag.alt-tag {
-    background-color: rgba(255, 149, 0, 0.25);
     color: #ff9500;
-    border: 1px solid rgba(255, 149, 0, 0.4);
   }
 
   .overview-watermark-tag.main-tag {
-    background-color: rgba(59, 153, 252, 0.25);
     color: #3b99fc;
-    border: 1px solid rgba(59, 153, 252, 0.4);
   }
 
   .block-main-waveform {
