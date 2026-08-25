@@ -3119,7 +3119,7 @@
           <!-- Shared Project Landmarks Bin: Markers created in other takes/versions not yet placed on this track -->
           {#if projectUnplacedLandmarks.length > 0}
             <div class="unplaced-markers-header">
-              <span>PROJECT LANDMARKS BIN</span>
+              <span>UNASSIGNED</span>
               <span class="unplaced-hint">Drag to place</span>
             </div>
             {#each projectUnplacedLandmarks as landmark}
