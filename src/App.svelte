@@ -135,6 +135,7 @@
 
   // Custom Context Menu State
   let showContextMenu = false;
+  let contextMenuType: "browser" | "waveform" = "browser";
   let contextMenuX = 0;
   let contextMenuY = 0;
   let contextMenuTargetFile: { name: string; path: string } | null = null;
@@ -393,7 +394,6 @@
   // Canvas elements
   let mainCanvas: HTMLCanvasElement;
   let overviewCanvas: HTMLCanvasElement;
-  let altOverviewCanvas: HTMLCanvasElement;
   let centerContentElement: HTMLDivElement;
   
   let statusInterval: any;
@@ -477,7 +477,6 @@
 
         drawMainWaveform();
         drawOverviewWaveform();
-        drawAltOverviewWaveform();
       } catch (err) {
         console.error("Failed to query playback status", err);
       }
@@ -488,7 +487,6 @@
       resizeObserver = new ResizeObserver(() => {
         drawMainWaveform();
         drawOverviewWaveform();
-        drawAltOverviewWaveform();
       });
       resizeObserver.observe(centerContentElement);
     }
@@ -632,25 +630,83 @@
 
   // Toggle active track between Main and Alternate
   async function toggleActiveTrack(target: "main" | "alternate") {
-    if (target === "main" && mainTrack) {
-      activeTrackMode = "main";
-      filePath = mainTrack.path;
-      fileName = mainTrack.name;
-      duration = mainTrack.duration;
-      sampleRate = mainTrack.sampleRate;
-      channels = mainTrack.channels;
-      await invoke("load_track", { path: mainTrack.path });
-    } else if (target === "alternate" && alternateTrack) {
-      activeTrackMode = "alternate";
-      filePath = alternateTrack.path;
-      fileName = alternateTrack.name;
-      duration = alternateTrack.duration;
-      sampleRate = alternateTrack.sampleRate;
-      channels = alternateTrack.channels;
-      await invoke("load_track", { path: alternateTrack.path });
+    const targetTrack = target === "main" ? mainTrack : alternateTrack;
+    if (!targetTrack) {
+      if (target === "alternate") {
+        await pickAlternateTrack();
+      } else {
+        await pickMainTrack();
+      }
+      return;
     }
+
+    const wasPlaying = isPlaying;
+    const targetTime = currentTime;
+
+    activeTrackMode = target;
+    filePath = targetTrack.path;
+    fileName = targetTrack.name;
+    duration = targetTrack.duration;
+    sampleRate = targetTrack.sampleRate;
+    channels = targetTrack.channels;
     localStorage.setItem("th_last_active_track_mode", target);
-    updateVisiblePeaks();
+
+    // Clear local sample cache so waveform redraws fresh samples
+    localSampleCache = { startFrame: -1, endFrame: -1, samples: [] };
+
+    // Load track into backend engine
+    await invoke("load_track", { path: targetTrack.path });
+
+    // Restore playhead position
+    if (targetTime > 0 && targetTime < targetTrack.duration) {
+      await invoke("seek", { position: targetTime });
+    }
+
+    if (wasPlaying) {
+      await invoke("play");
+    }
+
+    // Read audio tags for active track
+    invoke("read_audio_metadata", { path: targetTrack.path }).then((res: any) => {
+      audioTags = res || {};
+      if (audioTags.title) {
+        fileName = audioTags.title;
+      }
+    }).catch(() => {
+      audioTags = {};
+    });
+
+    await updateVisiblePeaks();
+    drawMainWaveform();
+    drawOverviewWaveform();
+  }
+
+  async function pickAlternateTrack() {
+    try {
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: "Audio Files", extensions: ["wav", "mp3", "flac", "m4a", "aiff", "ogg"] }]
+      });
+      if (selected && typeof selected === "string") {
+        await loadAudioPath(selected, "alternate", true);
+      }
+    } catch (err) {
+      alert("Failed to select alternate track: " + err);
+    }
+  }
+
+  async function pickMainTrack() {
+    try {
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: "Audio Files", extensions: ["wav", "mp3", "flac", "m4a", "aiff", "ogg"] }]
+      });
+      if (selected && typeof selected === "string") {
+        await loadAudioPath(selected, "main", true);
+      }
+    } catch (err) {
+      alert("Failed to select main track: " + err);
+    }
   }
 
   // Type-To-Jump Keyboard Listener
@@ -743,7 +799,17 @@
       lastSelectedEntry = { name: entry.name, path: entry.path };
     }
 
+    contextMenuType = "browser";
     contextMenuTargetFile = { name: entry.name, path: entry.path };
+    contextMenuX = e.clientX;
+    contextMenuY = e.clientY;
+    showContextMenu = true;
+  }
+
+  function handleWaveformContextMenu(e: MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    contextMenuType = "waveform";
     contextMenuX = e.clientX;
     contextMenuY = e.clientY;
     showContextMenu = true;
@@ -888,7 +954,6 @@
       visibleSampleFrames = 0;
       drawMainWaveform();
       drawOverviewWaveform();
-      drawAltOverviewWaveform();
       return;
     }
 
@@ -989,7 +1054,6 @@
 
     drawMainWaveform();
     drawOverviewWaveform();
-    drawAltOverviewWaveform();
   }
 
   // Playback handlers
@@ -1008,7 +1072,6 @@
     updateVisiblePeaks().then(() => {
       drawMainWaveform();
       drawOverviewWaveform();
-      drawAltOverviewWaveform();
     });
   }
 
@@ -1166,7 +1229,7 @@
   }
 
   function updateOverviewDrag(e: MouseEvent) {
-    const canvas = activeTrackMode === "main" ? overviewCanvas : altOverviewCanvas;
+    const canvas = overviewCanvas;
     if (!canvas || duration === 0) return;
     const rect = canvas.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
@@ -1600,11 +1663,8 @@
   }
 
   function drawOverviewWaveform() {
-    drawGenericOverview(overviewCanvas, mainTrack, "main");
-  }
-
-  function drawAltOverviewWaveform() {
-    drawGenericOverview(altOverviewCanvas, alternateTrack, "alternate");
+    const currentTrack = activeTrackMode === "main" ? mainTrack : alternateTrack;
+    drawGenericOverview(overviewCanvas, currentTrack, activeTrackMode);
   }
 
   // Custom Knobs Mouse Interaction
@@ -2094,46 +2154,36 @@
         </div>
       </div>
 
-      <!-- Waveforms (Overview Alt 64px, Overview Main 64px, Main Waveform 256px) -->
+      <!-- Waveforms (Single Overview 64px, Main Waveform 256px) -->
       <div class="waveforms-flexbox">
-        <!-- Overview Waveform (Alternate File) -->
-        <div class="waveform-block block-alt-overview" title="Double-click to activate">
-          <span class="overview-watermark-tag alt-tag">
-            ALTERNATE
-          </span>
-          <!-- svelte-ignore a11y-click-events-have-key-events -->
-          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-          <canvas 
-            bind:this={altOverviewCanvas} 
-            on:mousedown={(e) => handleOverviewMouseDown(e, "alternate")}
-            on:dblclick={() => toggleActiveTrack("alternate")}
-            class="overview-canvas"
-          ></canvas>
-        </div>
-
-        <!-- Overview Waveform (Main File) -->
-        <div class="waveform-block block-main-overview" title="Double-click to activate">
-          <span class="overview-watermark-tag main-tag">
-            MAIN
+        <!-- Single Dynamic Overview Waveform (64px) -->
+        <div class="waveform-block block-overview" title="Right-click for Main / Alternate track options">
+          <span 
+            class="overview-watermark-tag" 
+            class:alt-tag={activeTrackMode === "alternate"} 
+            class:main-tag={activeTrackMode === "main"}
+          >
+            {activeTrackMode.toUpperCase()}
           </span>
           <!-- svelte-ignore a11y-click-events-have-key-events -->
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
           <canvas 
             bind:this={overviewCanvas} 
-            on:mousedown={(e) => handleOverviewMouseDown(e, "main")}
-            on:dblclick={() => toggleActiveTrack("main")}
+            on:mousedown={(e) => handleOverviewMouseDown(e, activeTrackMode)}
+            on:contextmenu={handleWaveformContextMenu}
             class="overview-canvas"
           ></canvas>
         </div>
 
         <!-- Main Waveform Box (256px height) -->
-        <div class="waveform-block block-main-waveform">
+        <div class="waveform-block block-main-waveform" title="Right-click for Main / Alternate track options">
           <!-- svelte-ignore a11y-click-events-have-key-events -->
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
           <canvas 
             bind:this={mainCanvas} 
             on:mousedown={handleMainMouseDown}
             on:wheel|passive={handleMainWheel}
+            on:contextmenu={handleWaveformContextMenu}
             class="main-canvas"
           ></canvas>
         </div>
@@ -2512,31 +2562,74 @@
       style="top: {contextMenuY}px; left: {contextMenuX}px;"
       on:click|stopPropagation
     >
-      <!-- svelte-ignore a11y-click-events-have-key-events -->
-      <!-- svelte-ignore a11y-no-static-element-interactions -->
-      <div class="menu-item" on:click={() => { if (contextMenuTargetFile) { loadAudioPath(contextMenuTargetFile.path, "main"); showContextMenu = false; } }}>
-        Set as Main Track
-      </div>
-      <!-- svelte-ignore a11y-click-events-have-key-events -->
-      <!-- svelte-ignore a11y-no-static-element-interactions -->
-      <div class="menu-item" on:click={() => { if (contextMenuTargetFile) { loadAudioPath(contextMenuTargetFile.path, "alternate"); showContextMenu = false; } }}>
-        Set as Alt Track
-      </div>
-      <!-- svelte-ignore a11y-click-events-have-key-events -->
-      <!-- svelte-ignore a11y-no-static-element-interactions -->
-      <div class="menu-item" on:click={() => { if (contextMenuTargetFile) { addToPlaylist(contextMenuTargetFile.name, contextMenuTargetFile.path); showContextMenu = false; } }}>
-        Add to Current Playlist
-      </div>
-      <!-- svelte-ignore a11y-click-events-have-key-events -->
-      <!-- svelte-ignore a11y-no-static-element-interactions -->
-      <div class="menu-item" on:click={() => { addSelectedToPlaylist(); showContextMenu = false; }}>
-        Add Selected to Playlist ({selectedFilePaths.size})
-      </div>
-      <!-- svelte-ignore a11y-click-events-have-key-events -->
-      <!-- svelte-ignore a11y-no-static-element-interactions -->
-      <div class="menu-item" on:click={() => { if (contextMenuTargetFile) { clearPlaylist(); addToPlaylist(contextMenuTargetFile.name, contextMenuTargetFile.path); showContextMenu = false; } }}>
-        Create New Playlist from File
-      </div>
+      {#if contextMenuType === "waveform"}
+        <!-- Waveform Context Menu: Main vs Alternate Track -->
+        <!-- svelte-ignore a11y-click-events-have-key-events -->
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <div 
+          class="menu-item" 
+          class:menu-active={activeTrackMode === "main"}
+          on:click={() => { toggleActiveTrack("main"); showContextMenu = false; }}
+        >
+          {activeTrackMode === "main" ? "✓ " : "  "}Set to Main Track {mainTrack ? `(${mainTrack.name})` : "(None Loaded)"}
+        </div>
+        <!-- svelte-ignore a11y-click-events-have-key-events -->
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <div 
+          class="menu-item" 
+          class:menu-active={activeTrackMode === "alternate"}
+          on:click={() => { toggleActiveTrack("alternate"); showContextMenu = false; }}
+        >
+          {activeTrackMode === "alternate" ? "✓ " : "  "}Set to Alternate Track {alternateTrack ? `(${alternateTrack.name})` : "(Click to Choose...)"}
+        </div>
+        <div class="menu-divider"></div>
+        <!-- svelte-ignore a11y-click-events-have-key-events -->
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <div class="menu-item" on:click={() => { pickMainTrack(); showContextMenu = false; }}>
+          Choose / Replace Main Track...
+        </div>
+        <!-- svelte-ignore a11y-click-events-have-key-events -->
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <div class="menu-item" on:click={() => { pickAlternateTrack(); showContextMenu = false; }}>
+          Choose / Replace Alternate Track...
+        </div>
+        {#if alternateTrack}
+          <div class="menu-divider"></div>
+          <!-- svelte-ignore a11y-click-events-have-key-events -->
+          <!-- svelte-ignore a11y-no-static-element-interactions -->
+          <div class="menu-item menu-item-danger" on:click={() => { alternateTrack = null; if (activeTrackMode === "alternate") toggleActiveTrack("main"); showContextMenu = false; }}>
+            Unload Alternate Track
+          </div>
+        {/if}
+      {:else}
+        <!-- Browser / Playlist Context Menu -->
+        <!-- svelte-ignore a11y-click-events-have-key-events -->
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <div class="menu-item" on:click={() => { if (contextMenuTargetFile) { loadAudioPath(contextMenuTargetFile.path, "main"); showContextMenu = false; } }}>
+          Set as Main Track
+        </div>
+        <!-- svelte-ignore a11y-click-events-have-key-events -->
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <div class="menu-item" on:click={() => { if (contextMenuTargetFile) { loadAudioPath(contextMenuTargetFile.path, "alternate"); showContextMenu = false; } }}>
+          Set as Alt Track
+        </div>
+        <div class="menu-divider"></div>
+        <!-- svelte-ignore a11y-click-events-have-key-events -->
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <div class="menu-item" on:click={() => { if (contextMenuTargetFile) { addToPlaylist(contextMenuTargetFile.name, contextMenuTargetFile.path); showContextMenu = false; } }}>
+          Add to Current Playlist
+        </div>
+        <!-- svelte-ignore a11y-click-events-have-key-events -->
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <div class="menu-item" on:click={() => { addSelectedToPlaylist(); showContextMenu = false; }}>
+          Add Selected to Playlist ({selectedFilePaths.size})
+        </div>
+        <!-- svelte-ignore a11y-click-events-have-key-events -->
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <div class="menu-item" on:click={() => { if (contextMenuTargetFile) { clearPlaylist(); addToPlaylist(contextMenuTargetFile.name, contextMenuTargetFile.path); showContextMenu = false; } }}>
+          Create New Playlist from File
+        </div>
+      {/if}
     </div>
   {/if}
 </main>
@@ -2915,7 +3008,7 @@
     overflow: hidden;
   }
 
-  .block-alt-overview, .block-main-overview {
+  .block-overview {
     flex-shrink: 0;
     height: 64px;
   }
@@ -3996,15 +4089,35 @@
   }
 
   .menu-item {
-    padding: 8px 14px;
-    font-size: 0.8rem;
+    padding: 7px 14px;
+    font-size: 0.76rem;
     color: #d1d1d1;
     cursor: pointer;
-    transition: background-color 0.15s ease;
+    transition: all 0.15s ease;
   }
 
   .menu-item:hover {
     background-color: #3b99fc;
     color: #ffffff;
+  }
+
+  .menu-item.menu-active {
+    color: #3b99fc;
+    font-weight: 700;
+  }
+
+  .menu-item.menu-active:hover {
+    color: #ffffff;
+  }
+
+  .menu-item.menu-item-danger:hover {
+    background-color: #662222;
+    color: #ff9999;
+  }
+
+  .menu-divider {
+    height: 1px;
+    background-color: #3e3e42;
+    margin: 4px 0;
   }
 </style>
