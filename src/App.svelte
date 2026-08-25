@@ -3436,7 +3436,7 @@
         ctx.fillStyle = "rgba(10, 132, 255, 0.22)";
         ctx.fillRect(x1, rulerHeight, x2 - x1, height - rulerHeight);
         ctx.strokeStyle = "#0a84ff";
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = 1.0;
         ctx.strokeRect(x1, rulerHeight, x2 - x1, height - rulerHeight);
 
         // Selection Edge Draggable Grab Handles
@@ -3480,7 +3480,7 @@
           ctx.rect(renderX1, rulerHeight, regWidth, height - rulerHeight);
           ctx.clip();
           ctx.strokeStyle = "rgba(255, 69, 58, 0.25)";
-          ctx.lineWidth = 2;
+          ctx.lineWidth = 1.5;
           for (let hx = renderX1 - height; hx < renderX2 + height; hx += 16) {
             ctx.beginPath();
             ctx.moveTo(hx, rulerHeight);
@@ -3489,9 +3489,9 @@
           }
           ctx.restore();
 
-          // Solid vertical boundary lines
+          // Solid vertical boundary lines (1px)
           ctx.strokeStyle = "#ff453a";
-          ctx.lineWidth = 2;
+          ctx.lineWidth = 1.0;
           ctx.beginPath();
           ctx.moveTo(renderX1, rulerHeight);
           ctx.lineTo(renderX1, height);
@@ -3508,9 +3508,9 @@
           ctx.fillStyle = "rgba(48, 209, 88, 0.16)";
           ctx.fillRect(renderX1, rulerHeight, regWidth, height - rulerHeight);
           
-          // Bracket borders
+          // Bracket borders (1px)
           ctx.strokeStyle = "#30d158";
-          ctx.lineWidth = 2;
+          ctx.lineWidth = 1.0;
           ctx.beginPath();
           ctx.moveTo(renderX1, rulerHeight);
           ctx.lineTo(renderX1, height);
@@ -3680,7 +3680,7 @@
         if (isMarkerSelected) {
           // Luminous selection aura for selected markers
           ctx.strokeStyle = "#ffffff";
-          ctx.lineWidth = 4;
+          ctx.lineWidth = 2.5;
           ctx.beginPath();
           ctx.moveTo(markerX, rulerHeight);
           ctx.lineTo(markerX, height);
@@ -3690,9 +3690,9 @@
           ctx.fillRect(markerX - 2, 0, 12, rulerHeight);
         }
 
-        // Vertical Marker Line
+        // Vertical Marker Line (1px)
         ctx.strokeStyle = isMarkerSelected ? "#ffffff" : color; 
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = 1.0;
         ctx.beginPath();
         ctx.moveTo(markerX, rulerHeight);
         ctx.lineTo(markerX, height);
@@ -3722,9 +3722,9 @@
         const color = dragWaveformPreviewMarker.color || "#ff9500";
         ctx.save();
         
-        // Dashed Ghost Vertical Marker Line
+        // Dashed Ghost Vertical Marker Line (1px)
         ctx.strokeStyle = color;
-        ctx.lineWidth = 1.5;
+        ctx.lineWidth = 1.0;
         ctx.setLineDash([4, 3]);
         ctx.beginPath();
         ctx.moveTo(dropX, rulerHeight);
@@ -3836,7 +3836,7 @@
                 const markerX = Math.round(markerPct * width);
                 const color = marker.color || "#ff9500";
                 bCtx.strokeStyle = color;
-                bCtx.lineWidth = 1.5;
+                bCtx.lineWidth = 1.0;
                 bCtx.beginPath();
                 bCtx.moveTo(markerX + 0.5, 0);
                 bCtx.lineTo(markerX + 0.5, height);
@@ -3859,11 +3859,11 @@
               const rw = Math.max(1, rx2 - rx1);
 
               if (reg.isCut) {
-                // Cut region background & solid vertical lines on overview
+                // Cut region background & solid vertical lines on overview (1px)
                 bCtx.fillStyle = "rgba(255, 69, 58, 0.22)";
                 bCtx.fillRect(rx1, 0, rw, height);
                 bCtx.strokeStyle = "#ff453a";
-                bCtx.lineWidth = 1.5;
+                bCtx.lineWidth = 1.0;
                 bCtx.beginPath();
                 bCtx.moveTo(rx1, 0);
                 bCtx.lineTo(rx1, height);
@@ -3871,11 +3871,11 @@
                 bCtx.lineTo(rx2, height);
                 bCtx.stroke();
               } else if (reg.isLoop) {
-                // Loop region background & solid vertical lines on overview
+                // Loop region background & solid vertical lines on overview (1px)
                 bCtx.fillStyle = "rgba(48, 209, 88, 0.18)";
                 bCtx.fillRect(rx1, 0, rw, height);
                 bCtx.strokeStyle = "#30d158";
-                bCtx.lineWidth = 1.5;
+                bCtx.lineWidth = 1.0;
                 bCtx.beginPath();
                 bCtx.moveTo(rx1, 0);
                 bCtx.lineTo(rx1, height);
