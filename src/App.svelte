@@ -761,7 +761,7 @@
     });
   }
 
-  async function loadTrackProfile(trackPath: string) {
+  async function loadTrackProfile(trackPath: string, isMainSong = true) {
     const store = getProfilesStore();
     const profile = store[trackPath];
     if (profile) {
@@ -775,24 +775,27 @@
       compressorThreshold = typeof profile.compressorThreshold === "number" ? profile.compressorThreshold : -20;
       compressorRatio = typeof profile.compressorRatio === "number" ? profile.compressorRatio : 2.0;
       compressorMakeup = typeof profile.compressorMakeup === "number" ? profile.compressorMakeup : 0;
-      markers = Array.isArray(profile.markers) ? profile.markers : [];
+      markers = Array.isArray(profile.markers) ? [...profile.markers] : [];
       nextMarkerId = typeof profile.nextMarkerId === "number" ? profile.nextMarkerId : (markers.length + 1);
-      pdfChartPath = profile.pdfChartPath || "";
-      pdfChartName = profile.pdfChartName || (pdfChartPath ? (pdfChartPath.split("/").pop() || "") : "");
-      associatedVersions = Array.isArray(profile.associatedVersions) ? profile.associatedVersions : [];
-      songNotes = profile.notes || "";
-      songLyrics = profile.lyrics || "";
-      if (profile.lastCenterTab) {
-        activeCenterTab = profile.lastCenterTab;
-      }
-      
-      if (profile.alternateTrackPath && profile.alternateTrackPath !== trackPath) {
-        loadAudioPath(profile.alternateTrackPath, "alternate", false);
-      } else {
-        alternateTrack = null;
+
+      if (isMainSong) {
+        pdfChartPath = profile.pdfChartPath || "";
+        pdfChartName = profile.pdfChartName || (pdfChartPath ? (pdfChartPath.split("/").pop() || "") : "");
+        associatedVersions = Array.isArray(profile.associatedVersions) ? profile.associatedVersions : [];
+        songNotes = profile.notes || "";
+        songLyrics = profile.lyrics || "";
+        if (profile.lastCenterTab) {
+          activeCenterTab = profile.lastCenterTab;
+        }
+        
+        if (profile.alternateTrackPath && profile.alternateTrackPath !== trackPath) {
+          loadAudioPath(profile.alternateTrackPath, "alternate", false);
+        } else {
+          alternateTrack = null;
+        }
       }
     } else {
-      // Default clean settings for newly loaded song
+      // Default clean settings for newly loaded song or fresh alternate track
       dbVolume = 0.0;
       speed = 1.0;
       pitch = 0;
@@ -805,21 +808,24 @@
       compressorMakeup = 0;
       markers = [];
       nextMarkerId = 1;
-      pdfChartPath = "";
-      pdfChartName = "";
-      associatedVersions = [];
-      songNotes = "";
-      songLyrics = "";
-      alternateTrack = null;
 
-      const savedTab = localStorage.getItem("th_last_center_tab") as "notes" | "lyrics" | "metadata" | "pdf" | null;
-      if (savedTab) {
-        activeCenterTab = savedTab;
+      if (isMainSong) {
+        pdfChartPath = "";
+        pdfChartName = "";
+        associatedVersions = [];
+        songNotes = "";
+        songLyrics = "";
+        alternateTrack = null;
+
+        const savedTab = localStorage.getItem("th_last_center_tab") as "notes" | "lyrics" | "metadata" | "pdf" | null;
+        if (savedTab) {
+          activeCenterTab = savedTab;
+        }
       }
     }
 
     // Apply restored volume, speed, and pitch directly to audio engine
-    const linearVol = dbVolume <= -59 ? 0 : Math.pow(10, dbVolume / 20);
+    const linearVol = dbVolume <= -59.5 ? 0 : Math.pow(10, dbVolume / 20);
     await invoke("set_volume", { volume: linearVol });
     await invoke("set_speed", { speed });
     const totalSemitones = pitch + (pitchCents / 100.0);
@@ -1099,13 +1105,9 @@
 
         // Restore saved Track Profile
         if (target === "main") {
-          await loadTrackProfile(path);
+          await loadTrackProfile(path, true);
         } else {
-          // For alternate track, load its specific markers if any, or initialize empty!
-          const store = getProfilesStore();
-          const profile = store[path];
-          markers = (profile && Array.isArray(profile.markers)) ? [...profile.markers] : [];
-          nextMarkerId = markers.length + 1;
+          await loadTrackProfile(path, false);
         }
 
         // Read audio tags
@@ -1212,17 +1214,14 @@
     progress = duration > 0 ? currentTime / duration : 0;
     localStorage.setItem("th_last_active_track_mode", target);
 
-    // Restore target track markers strictly (empty if none)
-    const store = getProfilesStore();
-    const targetProfile = store[targetTrack.path];
-    markers = (targetProfile && Array.isArray(targetProfile.markers)) ? [...targetProfile.markers] : [];
-    nextMarkerId = markers.length + 1;
-
     // Clear local sample cache so waveform redraws fresh samples
     localSampleCache = { startFrame: -1, endFrame: -1, samples: [] };
 
     // Load track into backend engine
     await invoke("load_track", { path: targetTrack.path });
+
+    // Restore target track's own profile (Gain, Pitch, Speed, EQ, Compression, Markers)
+    await loadTrackProfile(targetTrack.path, false);
 
     // Restore playhead position
     if (targetTime > 0 && targetTime < targetTrack.duration) {
@@ -1693,6 +1692,7 @@
     dbVolume = parseFloat(target.value);
     volumeLinear = dbToLinear(dbVolume);
     await invoke("set_volume", { volume: volumeLinear });
+    saveCurrentTrackProfile(filePath);
   }
 
   function handleRewind() {
@@ -3485,6 +3485,7 @@
               dbVolume = 0.0;
               volumeLinear = 1.0;
               await invoke("set_volume", { volume: 1.0 });
+              saveCurrentTrackProfile(filePath);
             }}
             class="dsp-slider" 
           />
