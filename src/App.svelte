@@ -3267,12 +3267,14 @@
         <div class="control-group transport-group">
           <div class="btn-row">
             <button class="control-btn" on:click={handleRewind} title="Rewind to start">⏮</button>
-            <button class="control-btn" on:click={jumpToPrevMarker} title="Previous Marker">⏪</button>
-            <button class="control-btn play-btn" on:click={handlePlayPause}>
+            <button class="control-btn" on:click={jumpToPrevMarker} title="Previous Marker (←)">⏪</button>
+            <button class="control-btn play-btn" on:click={handlePlayPause} title="Play / Pause (Space)">
               {isPlaying ? "⏸ PAUSE" : "▶ PLAY"}
             </button>
-            <button class="control-btn" on:click={handleStop} title="Stop">⏹</button>
-            <button class="control-btn" on:click={jumpToNextMarker} title="Next Marker">⏩</button>
+            <button class="control-btn stop-btn" on:click={handleStop} title="Stop All Tracks (ESC / Enter)">
+              ⏹ STOP
+            </button>
+            <button class="control-btn" on:click={jumpToNextMarker} title="Next Marker (→)">⏩</button>
           </div>
         </div>
 
@@ -4308,6 +4310,20 @@
 
   .play-btn:hover {
     background-color: #258bf5;
+  }
+
+  .stop-btn {
+    background-color: #262628;
+    color: #ff6b6b;
+    border-color: #4a2222;
+    font-size: 0.8rem;
+    font-weight: 700;
+  }
+
+  .stop-btn:hover {
+    background-color: #3d1c1c;
+    border-color: #ff6b6b;
+    color: #ffffff;
   }
 
   .accent-btn {
