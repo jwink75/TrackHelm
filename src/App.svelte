@@ -122,6 +122,9 @@
   let editingMarkerId: number | null = null;
   let editingMarkerName = "";
 
+  $: mainTrackMarkers = (mainTrack && activeTrackMode === "alternate") ? (getProfilesStore()[mainTrack.path]?.markers || []) : [];
+  $: unplacedMainMarkers = mainTrackMarkers.filter(mm => !markers.some(am => am.name.trim().toLowerCase() === mm.name.trim().toLowerCase()));
+
   // OS Folder Browser State
   let currentPath = "";
   let parentPath: string | null = null;
@@ -569,7 +572,13 @@
       const startProgress = zoom > 1.001 ? Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2)) : 0;
       const dropTime = Math.max(0, Math.min(duration, (startProgress + clickPct * windowWidth) * duration));
 
-      marker.time = dropTime;
+      const existing = markers.find(m => m.id === marker.id);
+      if (existing) {
+        existing.time = dropTime;
+      } else {
+        markers = [...markers, { id: nextMarkerId++, name: marker.name, time: dropTime, color: marker.color || "#ff9500" }];
+      }
+
       markers.sort((a, b) => a.time - b.time);
       markers = markers;
       saveCurrentTrackProfile(filePath);
@@ -970,9 +979,15 @@
           setZoom(1.0);
         }
 
-        // Restore saved Track Profile only for main song
+        // Restore saved Track Profile
         if (target === "main") {
           await loadTrackProfile(path);
+        } else {
+          // For alternate track, load its specific markers if any, or initialize empty!
+          const store = getProfilesStore();
+          const profile = store[path];
+          markers = (profile && Array.isArray(profile.markers)) ? [...profile.markers] : [];
+          nextMarkerId = markers.length + 1;
         }
 
         // Read audio tags
@@ -1079,12 +1094,11 @@
     progress = duration > 0 ? currentTime / duration : 0;
     localStorage.setItem("th_last_active_track_mode", target);
 
-    // Restore target track markers
+    // Restore target track markers strictly (empty if none)
     const store = getProfilesStore();
     const targetProfile = store[targetTrack.path];
-    if (targetProfile && Array.isArray(targetProfile.markers)) {
-      markers = targetProfile.markers;
-    }
+    markers = (targetProfile && Array.isArray(targetProfile.markers)) ? [...targetProfile.markers] : [];
+    nextMarkerId = markers.length + 1;
 
     // Clear local sample cache so waveform redraws fresh samples
     localSampleCache = { startFrame: -1, endFrame: -1, samples: [] };
@@ -2881,10 +2895,21 @@
 
       <!-- Markers/Regions List -->
       <div class="panel-section markers-section">
-        <div class="panel-header">MARKERS & REGIONS</div>
+        <div class="panel-header">
+          MARKERS & REGIONS
+          <span class="marker-track-mode-badge" class:alt-badge={activeTrackMode === 'alternate'}>
+            ({activeTrackMode.toUpperCase()})
+          </span>
+        </div>
         <div class="markers-list">
           {#if markers.length === 0}
-            <div class="placeholder-text">No markers set. Click "+ Add Marker" during playback.</div>
+            <div class="placeholder-text">
+              {#if activeTrackMode === 'alternate'}
+                No markers set for Alternate Track. Drag from below or click "+ Add Marker".
+              {:else}
+                No markers set. Click "+ Add Marker" during playback.
+              {/if}
+            </div>
           {:else}
             {#each markers as marker}
               <div 
@@ -2961,6 +2986,31 @@
                     ×
                   </button>
                 </div>
+              </div>
+            {/each}
+          {/if}
+
+          <!-- If Alternate track active, show available markers from Main track that can be dragged in -->
+          {#if activeTrackMode === 'alternate' && unplacedMainMarkers.length > 0}
+            <div class="unplaced-markers-header">
+              <span>AVAILABLE FROM MAIN TRACK</span>
+              <span class="unplaced-hint">Drag to place</span>
+            </div>
+            {#each unplacedMainMarkers as mainMarker}
+              <div 
+                class="marker-item unplaced-main-marker"
+                style="border-left: 3px dashed {mainMarker.color || '#ff9500'};"
+                on:mousedown={(e) => handleMarkerItemMouseDown(e, mainMarker)}
+                title="Drag onto Alternate waveform to place"
+              >
+                <span 
+                  class="marker-color-dot" 
+                  style="background-color: {mainMarker.color || '#ff9500'};"
+                ></span>
+                <span class="marker-name-btn unplaced-name">
+                  {mainMarker.name}
+                </span>
+                <span class="marker-drag-hint">⇄ Drag</span>
               </div>
             {/each}
           {/if}
@@ -4005,6 +4055,59 @@
 
   .marker-item:active {
     cursor: grabbing;
+  }
+
+  .marker-track-mode-badge {
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: #3b99fc;
+    margin-left: 4px;
+  }
+
+  .marker-track-mode-badge.alt-badge {
+    color: #ff9500;
+  }
+
+  .unplaced-markers-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.62rem;
+    font-weight: 800;
+    color: #8e8e8e;
+    letter-spacing: 0.05em;
+    padding: 8px 2px 3px 2px;
+    border-top: 1px dashed #3a3a3d;
+    margin-top: 6px;
+  }
+
+  .unplaced-hint {
+    font-size: 0.58rem;
+    color: #3b99fc;
+    font-weight: normal;
+  }
+
+  .unplaced-main-marker {
+    background-color: #222224;
+    border-color: #333336;
+    opacity: 0.85;
+  }
+
+  .unplaced-main-marker:hover {
+    background-color: #2b2b2f;
+    opacity: 1;
+    border-color: #4a4a50;
+  }
+
+  .unplaced-name {
+    color: #b0b0b8;
+  }
+
+  .marker-drag-hint {
+    font-size: 0.62rem;
+    color: #ff9500;
+    font-weight: 600;
+    white-space: nowrap;
   }
 
   .marker-pdf-tag {
