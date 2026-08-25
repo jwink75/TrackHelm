@@ -16,6 +16,12 @@ pub struct EngineRegion {
     pub is_loop: bool,
     #[serde(alias = "is_cut")]
     pub is_cut: bool,
+    #[serde(default = "default_crossfade_ms", alias = "crossfade_ms")]
+    pub crossfade_ms: f64,
+}
+
+fn default_crossfade_ms() -> f64 {
+    5.0
 }
 
 #[derive(Copy, Clone, Debug, serde::Serialize, serde::Deserialize)]

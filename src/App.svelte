@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { open } from "@tauri-apps/plugin-dialog";
+  import { open, save } from "@tauri-apps/plugin-dialog";
   import { listen } from "@tauri-apps/api/event";
   import * as pdfjsLib from "pdfjs-dist";
   import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -71,6 +71,7 @@
     isLoop: boolean;
     isCut: boolean;
     color?: string;
+    crossfadeMs?: number;
   }
   let regions: Region[] = [];
   let nextRegionId = 1;
@@ -91,6 +92,21 @@
   // Advanced DSP Modals (Side 90° tab buttons)
   let showAdvancedCompModal = false;
   let showAdvancedEqModal = false;
+
+  // Audio Export Modal State
+  let showExportModal = false;
+  let exportBitDepth: "int16" | "int24" | "float32" = "int24";
+  let exportRange: "full" | "selection" | "region" = "full";
+  let exportSelectedRegionId: string | null = null;
+  let exportBakePitch = true;
+  let exportBakeSpeed = true;
+  let exportBakeEq = true;
+  let exportBakeCompressor = true;
+  let exportBakeCuts = true;
+  let exportCopyMetadata = true;
+  let isExporting = false;
+  let exportStatusMessage = "";
+  let exportErrorMessage = "";
   
   // Center Lower Deck tabs & Metadata
   let activeCenterTab: "notes" | "lyrics" | "metadata" | "pdf" = "notes";
@@ -683,7 +699,8 @@
           startSeconds: r.startTime,
           endSeconds: r.endTime,
           isLoop: r.isLoop,
-          isCut: r.isCut
+          isCut: r.isCut,
+          crossfadeMs: r.crossfadeMs ?? 5.0
         }))
       });
       saveCurrentTrackProfile(filePath);
@@ -1656,6 +1673,15 @@
     const unlistenDragDrop = listen("tauri://drag-drop", (event: any) => {
       const paths = event.payload.paths;
       if (paths && paths.length > 0) {
+        const playlistFile = paths.find((p: string) => {
+          const lower = p.toLowerCase();
+          return lower.endsWith(".thset") || lower.endsWith(".m3u8") || lower.endsWith(".m3u") || (lower.endsWith(".json") && !lower.endsWith("profile.json"));
+        });
+        if (playlistFile) {
+          loadPlaylistFromFile(playlistFile);
+          return;
+        }
+
         const audioPath = paths.find((p: string) => {
           const lower = p.toLowerCase();
           return lower.endsWith(".wav") || lower.endsWith(".mp3") || lower.endsWith(".flac") || lower.endsWith(".m4a") || lower.endsWith(".aiff") || lower.endsWith(".ogg");
@@ -1673,10 +1699,16 @@
     };
     window.addEventListener("click", closeMenu);
 
-    // Global keyboard shortcuts: Space = Play/Pause/Load, Up/Down = Playlist/Browser Nav, Left/Right = Marker Jump, M = Add Marker, Enter = Stop & Return to 0
+    // Global keyboard shortcuts: Space = Play/Pause/Load, Up/Down = Playlist/Browser Nav, Left/Right = Marker Jump, M = Add Marker, Enter = Stop & Return to 0, Cmd+Shift+E = Export Audio
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+        return;
+      }
+
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.code === "KeyE" || e.key === "e" || e.key === "E")) {
+        e.preventDefault();
+        openExportModal();
         return;
       }
 
@@ -2319,6 +2351,207 @@
       }
     } catch (err) {
       alert("Failed to add files: " + err);
+    }
+  }
+
+  async function savePlaylistToFile() {
+    if (playlistItems.length === 0) {
+      alert("Playlist is empty. Add audio tracks before saving.");
+      return;
+    }
+    try {
+      const selected = await save({
+        defaultPath: "Setlist.thset",
+        filters: [
+          { name: "TrackHelm Set (*.thset)", extensions: ["thset"] },
+          { name: "M3U8 Playlist (*.m3u8)", extensions: ["m3u8"] },
+          { name: "M3U Playlist (*.m3u)", extensions: ["m3u"] },
+          { name: "JSON Playlist (*.json)", extensions: ["json"] }
+        ]
+      });
+      if (selected && typeof selected === "string") {
+        const ext = selected.split(".").pop()?.toLowerCase() || "thset";
+        const format = (ext === "m3u8" || ext === "m3u") ? "m3u8" : (ext === "json" ? "json" : "thset");
+        await invoke("save_playlist_file", {
+          path: selected,
+          format,
+          items: playlistItems.map(p => ({
+            name: p.name,
+            path: p.path,
+            duration: p.duration
+          }))
+        });
+      }
+    } catch (err) {
+      console.error("Failed to save playlist:", err);
+      alert("Failed to save playlist: " + err);
+    }
+  }
+
+  async function loadPlaylistFromFile(directPath?: string) {
+    try {
+      let targetPath = directPath;
+      if (!targetPath) {
+        const selected = await open({
+          multiple: false,
+          filters: [
+            { name: "Playlists & Sets (*.thset, *.m3u8, *.m3u, *.json)", extensions: ["thset", "m3u8", "m3u", "json"] }
+          ]
+        });
+        if (selected && typeof selected === "string") {
+          targetPath = selected;
+        }
+      }
+      if (!targetPath) return;
+
+      const loadedItems: PlaylistItem[] = await invoke("load_playlist_file", { path: targetPath });
+      if (!loadedItems || loadedItems.length === 0) {
+        alert("No audio tracks found in playlist file.");
+        return;
+      }
+
+      if (playlistItems.length > 0) {
+        const shouldAppend = confirm(`Found ${loadedItems.length} track(s).\n\nClick OK to REPLACE current list, or Cancel to APPEND to it.`);
+        if (shouldAppend) {
+          playlistItems = loadedItems;
+        } else {
+          const existingPaths = new Set(playlistItems.map(p => p.path));
+          const newEntries = loadedItems.filter(p => !existingPaths.has(p.path));
+          playlistItems = [...playlistItems, ...newEntries];
+        }
+      } else {
+        playlistItems = loadedItems;
+      }
+      localStorage.setItem("th_playlist", JSON.stringify(playlistItems));
+      activeTab = "playlist";
+    } catch (err) {
+      console.error("Failed to load playlist:", err);
+      alert("Failed to load playlist: " + err);
+    }
+  }
+
+  // Audio Export Modal Functions
+  function openExportModal() {
+    if (!filePath || duration === 0) {
+      alert("Please load an audio track first before exporting.");
+      return;
+    }
+    if (timeSelection && (timeSelection.end - timeSelection.start) > 0.1) {
+      exportRange = "selection";
+    } else {
+      exportRange = "full";
+    }
+    if (regions.length > 0) {
+      exportSelectedRegionId = regions[0].id;
+    }
+    exportStatusMessage = "";
+    exportErrorMessage = "";
+    showExportModal = true;
+  }
+
+  async function executeAudioExport() {
+    if (!filePath) return;
+    try {
+      isExporting = true;
+      exportStatusMessage = "Preparing audio export...";
+      exportErrorMessage = "";
+
+      let rangeStart: number | undefined = undefined;
+      let rangeEnd: number | undefined = undefined;
+
+      if (exportRange === "selection" && timeSelection) {
+        rangeStart = timeSelection.start;
+        rangeEnd = timeSelection.end;
+      } else if (exportRange === "region" && exportSelectedRegionId) {
+        const targetReg = regions.find(r => r.id === exportSelectedRegionId);
+        if (targetReg) {
+          rangeStart = targetReg.startTime;
+          rangeEnd = targetReg.endTime;
+        }
+      }
+
+      // Generate suggested file name
+      const baseName = fileName.replace(/\.[^/.]+$/, "");
+      let suffix = "";
+      if (exportBakeSpeed && Math.abs(speed - 1.0) > 0.01) {
+        suffix += `_${speed.toFixed(2)}x`;
+      }
+      if (exportBakePitch && (pitch !== 0 || pitchCents !== 0)) {
+        const totalSemi = pitch + (pitchCents / 100.0);
+        suffix += `_${totalSemi > 0 ? "+" : ""}${totalSemi.toFixed(1)}st`;
+      }
+      const ext = exportBitDepth === "float32" ? "float32.wav" : (exportBitDepth === "int16" ? "16bit.wav" : "24bit.wav");
+      const defaultFileName = `${baseName}${suffix}_export.${ext}`;
+
+      const selectedOut = await save({
+        defaultPath: defaultFileName,
+        filters: [{ name: "WAV Audio (*.wav)", extensions: ["wav"] }]
+      });
+
+      if (!selectedOut || typeof selectedOut !== "string") {
+        isExporting = false;
+        return;
+      }
+
+      exportStatusMessage = "Processing DSP and rendering output file...";
+
+      const totalSemitones = pitch + (pitchCents / 100.0);
+
+      await invoke("export_audio_file", {
+        request: {
+          sourcePath: filePath,
+          outputPath: selectedOut,
+          bitDepth: exportBitDepth,
+          rangeStartSeconds: rangeStart,
+          rangeEndSeconds: rangeEnd,
+          pitchSemitones: totalSemitones,
+          speedMultiplier: speed,
+          volumeMultiplier: dbToLinear(volume),
+          bakePitch: exportBakePitch,
+          bakeSpeed: exportBakeSpeed,
+          bakeEq: exportBakeEq,
+          bakeCompressor: exportBakeCompressor,
+          bakeCuts: exportBakeCuts,
+          eqBands: eqNodes.map(n => ({
+            filterType: n.filterType,
+            freq: n.freq,
+            gainDb: n.gainDb,
+            q: n.q,
+            enabled: n.enabled && !isEqBypassed
+          })),
+          compStage1: {
+            ...compStage1,
+            enabled: compStage1.enabled && !isCompressorBypassed
+          },
+          compStage2: {
+            ...compStage2,
+            enabled: compStage2.enabled && !isCompressorBypassed
+          },
+          compRouting: compRouting,
+          compParallelBlend: compParallelBlend,
+          regions: regions.map(r => ({
+            startSeconds: r.startTime,
+            endSeconds: r.endTime,
+            isLoop: r.isLoop,
+            isCut: r.isCut,
+            crossfadeMs: r.crossfadeMs ?? 5.0
+          })),
+          copyMetadata: exportCopyMetadata
+        }
+      });
+
+      exportStatusMessage = `✓ Exported successfully to:\n${selectedOut.split("/").pop()}`;
+      setTimeout(() => {
+        if (!exportErrorMessage) {
+          showExportModal = false;
+        }
+      }, 1800);
+    } catch (err: any) {
+      console.error("Export failed:", err);
+      exportErrorMessage = `Export failed: ${err}`;
+      exportStatusMessage = "";
+    } finally {
+      isExporting = false;
     }
   }
 
@@ -4113,11 +4346,17 @@
         </div>
 
         <div class="playlist-controls-sidebar">
-          <button class="action-btn file-btn" on:click={selectPlaylistFiles}>
-            + Add Files
+          <button class="action-btn file-btn" on:click={selectPlaylistFiles} title="Add audio files to playlist">
+            + Add
           </button>
-          <button class="action-btn clear-btn" on:click={clearPlaylist}>
-            Clear List
+          <button class="action-btn save-set-btn" on:click={savePlaylistToFile} title="Save playlist (.thset / .m3u8)">
+            💾 Save
+          </button>
+          <button class="action-btn open-set-btn" on:click={() => loadPlaylistFromFile()} title="Open playlist (.thset / .m3u8)">
+            📂 Open
+          </button>
+          <button class="action-btn clear-btn" on:click={clearPlaylist} title="Clear playlist">
+            Clear
           </button>
         </div>
       {/if}
@@ -4151,6 +4390,16 @@
           <span class="track-title-text" title={filePath}>
             {fileName || "Drag & Drop Audio file to begin"}
           </span>
+        </div>
+        <div class="header-export-wrap">
+          <button 
+            class="export-audio-header-btn" 
+            title="Export audio with baked DSP, pitch, speed, and cuts (Cmd+Shift+E)"
+            on:click={openExportModal}
+            disabled={!filePath || duration === 0}
+          >
+            💾 Export Audio...
+          </button>
         </div>
         <div class="time-readout">
           <span class="time-large">{formatTime(currentTime)}</span>
@@ -4849,7 +5098,29 @@
                     {:else}
                       <span class="region-name" on:dblclick={() => startRenameRegion(region)} title="Double-click to rename">{region.name}</span>
                     {/if}
-                    <span class="region-span">{formatTime(region.startTime)} – {formatTime(region.endTime)}</span>
+                    <div class="region-meta-row">
+                      <span class="region-span">{formatTime(region.startTime)} – {formatTime(region.endTime)}</span>
+                      {#if region.isCut}
+                        <!-- svelte-ignore a11y-click-events-have-key-events -->
+                        <!-- svelte-ignore a11y-no-static-element-interactions -->
+                        <span 
+                          class="region-xfade-pill" 
+                          title="Click to change splice crossfade duration (ms)"
+                          on:click|stopPropagation={() => {
+                            const val = prompt("Enter cut splice crossfade (0 - 100 ms):", (region.crossfadeMs ?? 5).toString());
+                            if (val !== null) {
+                              const num = parseFloat(val);
+                              if (!isNaN(num)) {
+                                region.crossfadeMs = Math.max(0, Math.min(100, num));
+                                syncRegionsToEngine();
+                              }
+                            }
+                          }}
+                        >
+                          ⚡ {region.crossfadeMs ?? 5}ms xfade
+                        </span>
+                      {/if}
+                    </div>
                   </div>
                 </div>
 
@@ -5247,6 +5518,24 @@
       <div class="menu-item" on:click={() => { if (contextMenuRegion) toggleRegionCut(contextMenuRegion); showRegionContextMenu = false; }}>
         {contextMenuRegion.isCut ? "✓ " : "  "}✂️ Cut / Skip Mode
       </div>
+      {#if contextMenuRegion.isCut}
+        <div class="menu-item" on:click={() => {
+          if (contextMenuRegion) {
+            const reg = contextMenuRegion;
+            showRegionContextMenu = false;
+            const val = prompt("Enter cut splice crossfade (0 - 100 ms):", (reg.crossfadeMs ?? 5).toString());
+            if (val !== null) {
+              const num = parseFloat(val);
+              if (!isNaN(num)) {
+                reg.crossfadeMs = Math.max(0, Math.min(100, num));
+                syncRegionsToEngine();
+              }
+            }
+          }
+        }}>
+          ⚡ Splice Crossfade ({contextMenuRegion.crossfadeMs ?? 5}ms)...
+        </div>
+      {/if}
       <div class="menu-item" on:click={() => { if (contextMenuRegion) startRenameRegion(contextMenuRegion); showRegionContextMenu = false; }}>
         ✏️ Rename Region...
       </div>
@@ -5866,6 +6155,142 @@
       </div>
       <div class="menu-item" on:click={() => { if (eqFilterMenuTargetNode) eqFilterMenuTargetNode.filterType = 'Notch'; updateEqEngine(); showEqFilterMenu = false; }}>
         {eqFilterMenuTargetNode.filterType === 'Notch' ? '✓ ' : '  '}Notch Filter
+      </div>
+    </div>
+  {/if}
+
+  <!-- Export Audio Modal -->
+  {#if showExportModal}
+    <!-- svelte-ignore a11y-click-events-have-key-events -->
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div class="modal-backdrop" on:click={() => { if (!isExporting) showExportModal = false; }}>
+      <div class="inspector-modal export-modal-card" on:click|stopPropagation>
+        <div class="modal-header">
+          <div class="modal-title-row">
+            <span class="modal-badge export-badge">EXPORT</span>
+            <h3>Export Audio File</h3>
+            <span class="stage-subhead">Offline DSP Render Engine</span>
+          </div>
+          <button class="modal-close-btn" disabled={isExporting} on:click={() => showExportModal = false}>×</button>
+        </div>
+
+        <div class="modal-body export-modal-body">
+          <div class="export-section">
+            <div class="export-section-title">AUDIO FORMAT & BIT DEPTH</div>
+            <div class="export-options-grid">
+              <label class="export-radio-btn" class:selected={exportBitDepth === 'int16'}>
+                <input type="radio" name="bitdepth" value="int16" bind:group={exportBitDepth} />
+                <span class="radio-title">WAV (16-bit PCM)</span>
+                <span class="radio-desc">CD Quality • Universal compatibility</span>
+              </label>
+              <label class="export-radio-btn" class:selected={exportBitDepth === 'int24'}>
+                <input type="radio" name="bitdepth" value="int24" bind:group={exportBitDepth} />
+                <span class="radio-title">WAV (24-bit PCM)</span>
+                <span class="radio-desc">Studio High-Resolution (Recommended)</span>
+              </label>
+              <label class="export-radio-btn" class:selected={exportBitDepth === 'float32'}>
+                <input type="radio" name="bitdepth" value="float32" bind:group={exportBitDepth} />
+                <span class="radio-title">WAV (32-bit Float)</span>
+                <span class="radio-desc">Full 32-bit Floating Point Headroom</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="export-section">
+            <div class="export-section-title">EXPORT RANGE</div>
+            <div class="export-range-row">
+              <label class="export-radio-pill" class:active={exportRange === 'full'}>
+                <input type="radio" name="range" value="full" bind:group={exportRange} />
+                Full Song ({formatTime(duration)})
+              </label>
+              <label class="export-radio-pill" class:active={exportRange === 'selection'} class:disabled={!timeSelection}>
+                <input type="radio" name="range" value="selection" bind:group={exportRange} disabled={!timeSelection} />
+                Time Selection {#if timeSelection}({formatTime(timeSelection.start)} – {formatTime(timeSelection.end)}){:else}(No selection){/if}
+              </label>
+              <label class="export-radio-pill" class:active={exportRange === 'region'} class:disabled={regions.length === 0}>
+                <input type="radio" name="range" value="region" bind:group={exportRange} disabled={regions.length === 0} />
+                Specific Region ({regions.length})
+              </label>
+            </div>
+            {#if exportRange === 'region' && regions.length > 0}
+              <div class="region-select-wrap">
+                <select class="export-select" bind:value={exportSelectedRegionId}>
+                  {#each regions as r}
+                    <option value={r.id}>{r.name} ({formatTime(r.startTime)} – {formatTime(r.endTime)})</option>
+                  {/each}
+                </select>
+              </div>
+            {/if}
+          </div>
+
+          <div class="export-section">
+            <div class="export-section-title">BAKED PROCESSING OPTIONS</div>
+            <div class="export-checkboxes-grid">
+              <label class="export-check-item">
+                <input type="checkbox" bind:checked={exportBakePitch} />
+                <span class="check-label">
+                  Pitch Shift
+                  <span class="check-sub">{pitch > 0 ? "+" : ""}{pitch} st, {pitchCents > 0 ? "+" : ""}{pitchCents}¢</span>
+                </span>
+              </label>
+              <label class="export-check-item">
+                <input type="checkbox" bind:checked={exportBakeSpeed} />
+                <span class="check-label">
+                  Playback Speed
+                  <span class="check-sub">{speed.toFixed(2)}x tempo</span>
+                </span>
+              </label>
+              <label class="export-check-item">
+                <input type="checkbox" bind:checked={exportBakeEq} />
+                <span class="check-label">
+                  Equalizer
+                  <span class="check-sub">{isEqBypassed ? 'Bypassed' : 'Active Biquad Cascade'}</span>
+                </span>
+              </label>
+              <label class="export-check-item">
+                <input type="checkbox" bind:checked={exportBakeCompressor} />
+                <span class="check-label">
+                  Dynamic Compressor
+                  <span class="check-sub">{isCompressorBypassed ? 'Bypassed' : 'Dual-Stage'}</span>
+                </span>
+              </label>
+              <label class="export-check-item">
+                <input type="checkbox" bind:checked={exportBakeCuts} />
+                <span class="check-label">
+                  Cut Regions
+                  <span class="check-sub">Removed with micro-crossfades</span>
+                </span>
+              </label>
+              <label class="export-check-item">
+                <input type="checkbox" bind:checked={exportCopyMetadata} />
+                <span class="check-label">
+                  Preserve Tags
+                  <span class="check-sub">Title, Artist, Album, Year</span>
+                </span>
+              </label>
+            </div>
+          </div>
+
+          {#if exportStatusMessage}
+            <div class="export-feedback-msg" class:export-success={exportStatusMessage.startsWith('✓')}>
+              {exportStatusMessage}
+            </div>
+          {/if}
+          {#if exportErrorMessage}
+            <div class="export-feedback-msg export-error">
+              {exportErrorMessage}
+            </div>
+          {/if}
+        </div>
+
+        <div class="modal-footer">
+          <button class="modal-action-btn cancel-btn" disabled={isExporting} on:click={() => showExportModal = false}>
+            Cancel
+          </button>
+          <button class="modal-action-btn primary-btn export-run-btn" disabled={isExporting} on:click={executeAudioExport}>
+            {isExporting ? "Rendering..." : "Choose Location & Export..."}
+          </button>
+        </div>
       </div>
     </div>
   {/if}
@@ -8855,5 +9280,267 @@
 
   .modal-action-btn:hover {
     background-color: #0088ff;
+  }
+
+  /* Header Export Button */
+  .header-export-wrap {
+    display: flex;
+    align-items: center;
+  }
+
+  .export-audio-header-btn {
+    background: linear-gradient(180deg, #2a2d34 0%, #1f2127 100%);
+    border: 1px solid #3e424d;
+    border-radius: 4px;
+    color: #e2e8f0;
+    padding: 4px 10px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    transition: all 0.15s ease;
+  }
+
+  .export-audio-header-btn:hover:not(:disabled) {
+    background: linear-gradient(180deg, #3b404d 0%, #292c35 100%);
+    border-color: #3b99fc;
+    color: #ffffff;
+    box-shadow: 0 0 8px rgba(59, 153, 252, 0.3);
+  }
+
+  .export-audio-header-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  /* Playlist Sidebar Buttons */
+  .save-set-btn, .open-set-btn {
+    background-color: #24252a !important;
+    border: 1px solid #3a3b42 !important;
+    color: #cfd3dc !important;
+  }
+
+  .save-set-btn:hover, .open-set-btn:hover {
+    background-color: #2e3037 !important;
+    border-color: #555863 !important;
+    color: #ffffff !important;
+  }
+
+  /* Region Crossfade Pill */
+  .region-meta-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .region-xfade-pill {
+    background-color: rgba(255, 69, 58, 0.15);
+    border: 1px solid rgba(255, 69, 58, 0.35);
+    color: #ff6961;
+    font-size: 0.62rem;
+    font-weight: 600;
+    padding: 1px 5px;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: all 0.12s ease;
+  }
+
+  .region-xfade-pill:hover {
+    background-color: rgba(255, 69, 58, 0.3);
+    border-color: #ff453a;
+    color: #ffffff;
+  }
+
+  /* Export Audio Modal Styles */
+  .export-modal-card {
+    width: 580px;
+    max-width: 95vw;
+  }
+
+  .export-badge {
+    background-color: #3b99fc;
+    color: #ffffff;
+    font-size: 0.65rem;
+    font-weight: 800;
+    padding: 2px 6px;
+    border-radius: 3px;
+    margin-right: 6px;
+  }
+
+  .export-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
+    background-color: #121316;
+    border: 1px solid #22242a;
+    border-radius: 6px;
+  }
+
+  .export-section-title {
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    color: #8a8f9d;
+  }
+
+  .export-options-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+
+  .export-radio-btn {
+    display: flex;
+    flex-direction: column;
+    padding: 8px;
+    background-color: #18191e;
+    border: 1px solid #2d2f38;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: all 0.12s ease;
+  }
+
+  .export-radio-btn input {
+    display: none;
+  }
+
+  .export-radio-btn.selected {
+    background-color: rgba(59, 153, 252, 0.15);
+    border-color: #3b99fc;
+  }
+
+  .export-radio-btn .radio-title {
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: #e2e8f0;
+    margin-bottom: 2px;
+  }
+
+  .export-radio-btn.selected .radio-title {
+    color: #60a5fa;
+  }
+
+  .export-radio-btn .radio-desc {
+    font-size: 0.62rem;
+    color: #858997;
+    line-height: 1.2;
+  }
+
+  .export-range-row {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .export-radio-pill {
+    padding: 5px 10px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    background-color: #18191e;
+    border: 1px solid #2d2f38;
+    border-radius: 4px;
+    color: #9499a8;
+    cursor: pointer;
+    transition: all 0.12s ease;
+  }
+
+  .export-radio-pill input {
+    display: none;
+  }
+
+  .export-radio-pill.active {
+    background-color: #3b99fc;
+    border-color: #3b99fc;
+    color: #ffffff;
+  }
+
+  .export-radio-pill.disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+
+  .export-select {
+    width: 100%;
+    background-color: #18191e;
+    border: 1px solid #2d2f38;
+    color: #e2e8f0;
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    margin-top: 4px;
+  }
+
+  .export-checkboxes-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+
+  .export-check-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    font-size: 0.75rem;
+    color: #d1d5db;
+    cursor: pointer;
+    background-color: #18191e;
+    padding: 6px 8px;
+    border-radius: 4px;
+    border: 1px solid #24262f;
+  }
+
+  .export-check-item input[type="checkbox"] {
+    margin-top: 2px;
+    accent-color: #3b99fc;
+  }
+
+  .check-label {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .check-sub {
+    font-size: 0.62rem;
+    color: #717684;
+  }
+
+  .export-feedback-msg {
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-align: center;
+    white-space: pre-line;
+  }
+
+  .export-success {
+    background-color: rgba(48, 209, 88, 0.15);
+    border: 1px solid rgba(48, 209, 88, 0.4);
+    color: #30d158;
+  }
+
+  .export-error {
+    background-color: rgba(255, 69, 58, 0.15);
+    border: 1px solid rgba(255, 69, 58, 0.4);
+    color: #ff453a;
+  }
+
+  .cancel-btn {
+    background-color: #27272a !important;
+    border: 1px solid #3f3f46 !important;
+    color: #a1a1aa !important;
+  }
+
+  .cancel-btn:hover:not(:disabled) {
+    background-color: #3f3f46 !important;
+    color: #ffffff !important;
+  }
+
+  .export-run-btn {
+    background: linear-gradient(180deg, #007aff 0%, #0060df 100%) !important;
   }
 </style>

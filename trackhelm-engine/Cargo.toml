@@ -13,6 +13,7 @@ ringbuf = "0.4"
 crossbeam-channel = "0.5"
 log = "0.4"
 serde = { version = "1.0", features = ["derive"] }
+hound = "3.5"
 
 # local dependency
 signalsmith-stretch-rs = { path = "../signalsmith-stretch-rs" }

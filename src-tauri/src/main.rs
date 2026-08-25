@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::State;
 use trackhelm_engine::{Command, CommandBus, SharedEngineState, DecodedAudio, decode_file};
+use lofty::prelude::*;
 
 use std::collections::HashMap;
 
@@ -788,6 +789,214 @@ fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
     std::fs::read(&path).map_err(|e| e.to_string())
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaylistItemDto {
+    pub name: String,
+    pub path: String,
+    pub duration: Option<f64>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportAudioRequest {
+    pub source_path: String,
+    pub output_path: String,
+    pub bit_depth: String, // "int16", "int24", "float32"
+    pub range_start_seconds: Option<f64>,
+    pub range_end_seconds: Option<f64>,
+    pub pitch_semitones: f32,
+    pub speed_multiplier: f32,
+    pub volume_multiplier: f32,
+    pub bake_pitch: bool,
+    pub bake_speed: bool,
+    pub bake_eq: bool,
+    pub bake_compressor: bool,
+    pub bake_cuts: bool,
+    pub eq_bands: Vec<trackhelm_engine::command::EqBand>,
+    pub comp_stage1: trackhelm_engine::dsp::CompStageParams,
+    pub comp_stage2: trackhelm_engine::dsp::CompStageParams,
+    pub comp_routing: trackhelm_engine::dsp::CompRouting,
+    pub comp_parallel_blend: f32,
+    pub regions: Vec<trackhelm_engine::command::EngineRegion>,
+    pub copy_metadata: bool,
+}
+
+#[tauri::command]
+async fn export_audio_file(
+    state: State<'_, AppState>,
+    request: ExportAudioRequest,
+) -> Result<String, String> {
+    // 1. Get or decode the source audio
+    let cached_audio = {
+        let mut cache = state.track_cache.lock().unwrap();
+        cache.get(&request.source_path).map(|c| c.audio.clone())
+    };
+
+    let audio_arc = if let Some(audio) = cached_audio {
+        audio
+    } else {
+        let src_path = request.source_path.clone();
+        let decoded = tauri::async_runtime::spawn_blocking(move || {
+            trackhelm_engine::decoder::decode_file(&src_path)
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+
+        Arc::new(decoded)
+    };
+
+    let bit_depth = match request.bit_depth.to_lowercase().as_str() {
+        "int16" | "16" => trackhelm_engine::ExportBitDepth::Int16,
+        "int24" | "24" => trackhelm_engine::ExportBitDepth::Int24,
+        "float32" | "32" => trackhelm_engine::ExportBitDepth::Float32,
+        _ => trackhelm_engine::ExportBitDepth::Int24,
+    };
+
+    let config = trackhelm_engine::ExportAudioConfig {
+        output_path: request.output_path.clone(),
+        bit_depth,
+        range_start_seconds: request.range_start_seconds,
+        range_end_seconds: request.range_end_seconds,
+        pitch_semitones: request.pitch_semitones,
+        speed_multiplier: request.speed_multiplier,
+        volume_multiplier: request.volume_multiplier,
+        bake_pitch: request.bake_pitch,
+        bake_speed: request.bake_speed,
+        bake_eq: request.bake_eq,
+        bake_compressor: request.bake_compressor,
+        bake_cuts: request.bake_cuts,
+        eq_bands: request.eq_bands,
+        comp_stage1: request.comp_stage1,
+        comp_stage2: request.comp_stage2,
+        comp_routing: request.comp_routing,
+        comp_parallel_blend: request.comp_parallel_blend,
+        regions: request.regions,
+    };
+
+    // 2. Run offline DSP render & encoding on blocking thread
+    let out_path = request.output_path.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        trackhelm_engine::render_audio_export(&audio_arc, &config)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+
+    // 3. Copy metadata tags if requested and source exists
+    if request.copy_metadata {
+        if let Ok(src_probe) = lofty::probe::Probe::open(&request.source_path) {
+            if let Ok(src_file) = src_probe.read() {
+                if let Some(src_tag) = src_file.primary_tag().or_else(|| src_file.first_tag()) {
+                    let _ = src_tag.save_to_path(&out_path, lofty::config::WriteOptions::default());
+                }
+            }
+        }
+    }
+
+    Ok(request.output_path)
+}
+
+#[tauri::command]
+fn save_playlist_file(path: String, format: String, items: Vec<PlaylistItemDto>) -> Result<(), String> {
+    match format.to_lowercase().as_str() {
+        "m3u" | "m3u8" => {
+            let mut content = String::from("#EXTM3U\n");
+            for item in items {
+                let duration_int = item.duration.unwrap_or(0.0).round() as i64;
+                content.push_str(&format!("#EXTINF:{},{}\n", duration_int, item.name));
+                content.push_str(&format!("{}\n", item.path));
+            }
+            std::fs::write(&path, content).map_err(|e| e.to_string())?;
+        }
+        "thset" | "json" => {
+            #[derive(serde::Serialize)]
+            struct ThSetFile {
+                version: u32,
+                items: Vec<PlaylistItemDto>,
+            }
+            let data = ThSetFile {
+                version: 1,
+                items,
+            };
+            let json = serde_json::to_string_pretty(&data).map_err(|e| e.to_string())?;
+            std::fs::write(&path, json).map_err(|e| e.to_string())?;
+        }
+        _ => return Err(format!("Unsupported playlist format: {}", format)),
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn load_playlist_file(path: String) -> Result<Vec<PlaylistItemDto>, String> {
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("Failed to read playlist file: {}", e))?;
+    let path_buf = std::path::PathBuf::from(&path);
+    let parent_dir = path_buf.parent().unwrap_or(std::path::Path::new(""));
+
+    let lower = path.to_lowercase();
+    if lower.ends_with(".json") || lower.ends_with(".thset") {
+        #[derive(serde::Deserialize)]
+        struct ThSetFile {
+            #[serde(default)]
+            items: Vec<PlaylistItemDto>,
+        }
+
+        if let Ok(thset) = serde_json::from_str::<ThSetFile>(&content) {
+            return Ok(thset.items);
+        } else if let Ok(items) = serde_json::from_str::<Vec<PlaylistItemDto>>(&content) {
+            return Ok(items);
+        } else {
+            return Err("Failed to parse JSON playlist".to_string());
+        }
+    }
+
+    // M3U / M3U8 parser
+    let mut items = Vec::new();
+    let mut current_name: Option<String> = None;
+    let mut current_duration: Option<f64> = None;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        if trimmed.starts_with("#EXTINF:") {
+            let info = &trimmed[8..];
+            if let Some((dur_str, title)) = info.split_once(',') {
+                current_duration = dur_str.trim().parse::<f64>().ok();
+                current_name = Some(title.trim().to_string());
+            } else {
+                current_name = Some(info.trim().to_string());
+            }
+        } else if !trimmed.starts_with('#') {
+            // Audio file path
+            let file_path = if std::path::Path::new(trimmed).is_absolute() {
+                trimmed.to_string()
+            } else {
+                parent_dir.join(trimmed).to_string_lossy().to_string()
+            };
+
+            let name = current_name.take().unwrap_or_else(|| {
+                std::path::Path::new(&file_path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&file_path)
+                    .to_string()
+            });
+
+            items.push(PlaylistItemDto {
+                name,
+                path: file_path,
+                duration: current_duration.take(),
+            });
+        }
+    }
+
+    Ok(items)
+}
+
 fn main() {
     let (mut engine, command_bus, shared_state) = trackhelm_engine::AudioEngine::new();
 
@@ -827,7 +1036,10 @@ fn main() {
             open_file_external,
             read_audio_metadata,
             save_audio_metadata,
-            read_file_bytes
+            read_file_bytes,
+            export_audio_file,
+            save_playlist_file,
+            load_playlist_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
