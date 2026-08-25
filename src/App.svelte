@@ -130,8 +130,45 @@
   let editingMarkerId: number | null = null;
   let editingMarkerName = "";
 
-  $: mainTrackMarkers = (mainTrack && activeTrackMode === "alternate") ? (getProfilesStore()[mainTrack.path]?.markers || []) : [];
-  $: unplacedMainMarkers = mainTrackMarkers.filter(mm => !markers.some(am => am.name.trim().toLowerCase() === mm.name.trim().toLowerCase()));
+  // Shared Project Landmarks Pool across all versions (Main, Alt, and Associated)
+  $: projectUnplacedLandmarks = (() => {
+    // Include current markers, mainTrack, alternateTrack, filePath as dependencies
+    const _dep = [markers, activeTrackMode, filePath, mainTrack, alternateTrack, associatedVersions];
+    const store = getProfilesStore();
+    const allKnownMarkers: Marker[] = [];
+
+    // 1. Check Main track
+    if (mainTrack && store[mainTrack.path]?.markers) {
+      for (const m of store[mainTrack.path].markers) {
+        if (!allKnownMarkers.some(k => k.name.trim().toLowerCase() === m.name.trim().toLowerCase())) {
+          allKnownMarkers.push(m);
+        }
+      }
+    }
+    // 2. Check Alternate track
+    if (alternateTrack && store[alternateTrack.path]?.markers) {
+      for (const m of store[alternateTrack.path].markers) {
+        if (!allKnownMarkers.some(k => k.name.trim().toLowerCase() === m.name.trim().toLowerCase())) {
+          allKnownMarkers.push(m);
+        }
+      }
+    }
+    // 3. Check Associated versions
+    for (const v of associatedVersions) {
+      if (store[v.path]?.markers) {
+        for (const m of store[v.path].markers) {
+          if (!allKnownMarkers.some(k => k.name.trim().toLowerCase() === m.name.trim().toLowerCase())) {
+            allKnownMarkers.push(m);
+          }
+        }
+      }
+    }
+
+    // Filter out markers already placed on the current active track
+    return allKnownMarkers.filter(pm => 
+      !markers.some(m => m.name.trim().toLowerCase() === pm.name.trim().toLowerCase())
+    );
+  })();
 
   // OS Folder Browser State
   let currentPath = "";
@@ -3079,27 +3116,31 @@
             {/each}
           {/if}
 
-          <!-- If Alternate track active, show available markers from Main track that can be dragged in -->
-          {#if activeTrackMode === 'alternate' && unplacedMainMarkers.length > 0}
+          <!-- Shared Project Landmarks Bin: Markers created in other takes/versions not yet placed on this track -->
+          {#if projectUnplacedLandmarks.length > 0}
             <div class="unplaced-markers-header">
-              <span>AVAILABLE FROM MAIN TRACK</span>
+              <span>PROJECT LANDMARKS BIN</span>
               <span class="unplaced-hint">Drag to place</span>
             </div>
-            {#each unplacedMainMarkers as mainMarker}
+            {#each projectUnplacedLandmarks as landmark}
               <div 
                 class="marker-item unplaced-main-marker"
-                style="border-left: 3px dashed {mainMarker.color || '#ff9500'};"
-                on:mousedown={(e) => handleMarkerItemMouseDown(e, mainMarker)}
-                title="Drag onto Alternate waveform to place"
+                style="border-left: 3px dashed {landmark.color || '#ff9500'};"
+                on:mousedown={(e) => handleMarkerItemMouseDown(e, landmark)}
+                title="Drag onto active waveform ({activeTrackMode.toUpperCase()}) or score to place"
               >
+                <!-- svelte-ignore a11y-click-events-have-key-events -->
+                <!-- svelte-ignore a11y-no-static-element-interactions -->
                 <span 
                   class="marker-color-dot" 
-                  style="background-color: {mainMarker.color || '#ff9500'};"
+                  style="background-color: {landmark.color || '#ff9500'};"
+                  title="Click to choose color"
+                  on:click={(e) => openColorPalette(e, landmark)}
                 ></span>
                 <span class="marker-name-btn unplaced-name">
-                  {mainMarker.name}
+                  {landmark.name}
                 </span>
-                <span class="marker-drag-hint">⇄ Drag</span>
+                <span class="marker-drag-hint">⇄ Drag to place</span>
               </div>
             {/each}
           {/if}
