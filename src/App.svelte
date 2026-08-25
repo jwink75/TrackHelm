@@ -41,12 +41,42 @@
   let speed = 1.0;                  // range 0.25 - 4.0 (25% - 400%)
   let pitch = 0;                    // range -24 - +24 semitones (in the middle)
   let pitchCents = 0;               // range -100 - +100 cents (fine tune)
-  let eqBass = 0;                   // Low Shelf: 100 Hz (-12 - +12 dB)
-  let eqMid = 0;                    // Mid Parametric Bell: 1 kHz (-12 - +12 dB)
-  let eqTreble = 0;                 // High Shelf: 8 kHz (-12 - +12 dB)
-  let compressorThreshold = -20;    // range -60 - 0 dB
-  let compressorRatio = 2.0;        // range 1.0 - 20.0 (Ratio)
-  let compressorMakeup = 0;         // range 0 - 24 dB
+  let eqBass = 0.0;                 // Low Shelf: 100 Hz (-12 - +12 dB)
+  let eqMid = 0.0;                  // Mid Parametric Bell: 1 kHz (-12 - +12 dB)
+  let eqTreble = 0.0;               // High Shelf: 8 kHz (-12 - +12 dB)
+  let compressorThreshold = 0.0;    // range -60 - 0 dB (default 0 dB)
+  let compressorRatio = 1.0;        // range 1.0 - 4.0 (default 1.0:1)
+  let compressorMakeup = 0.0;       // range 0 - 24 dB (default 0.0 dB)
+  
+  // Regions System State (Milestones 3 & 6)
+  interface Region {
+    id: string;
+    name: string;
+    startTime: number;
+    endTime: number;
+    isLoop: boolean;
+    isCut: boolean;
+    color?: string;
+  }
+  let regions: Region[] = [];
+  let nextRegionId = 1;
+  let selectedRegionId: string | null = null;
+  let selectedMarkerIds: Set<string | number> = new Set();
+  let timeSelection: { start: number; end: number } | null = null;
+  let isShiftSelecting = false;
+  let selectionDragStart = 0;
+  let editingRegionId: string | null = null;
+  let editingRegionName = "";
+
+  // Region Context Menu
+  let showRegionContextMenu = false;
+  let regionContextMenuX = 0;
+  let regionContextMenuY = 0;
+  let contextMenuRegion: Region | null = null;
+
+  // Advanced DSP Modals (Side 90° tab buttons)
+  let showAdvancedCompModal = false;
+  let showAdvancedEqModal = false;
   
   // Center Lower Deck tabs & Metadata
   let activeCenterTab: "notes" | "lyrics" | "metadata" | "pdf" = "notes";
@@ -235,6 +265,8 @@
     compressorMakeup: number;
     markers: Marker[];
     nextMarkerId: number;
+    regions?: Region[];
+    nextRegionId?: number;
     pdfChartPath: string;
     pdfChartName: string;
     associatedVersions: PlaylistItem[];
@@ -273,6 +305,8 @@
       compressorMakeup,
       markers: JSON.parse(JSON.stringify(markers)),
       nextMarkerId,
+      regions: JSON.parse(JSON.stringify(regions)),
+      nextRegionId,
       pdfChartPath: isMain ? pdfChartPath : (existing.pdfChartPath || ""),
       pdfChartName: isMain ? pdfChartName : (existing.pdfChartName || ""),
       associatedVersions: isMain ? associatedVersions : (existing.associatedVersions || []),
@@ -288,6 +322,42 @@
     const totalSemitones = pitch + (pitchCents / 100.0);
     await invoke("set_pitch", { pitch: totalSemitones });
     saveCurrentTrackProfile(filePath);
+  }
+
+  async function updateEqEngine() {
+    await invoke("set_eq", { bassDb: eqBass, midDb: eqMid, trebleDb: eqTreble });
+    saveCurrentTrackProfile(filePath);
+  }
+
+  async function updateCompressorEngine() {
+    await invoke("set_compressor", {
+      thresholdDb: compressorThreshold,
+      ratio: compressorRatio,
+      makeupDb: compressorMakeup,
+      attackMs: 30.0,
+      releaseMs: 300.0
+    });
+    saveCurrentTrackProfile(filePath);
+    drawMainWaveform();
+  }
+
+  async function syncRegionsToEngine() {
+    try {
+      await invoke("set_regions", {
+        regions: regions.map(r => ({
+          id: r.id,
+          name: r.name,
+          start_seconds: r.startTime,
+          end_seconds: r.endTime,
+          is_loop: r.isLoop,
+          is_cut: r.isCut
+        }))
+      });
+      saveCurrentTrackProfile(filePath);
+      drawMainWaveform();
+    } catch (e) {
+      console.error("Failed to sync regions to audio engine:", e);
+    }
   }
 
   async function saveAudioTags() {
@@ -777,11 +847,13 @@
       eqBass = typeof profile.eqBass === "number" ? profile.eqBass : 0;
       eqMid = typeof profile.eqMid === "number" ? profile.eqMid : 0;
       eqTreble = typeof profile.eqTreble === "number" ? profile.eqTreble : 0;
-      compressorThreshold = typeof profile.compressorThreshold === "number" ? profile.compressorThreshold : -20;
-      compressorRatio = typeof profile.compressorRatio === "number" ? profile.compressorRatio : 2.0;
-      compressorMakeup = typeof profile.compressorMakeup === "number" ? profile.compressorMakeup : 0;
+      compressorThreshold = typeof profile.compressorThreshold === "number" ? profile.compressorThreshold : 0.0;
+      compressorRatio = typeof profile.compressorRatio === "number" ? profile.compressorRatio : 1.0;
+      compressorMakeup = typeof profile.compressorMakeup === "number" ? profile.compressorMakeup : 0.0;
       markers = Array.isArray(profile.markers) ? [...profile.markers] : [];
       nextMarkerId = typeof profile.nextMarkerId === "number" ? profile.nextMarkerId : (markers.length + 1);
+      regions = Array.isArray(profile.regions) ? [...profile.regions] : [];
+      nextRegionId = typeof profile.nextRegionId === "number" ? profile.nextRegionId : (regions.length + 1);
 
       if (isMainSong) {
         pdfChartPath = profile.pdfChartPath || "";
@@ -805,14 +877,16 @@
       speed = 1.0;
       pitch = 0;
       pitchCents = 0;
-      eqBass = 0;
-      eqMid = 0;
-      eqTreble = 0;
-      compressorThreshold = -20;
-      compressorRatio = 2.0;
-      compressorMakeup = 0;
+      eqBass = 0.0;
+      eqMid = 0.0;
+      eqTreble = 0.0;
+      compressorThreshold = 0.0;
+      compressorRatio = 1.0;
+      compressorMakeup = 0.0;
       markers = [];
       nextMarkerId = 1;
+      regions = [];
+      nextRegionId = 1;
 
       if (isMainSong) {
         pdfChartPath = "";
@@ -829,12 +903,21 @@
       }
     }
 
-    // Apply restored volume, speed, and pitch directly to audio engine
+    // Apply restored volume, speed, pitch, EQ, compressor, and regions directly to audio engine
     const linearVol = dbVolume <= -59.5 ? 0 : Math.pow(10, dbVolume / 20);
     await invoke("set_volume", { volume: linearVol });
     await invoke("set_speed", { speed });
     const totalSemitones = pitch + (pitchCents / 100.0);
     await invoke("set_pitch", { pitch: totalSemitones });
+    await invoke("set_eq", { bassDb: eqBass, midDb: eqMid, trebleDb: eqTreble });
+    await invoke("set_compressor", {
+      thresholdDb: compressorThreshold,
+      ratio: compressorRatio,
+      makeupDb: compressorMakeup,
+      attackMs: 30.0,
+      releaseMs: 300.0
+    });
+    await syncRegionsToEngine();
   }
 
   // Canvas elements
@@ -1085,6 +1168,11 @@
         if (!e.metaKey && !e.ctrlKey && !e.altKey) {
           e.preventDefault();
           addMarker();
+        }
+      } else if (e.code === "KeyR" || e.key === "r" || e.key === "R") {
+        if (!e.metaKey && !e.ctrlKey && !e.altKey) {
+          e.preventDefault();
+          createRegionFromSelectionOrMarkers();
         }
       } else if (e.code === "ArrowLeft") {
         e.preventDefault();
@@ -1891,7 +1979,7 @@
 
   let isDraggingOverview = false;
 
-  // Main Waveform: Mouse Drag to Pan, click to seek, and Ruler Marker Dragging
+  // Main Waveform: Mouse Drag to Pan, click to seek, Shift-drag region select, and Ruler Marker Dragging
   function handleMainMouseDown(e: MouseEvent) {
     if (duration === 0 || !mainCanvas) return;
 
@@ -1910,6 +1998,21 @@
         if (markerPct >= startProgress && markerPct <= endProgress) {
           const markerX = ((markerPct - startProgress) / windowWidth) * rect.width;
           if (clickX >= markerX - 6 && clickX <= markerX + 18) {
+            if (e.shiftKey) {
+              if (selectedMarkerIds.has(m.id)) {
+                selectedMarkerIds.delete(m.id);
+              } else {
+                if (selectedMarkerIds.size >= 2) selectedMarkerIds.clear();
+                selectedMarkerIds.add(m.id);
+              }
+              selectedMarkerIds = selectedMarkerIds;
+              if (selectedMarkerIds.size === 2) {
+                const arr = markers.filter(x => selectedMarkerIds.has(x.id)).sort((a, b) => a.time - b.time);
+                timeSelection = { start: arr[0].time, end: arr[1].time };
+              }
+              drawMainWaveform();
+              return;
+            }
             startMarkerPointerDrag(e, m, false, true);
             return;
           }
@@ -1917,6 +2020,20 @@
       }
     }
 
+    if (e.shiftKey) {
+      isShiftSelecting = true;
+      const clickPct = Math.max(0, Math.min(1.0, clickX / rect.width));
+      selectionDragStart = Math.max(0, Math.min(duration, (startProgress + clickPct * windowWidth) * duration));
+      timeSelection = { start: selectionDragStart, end: selectionDragStart };
+      drawMainWaveform();
+
+      window.addEventListener("mousemove", handleMainMouseMove);
+      window.addEventListener("mouseup", handleMainMouseUp);
+      return;
+    }
+
+    // Normal click/pan: clear time selection if clicking plain waveform
+    timeSelection = null;
     isPanning = true;
     hasDraggedMain = false;
     panStartX = e.clientX;
@@ -1943,6 +2060,21 @@
       }
       drawMainWaveform();
       drawOverviewWaveform();
+      return;
+    }
+
+    if (isShiftSelecting && mainCanvas) {
+      const rect = mainCanvas.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const clickPct = Math.max(0, Math.min(1.0, clickX / rect.width));
+      const windowWidth = 1.0 / zoom;
+      const startProgress = zoom > 1.001 ? Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2)) : 0;
+      const currentDragTime = Math.max(0, Math.min(duration, (startProgress + clickPct * windowWidth) * duration));
+      timeSelection = {
+        start: Math.min(selectionDragStart, currentDragTime),
+        end: Math.max(selectionDragStart, currentDragTime)
+      };
+      drawMainWaveform();
       return;
     }
 
@@ -1989,6 +2121,17 @@
       return;
     }
 
+    if (isShiftSelecting) {
+      isShiftSelecting = false;
+      window.removeEventListener("mousemove", handleMainMouseMove);
+      window.removeEventListener("mouseup", handleMainMouseUp);
+      if (timeSelection && Math.abs(timeSelection.end - timeSelection.start) < 0.05) {
+        timeSelection = null;
+      }
+      drawMainWaveform();
+      return;
+    }
+
     if (isPanning) {
       isPanning = false;
       window.removeEventListener("mousemove", handleMainMouseMove);
@@ -2021,6 +2164,98 @@
         await invoke("seek", { seconds: progress * duration });
       }
     }
+  }
+
+  // Region Creation & Operations
+  function createRegionFromSelectionOrMarkers() {
+    let start = 0;
+    let end = 0;
+    let name = `Region ${nextRegionId}`;
+
+    if (timeSelection && Math.abs(timeSelection.end - timeSelection.start) > 0.05) {
+      start = timeSelection.start;
+      end = timeSelection.end;
+    } else if (selectedMarkerIds.size === 2) {
+      const arr = markers.filter(m => selectedMarkerIds.has(m.id)).sort((a, b) => a.time - b.time);
+      if (arr.length === 2) {
+        start = arr[0].time;
+        end = arr[1].time;
+        name = `${arr[0].name} – ${arr[1].name}`;
+      }
+    } else if (markers.length >= 2) {
+      const preceding = [...markers].filter(m => m.time <= currentTime).sort((a, b) => b.time - a.time)[0];
+      const following = [...markers].filter(m => m.time > currentTime).sort((a, b) => a.time - b.time)[0];
+      if (preceding && following) {
+        start = preceding.time;
+        end = following.time;
+        name = `${preceding.name} – ${following.name}`;
+      }
+    }
+
+    if (end > start) {
+      const newRegion: Region = {
+        id: `reg_${Date.now()}_${nextRegionId++}`,
+        name,
+        startTime: start,
+        endTime: end,
+        isLoop: false,
+        isCut: false,
+        color: "#30d158"
+      };
+      regions = [...regions, newRegion];
+      selectedRegionId = newRegion.id;
+      timeSelection = null;
+      selectedMarkerIds.clear();
+      selectedMarkerIds = selectedMarkerIds;
+      syncRegionsToEngine();
+    }
+  }
+
+  function toggleRegionLoop(region: Region) {
+    region.isLoop = !region.isLoop;
+    if (region.isLoop) {
+      region.isCut = false; // Cannot be loop and cut simultaneously
+    }
+    regions = [...regions];
+    syncRegionsToEngine();
+  }
+
+  function toggleRegionCut(region: Region) {
+    region.isCut = !region.isCut;
+    if (region.isCut) {
+      region.isLoop = false; // Cannot be cut and loop simultaneously
+    }
+    regions = [...regions];
+    syncRegionsToEngine();
+  }
+
+  function deleteRegion(id: string) {
+    regions = regions.filter(r => r.id !== id);
+    if (selectedRegionId === id) selectedRegionId = null;
+    syncRegionsToEngine();
+  }
+
+  function startRenameRegion(region: Region) {
+    editingRegionId = region.id;
+    editingRegionName = region.name;
+  }
+
+  function saveRenameRegion(region: Region) {
+    if (editingRegionName.trim()) {
+      region.name = editingRegionName.trim();
+      regions = [...regions];
+      syncRegionsToEngine();
+    }
+    editingRegionId = null;
+  }
+
+  function openRegionContextMenu(e: MouseEvent, region: Region) {
+    e.preventDefault();
+    contextMenuRegion = region;
+    selectedRegionId = region.id;
+    regionContextMenuX = e.clientX;
+    regionContextMenuY = e.clientY;
+    showRegionContextMenu = true;
   }
 
   // Mouse wheel zoom on Main Waveform
@@ -2440,9 +2675,119 @@
       ctx.fillText(label, x + 4, rulerHeight - 7);
     }
 
-    // 4. Mono Continuous Single Line Waveform
+    // 4. Render Time Selection & Regions
+    if (timeSelection && duration > 0) {
+      const selStartPct = timeSelection.start / duration;
+      const selEndPct = timeSelection.end / duration;
+      const x1 = Math.max(0, ((selStartPct - startProgress) / windowWidth) * width);
+      const x2 = Math.min(width, ((selEndPct - startProgress) / windowWidth) * width);
+      if (x2 > x1) {
+        ctx.fillStyle = "rgba(10, 132, 255, 0.22)";
+        ctx.fillRect(x1, rulerHeight, x2 - x1, height - rulerHeight);
+        ctx.strokeStyle = "#0a84ff";
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(x1, rulerHeight, x2 - x1, height - rulerHeight);
+      }
+    }
+
+    for (const reg of regions) {
+      const regStartPct = reg.startTime / duration;
+      const regEndPct = reg.endTime / duration;
+      const x1 = ((regStartPct - startProgress) / windowWidth) * width;
+      const x2 = ((regEndPct - startProgress) / windowWidth) * width;
+
+      if (x2 > 0 && x1 < width) {
+        const renderX1 = Math.max(0, x1);
+        const renderX2 = Math.min(width, x2);
+        const regWidth = renderX2 - renderX1;
+
+        if (reg.isCut) {
+          // Grayed out cut region with red-tinted diagonal hazard hatch
+          ctx.fillStyle = "rgba(18, 20, 24, 0.75)";
+          ctx.fillRect(renderX1, rulerHeight, regWidth, height - rulerHeight);
+          
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(renderX1, rulerHeight, regWidth, height - rulerHeight);
+          ctx.clip();
+          ctx.strokeStyle = "rgba(255, 69, 58, 0.2)";
+          ctx.lineWidth = 2;
+          for (let hx = renderX1 - height; hx < renderX2 + height; hx += 16) {
+            ctx.beginPath();
+            ctx.moveTo(hx, rulerHeight);
+            ctx.lineTo(hx + height, height);
+            ctx.stroke();
+          }
+          ctx.restore();
+
+          // Cut Header Badge
+          ctx.fillStyle = "#ff453a";
+          ctx.font = "bold 9px sans-serif";
+          ctx.fillText(`✂ CUT: ${reg.name}`, renderX1 + 6, rulerHeight + 13);
+        } else if (reg.isLoop) {
+          // Highlighted green looped region
+          ctx.fillStyle = "rgba(48, 209, 88, 0.16)";
+          ctx.fillRect(renderX1, rulerHeight, regWidth, height - rulerHeight);
+          
+          // Bracket borders
+          ctx.strokeStyle = "#30d158";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(renderX1, rulerHeight);
+          ctx.lineTo(renderX1, height);
+          ctx.moveTo(renderX2, rulerHeight);
+          ctx.lineTo(renderX2, height);
+          ctx.stroke();
+
+          // Loop Header Badge
+          ctx.fillStyle = "#30d158";
+          ctx.font = "bold 9px sans-serif";
+          ctx.fillText(`🔁 LOOP: ${reg.name}`, renderX1 + 6, rulerHeight + 13);
+        } else {
+          // Standard region
+          ctx.fillStyle = "rgba(10, 132, 255, 0.12)";
+          ctx.fillRect(renderX1, rulerHeight, regWidth, height - rulerHeight);
+          ctx.strokeStyle = "rgba(10, 132, 255, 0.5)";
+          ctx.lineWidth = 1;
+          ctx.strokeRect(renderX1, rulerHeight, regWidth, height - rulerHeight);
+          ctx.fillStyle = "#64d2ff";
+          ctx.font = "9px sans-serif";
+          ctx.fillText(`REGION: ${reg.name}`, renderX1 + 6, rulerHeight + 13);
+        }
+      }
+    }
+
+    // 5. Translucent Yellow Compressor Threshold Overlay
     const halfHeight = Math.floor(height / 2);
     const maxAmplitude = (height / 2) - rulerHeight - 4;
+
+    if (compressorThreshold < -0.01) {
+      const threshLinear = Math.pow(10, compressorThreshold / 20.0);
+      const topThreshY = halfHeight - threshLinear * maxAmplitude;
+      const botThreshY = halfHeight + threshLinear * maxAmplitude;
+
+      // Soft yellow translucent overlay above top threshold and below bottom threshold
+      ctx.fillStyle = "rgba(255, 214, 10, 0.08)";
+      ctx.fillRect(0, rulerHeight, width, Math.max(0, topThreshY - rulerHeight));
+      ctx.fillRect(0, botThreshY, width, height - botThreshY);
+
+      // Yellow dashed threshold boundary lines
+      ctx.strokeStyle = "rgba(255, 214, 10, 0.65)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([4, 4]);
+      
+      ctx.beginPath();
+      ctx.moveTo(0, topThreshY);
+      ctx.lineTo(width, topThreshY);
+      ctx.moveTo(0, botThreshY);
+      ctx.lineTo(width, botThreshY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.fillStyle = "rgba(255, 214, 10, 0.85)";
+      ctx.font = "8px monospace";
+      ctx.fillText(`${compressorThreshold.toFixed(1)} dB THRESHOLD`, 6, Math.max(rulerHeight + 10, topThreshY - 3));
+    }
 
     // Zero-Crossing Baseline (Centered Vertically)
     ctx.strokeStyle = "rgba(59, 153, 252, 0.35)";
@@ -2457,21 +2802,64 @@
     ctx.font = "8px monospace";
     ctx.fillText("0 dB", 4, halfHeight - 3);
 
+    // 6. Mono Continuous Single Line Waveform (Ghost + Compressed or Standard)
     if (visibleSamples.length > 0) {
       const numSamples = visibleSamples.length;
       const step = width / (numSamples - 1 || 1);
+      const isCompActive = compressorThreshold < -0.01 && compressorRatio > 1.01;
 
-      // True Continuous Oscillating Waveform Line (Unified across all zoom levels)
-      ctx.strokeStyle = "#3b99fc";
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      for (let i = 0; i < numSamples; i++) {
-        const x = i * step;
-        const y = halfHeight - visibleSamples[i] * maxAmplitude;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
+      if (isCompActive) {
+        // A. Draw original uncompressed waveform as translucent white ghost
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.22)";
+        ctx.lineWidth = 1.0;
+        ctx.beginPath();
+        for (let i = 0; i < numSamples; i++) {
+          const x = i * step;
+          const y = halfHeight - visibleSamples[i] * maxAmplitude;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+
+        // B. Draw resulting compressed waveform in vibrant theme colors
+        const threshLinear = Math.pow(10, compressorThreshold / 20.0);
+        const makeupLinear = Math.pow(10, compressorMakeup / 20.0);
+        
+        ctx.strokeStyle = "#3b99fc";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        for (let i = 0; i < numSamples; i++) {
+          const rawAmp = visibleSamples[i];
+          const absAmp = Math.abs(rawAmp);
+          const sign = rawAmp >= 0 ? 1 : -1;
+          
+          let compAmp = absAmp;
+          if (absAmp > threshLinear) {
+            const rawDb = 20.0 * Math.log10(absAmp);
+            const excessDb = rawDb - compressorThreshold;
+            const compressedDb = compressorThreshold + (excessDb / compressorRatio);
+            compAmp = Math.pow(10, compressedDb / 20.0);
+          }
+          compAmp *= makeupLinear;
+          const y = halfHeight - (sign * compAmp) * maxAmplitude;
+          const x = i * step;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      } else {
+        // Standard normal continuous waveform
+        ctx.strokeStyle = "#3b99fc";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        for (let i = 0; i < numSamples; i++) {
+          const x = i * step;
+          const y = halfHeight - visibleSamples[i] * maxAmplitude;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
       }
-      ctx.stroke();
 
       // Progressive Sample Node Squares (RX style when zoomed into <= 400 frames on screen)
       if (visibleSampleFrames <= 400) {
@@ -3490,6 +3878,69 @@
               </div>
             {/each}
           {/if}
+
+          <!-- Regions List -->
+          {#if regions.length > 0}
+            <div class="regions-header-row">
+              <span class="regions-header-title">REGIONS</span>
+              <span class="regions-count">{regions.length}</span>
+            </div>
+            {#each regions as region}
+              <div 
+                class="region-sidebar-item" 
+                class:active-region={selectedRegionId === region.id}
+                class:is-loop={region.isLoop}
+                class:is-cut={region.isCut}
+                on:click={() => { selectedRegionId = region.id; }}
+                on:contextmenu={(e) => openRegionContextMenu(e, region)}
+              >
+                <div class="region-item-main">
+                  <span class="region-color-bar" style="background-color: {region.isCut ? '#ff453a' : region.isLoop ? '#30d158' : '#0a84ff'}"></span>
+                  <div class="region-item-info">
+                    {#if editingRegionId === region.id}
+                      <input 
+                        type="text" 
+                        class="marker-rename-input"
+                        bind:value={editingRegionName} 
+                        on:keydown={(e) => { if (e.key === "Enter") saveRenameRegion(region); if (e.key === "Escape") editingRegionId = null; }}
+                        on:blur={() => saveRenameRegion(region)}
+                        autofocus
+                      />
+                    {:else}
+                      <span class="region-name" on:dblclick={() => startRenameRegion(region)}>{region.name}</span>
+                    {/if}
+                    <span class="region-span">{formatTime(region.startTime)} – {formatTime(region.endTime)}</span>
+                  </div>
+                </div>
+
+                <div class="region-item-toggles">
+                  <button 
+                    class="region-toggle-btn" 
+                    class:active={region.isLoop} 
+                    title="Toggle Loop / Vamp mode"
+                    on:click|stopPropagation={() => toggleRegionLoop(region)}
+                  >
+                    🔁
+                  </button>
+                  <button 
+                    class="region-toggle-btn cut-toggle-btn" 
+                    class:active={region.isCut} 
+                    title="Toggle Cut / Skip mode"
+                    on:click|stopPropagation={() => toggleRegionCut(region)}
+                  >
+                    ✂️
+                  </button>
+                  <button 
+                    class="delete-marker-btn" 
+                    title="Delete region"
+                    on:click|stopPropagation={() => deleteRegion(region.id)}
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+            {/each}
+          {/if}
         </div>
       </div>
 
@@ -3497,105 +3948,123 @@
       <div class="panel-section dsp-section">
         <div class="panel-header">EFFECTS MODULES</div>
 
-        <!-- 4. Compressor knobs (Threshold, Knee, Makeup) -->
-        <div class="knobs-row placeholder-knobs">
-          <!-- Threshold -->
-          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-          <div 
-            class="knob-container" 
-            on:mousedown={(e) => handleKnobMousedown(e, "comp_thresh", compressorThreshold, -60, 0, 1, (v) => compressorThreshold = v)}
-            on:dblclick={() => resetKnob("comp_thresh", -20, (v) => compressorThreshold = v)}
-            title="Double-click resets to -20 dB"
+        <!-- 4. Compressor row with 90° COMP Tab Button -->
+        <div class="effects-module-row">
+          <button 
+            class="module-tab-btn comp-btn" 
+            on:click={() => showAdvancedCompModal = true}
+            title="Open Advanced Compressor Inspector"
           >
-            <span class="knob-label">Threshold</span>
-            <div class="knob-circle">
-              <div class="knob-zero-tick"></div>
-              <div class="knob-marker" style="transform: rotate({getKnobRotation(compressorThreshold, -60, 0)}deg)"></div>
+            <span>COMP</span>
+          </button>
+          <div class="knobs-row">
+            <!-- Threshold (0 dB down to -60 dB, default 0 dB) -->
+            <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+            <div 
+              class="knob-container" 
+              on:mousedown={(e) => handleKnobMousedown(e, "comp_thresh", compressorThreshold, -60, 0, 1, (v) => { compressorThreshold = v; updateCompressorEngine(); })}
+              on:dblclick={() => resetKnob("comp_thresh", 0, (v) => { compressorThreshold = v; updateCompressorEngine(); })}
+              title="Threshold (0 dB to -60 dB) • Double-click resets to 0 dB"
+            >
+              <span class="knob-label">Threshold</span>
+              <div class="knob-circle">
+                <div class="knob-zero-tick"></div>
+                <div class="knob-marker" style="transform: rotate({getKnobRotation(compressorThreshold, -60, 0)}deg)"></div>
+              </div>
+              <span class="knob-value">{compressorThreshold} dB</span>
             </div>
-            <span class="knob-value">{compressorThreshold} dB</span>
-          </div>
 
-          <!-- Ratio -->
-          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-          <div 
-            class="knob-container" 
-            on:mousedown={(e) => handleKnobMousedown(e, "comp_ratio", compressorRatio, 1.0, 20.0, 0.5, (v) => compressorRatio = v)}
-            on:dblclick={() => resetKnob("comp_ratio", 2.0, (v) => compressorRatio = v)}
-            title="Double-click resets to 2.0:1"
-          >
-            <span class="knob-label">Ratio</span>
-            <div class="knob-circle">
-              <div class="knob-zero-tick"></div>
-              <div class="knob-marker" style="transform: rotate({getKnobRotation(compressorRatio, 1.0, 20.0)}deg)"></div>
+            <!-- Ratio (1.0:1 up to 4.0:1, default 1.0:1) -->
+            <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+            <div 
+              class="knob-container" 
+              on:mousedown={(e) => handleKnobMousedown(e, "comp_ratio", compressorRatio, 1.0, 4.0, 0.1, (v) => { compressorRatio = v; updateCompressorEngine(); })}
+              on:dblclick={() => resetKnob("comp_ratio", 1.0, (v) => { compressorRatio = v; updateCompressorEngine(); })}
+              title="Ratio (1:1 to 4:1) • Double-click resets to 1.0:1"
+            >
+              <span class="knob-label">Ratio</span>
+              <div class="knob-circle">
+                <div class="knob-zero-tick"></div>
+                <div class="knob-marker" style="transform: rotate({getKnobRotation(compressorRatio, 1.0, 4.0)}deg)"></div>
+              </div>
+              <span class="knob-value">{compressorRatio.toFixed(1)}:1</span>
             </div>
-            <span class="knob-value">{compressorRatio.toFixed(1)}:1</span>
-          </div>
 
-          <!-- Makeup -->
-          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-          <div 
-            class="knob-container" 
-            on:mousedown={(e) => handleKnobMousedown(e, "comp_makeup", compressorMakeup, 0, 24, 0.5, (v) => compressorMakeup = v)}
-            on:dblclick={() => resetKnob("comp_makeup", 0, (v) => compressorMakeup = v)}
-            title="Double-click resets to 0 dB"
-          >
-            <span class="knob-label">Makeup</span>
-            <div class="knob-circle">
-              <div class="knob-zero-tick"></div>
-              <div class="knob-marker" style="transform: rotate({getKnobRotation(compressorMakeup, 0, 24)}deg)"></div>
+            <!-- Makeup (0 dB to 24 dB, default 0 dB) -->
+            <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+            <div 
+              class="knob-container" 
+              on:mousedown={(e) => handleKnobMousedown(e, "comp_makeup", compressorMakeup, 0, 24, 0.5, (v) => { compressorMakeup = v; updateCompressorEngine(); })}
+              on:dblclick={() => resetKnob("comp_makeup", 0, (v) => { compressorMakeup = v; updateCompressorEngine(); })}
+              title="Makeup Gain • Double-click resets to 0 dB"
+            >
+              <span class="knob-label">Makeup</span>
+              <div class="knob-circle">
+                <div class="knob-zero-tick"></div>
+                <div class="knob-marker" style="transform: rotate({getKnobRotation(compressorMakeup, 0, 24)}deg)"></div>
+              </div>
+              <span class="knob-value">+{compressorMakeup.toFixed(1)} dB</span>
             </div>
-            <span class="knob-value">+{compressorMakeup.toFixed(1)} dB</span>
           </div>
         </div>
 
-        <!-- 3. Equalizer knobs (Low 100Hz, Mid 1kHz, High 8kHz) -->
-        <div class="knobs-row placeholder-knobs">
-          <!-- Low Shelf (100 Hz) -->
-          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-          <div 
-            class="knob-container" 
-            on:mousedown={(e) => handleKnobMousedown(e, "eq_bass", eqBass, -12, 12, 0.5, (v) => eqBass = v)}
-            on:dblclick={() => resetKnob("eq_bass", 0, (v) => eqBass = v)}
-            title="Low Shelf 100 Hz • Double-click resets to 0 dB"
+        <!-- 3. Equalizer row with 90° EQ Tab Button -->
+        <div class="effects-module-row">
+          <button 
+            class="module-tab-btn eq-btn" 
+            on:click={() => showAdvancedEqModal = true}
+            title="Open Advanced Parametric EQ Inspector"
           >
-            <span class="knob-label">Low 100Hz</span>
-            <div class="knob-circle">
-              <div class="knob-zero-tick"></div>
-              <div class="knob-marker" style="transform: rotate({getKnobRotation(eqBass, -12, 12)}deg)"></div>
+            <span>EQ</span>
+          </button>
+          <div class="knobs-row">
+            <!-- Low Shelf (100 Hz) -->
+            <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+            <div 
+              class="knob-container" 
+              on:mousedown={(e) => handleKnobMousedown(e, "eq_bass", eqBass, -12, 12, 0.5, (v) => { eqBass = v; updateEqEngine(); })}
+              on:dblclick={() => resetKnob("eq_bass", 0, (v) => { eqBass = v; updateEqEngine(); })}
+              title="Low Shelf 100 Hz • Double-click resets to 0 dB"
+            >
+              <span class="knob-label">Low 100Hz</span>
+              <div class="knob-circle">
+                <div class="knob-zero-tick"></div>
+                <div class="knob-marker" style="transform: rotate({getKnobRotation(eqBass, -12, 12)}deg)"></div>
+              </div>
+              <span class="knob-value">{eqBass > 0 ? "+" : ""}{eqBass.toFixed(1)} dB</span>
             </div>
-            <span class="knob-value">{eqBass > 0 ? "+" : ""}{eqBass.toFixed(1)} dB</span>
-          </div>
 
-          <!-- Mid Parametric Bell (1 kHz) -->
-          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-          <div 
-            class="knob-container" 
-            on:mousedown={(e) => handleKnobMousedown(e, "eq_mid", eqMid, -12, 12, 0.5, (v) => eqMid = v)}
-            on:dblclick={() => resetKnob("eq_mid", 0, (v) => eqMid = v)}
-            title="Mid Bell 1 kHz • Double-click resets to 0 dB"
-          >
-            <span class="knob-label">Mid 1kHz</span>
-            <div class="knob-circle">
-              <div class="knob-zero-tick"></div>
-              <div class="knob-marker" style="transform: rotate({getKnobRotation(eqMid, -12, 12)}deg)"></div>
+            <!-- Mid Parametric Bell (1 kHz) -->
+            <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+            <div 
+              class="knob-container" 
+              on:mousedown={(e) => handleKnobMousedown(e, "eq_mid", eqMid, -12, 12, 0.5, (v) => { eqMid = v; updateEqEngine(); })}
+              on:dblclick={() => resetKnob("eq_mid", 0, (v) => { eqMid = v; updateEqEngine(); })}
+              title="Mid Bell 1 kHz • Double-click resets to 0 dB"
+            >
+              <span class="knob-label">Mid 1kHz</span>
+              <div class="knob-circle">
+                <div class="knob-zero-tick"></div>
+                <div class="knob-marker" style="transform: rotate({getKnobRotation(eqMid, -12, 12)}deg)"></div>
+              </div>
+              <span class="knob-value">{eqMid > 0 ? "+" : ""}{eqMid.toFixed(1)} dB</span>
             </div>
-            <span class="knob-value">{eqMid > 0 ? "+" : ""}{eqMid.toFixed(1)} dB</span>
-          </div>
 
-          <!-- High Shelf (8 kHz) -->
-          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-          <div 
-            class="knob-container" 
-            on:mousedown={(e) => handleKnobMousedown(e, "eq_treble", eqTreble, -12, 12, 0.5, (v) => eqTreble = v)}
-            on:dblclick={() => resetKnob("eq_treble", 0, (v) => eqTreble = v)}
-            title="High Shelf 8 kHz • Double-click resets to 0 dB"
-          >
-            <span class="knob-label">High 8kHz</span>
-            <div class="knob-circle">
-              <div class="knob-zero-tick"></div>
-              <div class="knob-marker" style="transform: rotate({getKnobRotation(eqTreble, -12, 12)}deg)"></div>
+            <!-- High Shelf (8 kHz) -->
+            <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+            <div 
+              class="knob-container" 
+              on:mousedown={(e) => handleKnobMousedown(e, "eq_treble", eqTreble, -12, 12, 0.5, (v) => { eqTreble = v; updateEqEngine(); })}
+              on:dblclick={() => resetKnob("eq_treble", 0, (v) => { eqTreble = v; updateEqEngine(); })}
+              title="High Shelf 8 kHz • Double-click resets to 0 dB"
+            >
+              <span class="knob-label">High 8kHz</span>
+              <div class="knob-circle">
+                <div class="knob-zero-tick"></div>
+                <div class="knob-marker" style="transform: rotate({getKnobRotation(eqTreble, -12, 12)}deg)"></div>
+              </div>
+              <span class="knob-value">{eqTreble > 0 ? "+" : ""}{eqTreble.toFixed(1)} dB</span>
             </div>
-            <span class="knob-value">{eqTreble > 0 ? "+" : ""}{eqTreble.toFixed(1)} dB</span>
           </div>
         </div>
 
@@ -3782,6 +4251,163 @@
             {/if}
           </button>
         {/each}
+      </div>
+    </div>
+  {/if}
+  <!-- Region Context Menu -->
+  {#if showRegionContextMenu && contextMenuRegion}
+    <!-- svelte-ignore a11y-click-events-have-key-events -->
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div 
+      class="context-menu" 
+      style="top: {regionContextMenuY}px; left: {regionContextMenuX}px;"
+      on:click|stopPropagation
+    >
+      <div class="menu-item font-semibold" style="color: #64d2ff; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 4px; margin-bottom: 4px;">
+        REGION: {contextMenuRegion.name}
+      </div>
+      <div class="menu-item" on:click={() => { if (contextMenuRegion) toggleRegionLoop(contextMenuRegion); showRegionContextMenu = false; }}>
+        {contextMenuRegion.isLoop ? "✓ " : "  "}🔁 Loop / Vamp Mode
+      </div>
+      <div class="menu-item" on:click={() => { if (contextMenuRegion) toggleRegionCut(contextMenuRegion); showRegionContextMenu = false; }}>
+        {contextMenuRegion.isCut ? "✓ " : "  "}✂️ Cut / Skip Mode
+      </div>
+      <div class="menu-item" on:click={() => { if (contextMenuRegion) startRenameRegion(contextMenuRegion); showRegionContextMenu = false; }}>
+        ✏️ Rename Region...
+      </div>
+      <div class="menu-item delete-item" on:click={() => { if (contextMenuRegion) deleteRegion(contextMenuRegion.id); showRegionContextMenu = false; }}>
+        🗑️ Delete Region
+      </div>
+    </div>
+  {/if}
+
+  <!-- Advanced Compressor Inspector Modal -->
+  {#if showAdvancedCompModal}
+    <!-- svelte-ignore a11y-click-events-have-key-events -->
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div class="modal-backdrop" on:click={() => showAdvancedCompModal = false}>
+      <div class="inspector-modal" on:click|stopPropagation>
+        <div class="modal-header">
+          <div class="modal-title-row">
+            <span class="modal-badge comp-badge">COMP</span>
+            <h3>Advanced Dynamic Compressor</h3>
+          </div>
+          <button class="modal-close-btn" on:click={() => showAdvancedCompModal = false}>×</button>
+        </div>
+
+        <div class="modal-body">
+          <div class="dsp-graph-placeholder">
+            <div class="comp-curve-canvas-box">
+              <svg viewBox="0 0 200 120" class="comp-svg-graph">
+                <!-- 1:1 Reference Line -->
+                <line x1="10" y1="110" x2="190" y2="10" stroke="rgba(255,255,255,0.15)" stroke-width="1" stroke-dasharray="2 2" />
+                <!-- Dynamic Knee & Gain Reduction Curve -->
+                <path d="M 10 110 L {10 + (60 + compressorThreshold) * 1.5} {110 - (60 + compressorThreshold) * 1.5} Q {10 + (60 + compressorThreshold) * 1.5 + 10} {110 - (60 + compressorThreshold) * 1.5 - 10 / compressorRatio} 190 {110 - (60 + compressorThreshold) * 1.5 - (120 - (60 + compressorThreshold) * 1.5) / compressorRatio}" stroke="#ffcc00" stroke-width="2.5" fill="none" />
+              </svg>
+              <div class="graph-legend">
+                <span>-60 dB</span>
+                <span>Threshold: {compressorThreshold.toFixed(1)} dB</span>
+                <span>0 dB</span>
+              </div>
+            </div>
+            <div class="comp-meter-box">
+              <span class="meter-title">GAIN REDUCTION</span>
+              <div class="gr-bar-track">
+                <div class="gr-bar-fill" style="height: {Math.min(100, Math.abs(compressorThreshold) * (compressorRatio - 1) * 2)}%;"></div>
+              </div>
+              <span class="meter-val">-{((compressorRatio - 1) * Math.abs(compressorThreshold) / compressorRatio).toFixed(1)} dB</span>
+            </div>
+          </div>
+
+          <div class="advanced-params-grid">
+            <div class="param-card">
+              <span class="param-name">Knee Characteristic</span>
+              <span class="param-detail">Soft Knee (3.0 dB transition)</span>
+            </div>
+            <div class="param-card">
+              <span class="param-name">Attack Ballistics</span>
+              <span class="param-detail">30 ms (Fast Transient Catch)</span>
+            </div>
+            <div class="param-card">
+              <span class="param-name">Release Ballistics</span>
+              <span class="param-detail">300 ms (Adaptive Smooth Decay)</span>
+            </div>
+            <div class="param-card">
+              <span class="param-name">Detection Topology</span>
+              <span class="param-detail">Feedforward Peak Log-Domain</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <span class="footer-hint">Real-time DSP active on playback bus</span>
+          <button class="modal-action-btn" on:click={() => showAdvancedCompModal = false}>Close</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Advanced Parametric EQ Inspector Modal -->
+  {#if showAdvancedEqModal}
+    <!-- svelte-ignore a11y-click-events-have-key-events -->
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div class="modal-backdrop" on:click={() => showAdvancedEqModal = false}>
+      <div class="inspector-modal" on:click|stopPropagation>
+        <div class="modal-header">
+          <div class="modal-title-row">
+            <span class="modal-badge eq-badge">EQ</span>
+            <h3>Advanced Parametric Equalizer</h3>
+          </div>
+          <button class="modal-close-btn" on:click={() => showAdvancedEqModal = false}>×</button>
+        </div>
+
+        <div class="modal-body">
+          <div class="dsp-graph-placeholder eq-graph-placeholder">
+            <svg viewBox="0 0 400 120" class="eq-svg-graph">
+              <!-- 0 dB Center line -->
+              <line x1="10" y1="60" x2="390" y2="60" stroke="rgba(255,255,255,0.2)" stroke-width="1" />
+              <!-- Low Shelf Node (100 Hz) -->
+              <circle cx="80" cy="{60 - eqBass * 3.5}" r="6" fill="#3b99fc" stroke="#ffffff" stroke-width="1.5" />
+              <!-- Mid Bell Node (1 kHz) -->
+              <circle cx="200" cy="{60 - eqMid * 3.5}" r="6" fill="#30d158" stroke="#ffffff" stroke-width="1.5" />
+              <!-- High Shelf Node (8 kHz) -->
+              <circle cx="320" cy="{60 - eqTreble * 3.5}" r="6" fill="#ff9500" stroke="#ffffff" stroke-width="1.5" />
+              <!-- Simulated EQ Curve -->
+              <path d="M 10 {60 - eqBass * 3.5} Q 80 {60 - eqBass * 3.5} 140 {60 - eqMid * 1.5} T 200 {60 - eqMid * 3.5} T 260 {60 - eqTreble * 1.5} Q 320 {60 - eqTreble * 3.5} 390 {60 - eqTreble * 3.5}" stroke="#64d2ff" stroke-width="2.5" fill="none" />
+            </svg>
+            <div class="eq-ruler-labels">
+              <span>20 Hz</span>
+              <span>100 Hz (Low)</span>
+              <span>1 kHz (Mid)</span>
+              <span>8 kHz (High)</span>
+              <span>20 kHz</span>
+            </div>
+          </div>
+
+          <div class="advanced-params-grid">
+            <div class="param-card">
+              <span class="param-name">Low Shelf Filter</span>
+              <span class="param-detail">100 Hz • {eqBass > 0 ? "+" : ""}{eqBass.toFixed(1)} dB (Q: 0.707)</span>
+            </div>
+            <div class="param-card">
+              <span class="param-name">Parametric Bell Filter</span>
+              <span class="param-detail">1.0 kHz • {eqMid > 0 ? "+" : ""}{eqMid.toFixed(1)} dB (Q: 0.707)</span>
+            </div>
+            <div class="param-card">
+              <span class="param-name">High Shelf Filter</span>
+              <span class="param-detail">8.0 kHz • {eqTreble > 0 ? "+" : ""}{eqTreble.toFixed(1)} dB (Q: 0.707)</span>
+            </div>
+            <div class="param-card">
+              <span class="param-name">Filter Architecture</span>
+              <span class="param-detail">RBJ Audio EQ 64-bit Biquad Cascade</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <span class="footer-hint">Real-time stereo biquad filtering active</span>
+          <button class="modal-action-btn" on:click={() => showAdvancedEqModal = false}>Close</button>
+        </div>
       </div>
     </div>
   {/if}
@@ -5552,5 +6178,403 @@
     font-weight: 900;
     color: #000000;
     text-shadow: 0 0 2px rgba(255, 255, 255, 0.8);
+  }
+
+  /* Vertical 90° Module Tab Buttons & Effects Layout */
+  .effects-module-row {
+    display: flex;
+    align-items: stretch;
+    border-bottom: 1px solid #232326;
+    background-color: #171719;
+  }
+
+  .module-tab-btn {
+    width: 22px;
+    background-color: #007aff;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: all 0.15s ease;
+    user-select: none;
+    flex-shrink: 0;
+  }
+
+  .module-tab-btn:hover {
+    background-color: #0088ff;
+    filter: brightness(1.2);
+  }
+
+  .module-tab-btn span {
+    transform: rotate(-90deg);
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    color: #ffffff;
+    white-space: nowrap;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+  }
+
+  .module-tab-btn.comp-btn {
+    background-color: #007aff;
+  }
+
+  .module-tab-btn.eq-btn {
+    background-color: #007aff;
+  }
+
+  /* Regions Sidebar Items */
+  .regions-header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 10px 4px;
+    background-color: #1a1a1d;
+    border-top: 1px solid #29292d;
+    border-bottom: 1px solid #29292d;
+    margin-top: 6px;
+  }
+
+  .regions-header-title {
+    font-size: 0.62rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    color: #8e8e96;
+  }
+
+  .regions-count {
+    font-size: 0.6rem;
+    background-color: #2c2c30;
+    color: #b0b0b8;
+    padding: 1px 5px;
+    border-radius: 8px;
+  }
+
+  .region-sidebar-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px 8px;
+    border-bottom: 1px solid #222225;
+    background-color: #171719;
+    cursor: pointer;
+    transition: background 0.12s ease;
+  }
+
+  .region-sidebar-item:hover {
+    background-color: #222226;
+  }
+
+  .region-sidebar-item.active-region {
+    background-color: #1f2a38;
+  }
+
+  .region-sidebar-item.is-loop {
+    border-left: 3px solid #30d158;
+  }
+
+  .region-sidebar-item.is-cut {
+    border-left: 3px solid #ff453a;
+  }
+
+  .region-item-main {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    flex-grow: 1;
+  }
+
+  .region-color-bar {
+    width: 3px;
+    height: 18px;
+    border-radius: 2px;
+    flex-shrink: 0;
+  }
+
+  .region-item-info {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .region-name {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #e0e0e0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .region-span {
+    font-size: 0.65rem;
+    color: #888890;
+    font-family: Menlo, monospace;
+  }
+
+  .region-item-toggles {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  .region-toggle-btn {
+    background: transparent;
+    border: 1px solid #38383e;
+    border-radius: 4px;
+    padding: 2px 5px;
+    font-size: 0.72rem;
+    cursor: pointer;
+    opacity: 0.5;
+    transition: all 0.12s ease;
+  }
+
+  .region-toggle-btn:hover {
+    opacity: 0.85;
+    background-color: rgba(255, 255, 255, 0.08);
+  }
+
+  .region-toggle-btn.active {
+    opacity: 1;
+    background-color: rgba(48, 209, 88, 0.25);
+    border-color: #30d158;
+  }
+
+  .region-toggle-btn.cut-toggle-btn.active {
+    background-color: rgba(255, 69, 58, 0.25);
+    border-color: #ff453a;
+  }
+
+  /* Advanced DSP Inspector Modals */
+  .modal-backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background-color: rgba(0, 0, 0, 0.65);
+    backdrop-filter: blur(4px);
+    z-index: 20000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: fadeIn 0.15s ease-out;
+  }
+
+  .inspector-modal {
+    background-color: #1e1e22;
+    border: 1px solid #3e3e46;
+    border-radius: 10px;
+    width: 480px;
+    max-width: 90vw;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.8);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    animation: modalScaleUp 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  @keyframes modalScaleUp {
+    from { opacity: 0; transform: scale(0.94) translateY(8px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
+  }
+
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    background-color: #161619;
+    border-bottom: 1px solid #2e2e34;
+  }
+
+  .modal-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .modal-title-row h3 {
+    margin: 0;
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #ffffff;
+  }
+
+  .modal-badge {
+    font-size: 0.65rem;
+    font-weight: 900;
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: #ffffff;
+  }
+
+  .modal-badge.comp-badge {
+    background-color: #007aff;
+  }
+
+  .modal-badge.eq-badge {
+    background-color: #007aff;
+  }
+
+  .modal-close-btn {
+    background: transparent;
+    border: none;
+    color: #8e8e96;
+    font-size: 1.2rem;
+    cursor: pointer;
+    padding: 0 4px;
+    transition: color 0.12s ease;
+  }
+
+  .modal-close-btn:hover {
+    color: #ffffff;
+  }
+
+  .modal-body {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .dsp-graph-placeholder {
+    display: flex;
+    gap: 12px;
+    background-color: #111113;
+    border: 1px solid #29292e;
+    border-radius: 6px;
+    padding: 12px;
+  }
+
+  .comp-curve-canvas-box {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .comp-svg-graph, .eq-svg-graph {
+    width: 100%;
+    height: 110px;
+    background-color: #09090b;
+    border-radius: 4px;
+  }
+
+  .graph-legend, .eq-ruler-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.62rem;
+    color: #71717a;
+    font-family: monospace;
+  }
+
+  .comp-meter-box {
+    width: 90px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
+    background-color: #09090b;
+    border-radius: 4px;
+    padding: 8px 4px;
+    flex-shrink: 0;
+  }
+
+  .meter-title {
+    font-size: 0.55rem;
+    font-weight: 800;
+    color: #a1a1aa;
+    text-align: center;
+  }
+
+  .gr-bar-track {
+    width: 12px;
+    height: 70px;
+    background-color: #1e1e24;
+    border-radius: 3px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    overflow: hidden;
+  }
+
+  .gr-bar-fill {
+    width: 100%;
+    background: linear-gradient(to top, #30d158, #ffcc00, #ff453a);
+    transition: height 0.08s ease-out;
+  }
+
+  .meter-val {
+    font-size: 0.65rem;
+    font-family: monospace;
+    color: #ffcc00;
+    font-weight: 700;
+  }
+
+  .eq-graph-placeholder {
+    flex-direction: column;
+  }
+
+  .advanced-params-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+  }
+
+  .param-card {
+    background-color: #161619;
+    border: 1px solid #2a2a30;
+    border-radius: 6px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .param-name {
+    font-size: 0.65rem;
+    color: #8e8e96;
+    font-weight: 600;
+  }
+
+  .param-detail {
+    font-size: 0.76rem;
+    color: #ffffff;
+    font-weight: 700;
+  }
+
+  .modal-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 16px;
+    background-color: #161619;
+    border-top: 1px solid #2e2e34;
+  }
+
+  .footer-hint {
+    font-size: 0.65rem;
+    color: #30d158;
+  }
+
+  .modal-action-btn {
+    background-color: #007aff;
+    border: none;
+    border-radius: 4px;
+    color: #ffffff;
+    padding: 6px 14px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.12s ease;
+  }
+
+  .modal-action-btn:hover {
+    background-color: #0088ff;
   }
 </style>

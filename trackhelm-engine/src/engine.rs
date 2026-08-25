@@ -77,6 +77,14 @@ impl AudioEngine {
             let mut stretch_in_buffers: Vec<Vec<f32>> = vec![Vec::new(); 2];
             let mut stretch_out_buffers: Vec<Vec<f32>> = vec![Vec::new(); 2];
 
+            let mut current_sample_rate = config.sample_rate().0 as f64;
+            let mut biquad_low = crate::dsp::Biquad::new(output_channels);
+            let mut biquad_mid = crate::dsp::Biquad::new(output_channels);
+            let mut biquad_high = crate::dsp::Biquad::new(output_channels);
+            let mut eq_active = false;
+            let mut compressor = crate::dsp::Compressor::new(current_sample_rate);
+            let mut active_regions: Vec<crate::command::EngineRegion> = Vec::new();
+
             let shared_is_playing = shared_state.is_playing.clone();
             let shared_current_frame = shared_state.current_frame.clone();
             let shared_total_frames = shared_state.total_frames.clone();
@@ -114,6 +122,10 @@ impl AudioEngine {
                                         if let Some(ref mut s) = stretch {
                                             s.reset();
                                         }
+                                        biquad_low.reset();
+                                        biquad_mid.reset();
+                                        biquad_high.reset();
+                                        compressor.reset();
                                     }
                                     Command::Seek(duration) => {
                                         if let Some(ref audio) = active_audio {
@@ -139,9 +151,24 @@ impl AudioEngine {
                                     Command::SetTempo(speed) => {
                                         current_speed = speed.clamp(0.25, 4.0);
                                     }
+                                    Command::SetEq { bass_db, mid_db, treble_db } => {
+                                        eq_active = bass_db.abs() > 0.001 || mid_db.abs() > 0.001 || treble_db.abs() > 0.001;
+                                        if eq_active {
+                                            biquad_low.set_params(crate::dsp::FilterType::LowShelf, current_sample_rate, 100.0, bass_db as f64, 0.707);
+                                            biquad_mid.set_params(crate::dsp::FilterType::Peaking, current_sample_rate, 1000.0, mid_db as f64, 0.707);
+                                            biquad_high.set_params(crate::dsp::FilterType::HighShelf, current_sample_rate, 8000.0, treble_db as f64, 0.707);
+                                        }
+                                    }
+                                    Command::SetCompressor { threshold_db, ratio, makeup_db, attack_ms, release_ms } => {
+                                        compressor.set_params(current_sample_rate, threshold_db, ratio, makeup_db, attack_ms, release_ms);
+                                    }
+                                    Command::SetRegions(regs) => {
+                                        active_regions = regs;
+                                    }
                                     Command::LoadAudio(audio) => {
                                         let total = audio.channel_samples[0].len();
                                         let rate = audio.sample_rate;
+                                        current_sample_rate = rate as f64;
                                         shared_total_frames.store(total, Ordering::SeqCst);
                                         shared_sample_rate.store(rate as usize, Ordering::SeqCst);
                                         shared_current_frame.store(0, Ordering::SeqCst);
@@ -153,6 +180,11 @@ impl AudioEngine {
                                         stretch = Some(s);
                                         stretch_in_buffers = vec![Vec::new(); ch];
                                         stretch_out_buffers = vec![Vec::new(); ch];
+
+                                        biquad_low = crate::dsp::Biquad::new(output_channels);
+                                        biquad_mid = crate::dsp::Biquad::new(output_channels);
+                                        biquad_high = crate::dsp::Biquad::new(output_channels);
+                                        compressor = crate::dsp::Compressor::new(current_sample_rate);
 
                                         active_audio = Some(audio);
                                         playback_frame = 0;
@@ -170,6 +202,27 @@ impl AudioEngine {
                             } else if let Some(ref audio) = active_audio {
                                 let audio_len = audio.channel_samples[0].len();
                                 let audio_channels = audio.channels;
+                                let frame_rate = audio.sample_rate as f64;
+
+                                // Region handling: Check for Cut skip and Loop wrap
+                                let current_sec = playback_frame as f64 / frame_rate;
+                                for reg in &active_regions {
+                                    if reg.is_cut && current_sec >= reg.start_seconds && current_sec < reg.end_seconds {
+                                        playback_frame = (reg.end_seconds * frame_rate) as usize;
+                                        shared_current_frame.store(playback_frame, Ordering::SeqCst);
+                                        if let Some(ref mut s) = stretch {
+                                            s.reset();
+                                        }
+                                        break;
+                                    } else if reg.is_loop && current_sec >= reg.end_seconds {
+                                        playback_frame = (reg.start_seconds * frame_rate) as usize;
+                                        shared_current_frame.store(playback_frame, Ordering::SeqCst);
+                                        if let Some(ref mut s) = stretch {
+                                            s.reset();
+                                        }
+                                        break;
+                                    }
+                                }
 
                                 if playback_frame >= audio_len {
                                     is_playing = false;
@@ -235,6 +288,33 @@ impl AudioEngine {
                                         if playback_frame >= audio_len {
                                             is_playing = false;
                                             shared_is_playing.store(false, Ordering::SeqCst);
+                                        }
+                                    }
+
+                                    // 3. Apply High-Quality Biquad EQ Filters
+                                    if eq_active {
+                                        for frame_idx in 0..num_out_frames {
+                                            for ch in 0..output_channels {
+                                                let idx = frame_idx * output_channels + ch;
+                                                let mut s = data[idx];
+                                                s = biquad_low.process_sample(ch, s);
+                                                s = biquad_mid.process_sample(ch, s);
+                                                s = biquad_high.process_sample(ch, s);
+                                                data[idx] = s;
+                                            }
+                                        }
+                                    }
+
+                                    // 4. Apply Feedforward Soft-Knee Dynamic Compressor
+                                    if !compressor.is_bypassed() {
+                                        for frame_idx in 0..num_out_frames {
+                                            let left_idx = frame_idx * output_channels;
+                                            let right_idx = if output_channels > 1 { left_idx + 1 } else { left_idx };
+                                            let (l, r) = compressor.process_stereo_frame(data[left_idx], data[right_idx]);
+                                            data[left_idx] = l;
+                                            if output_channels > 1 {
+                                                data[right_idx] = r;
+                                            }
                                         }
                                     }
                                 }

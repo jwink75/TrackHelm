@@ -462,6 +462,34 @@ fn set_pitch(state: State<'_, AppState>, pitch: f32) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn set_eq(state: State<'_, AppState>, bass_db: f32, mid_db: f32, treble_db: f32) -> Result<(), String> {
+    state.command_bus.send(Command::SetEq { bass_db, mid_db, treble_db })
+}
+
+#[tauri::command]
+fn set_compressor(
+    state: State<'_, AppState>,
+    threshold_db: f32,
+    ratio: f32,
+    makeup_db: f32,
+    attack_ms: f32,
+    release_ms: f32,
+) -> Result<(), String> {
+    state.command_bus.send(Command::SetCompressor {
+        threshold_db,
+        ratio,
+        makeup_db,
+        attack_ms,
+        release_ms,
+    })
+}
+
+#[tauri::command]
+fn set_regions(state: State<'_, AppState>, regions: Vec<trackhelm_engine::command::EngineRegion>) -> Result<(), String> {
+    state.command_bus.send(Command::SetRegions(regions))
+}
+
+#[tauri::command]
 fn get_playback_status(state: State<'_, AppState>) -> PlaybackStatus {
     let is_playing = state.shared_engine_state.is_playing.load(std::sync::atomic::Ordering::SeqCst);
     let current_frame = state.shared_engine_state.current_frame.load(std::sync::atomic::Ordering::SeqCst);
@@ -706,6 +734,9 @@ fn main() {
             set_volume,
             set_speed,
             set_pitch,
+            set_eq,
+            set_compressor,
+            set_regions,
             get_playback_status,
             read_dir,
             get_waveform_slice,
