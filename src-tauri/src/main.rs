@@ -2,7 +2,8 @@
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::State;
+use tauri::{State, Emitter};
+use tauri::menu::{Menu, MenuItem, Submenu, PredefinedMenuItem};
 use trackhelm_engine::{Command, CommandBus, SharedEngineState, DecodedAudio, decode_file};
 use lofty::prelude::*;
 
@@ -997,6 +998,79 @@ fn load_playlist_file(path: String) -> Result<Vec<PlaylistItemDto>, String> {
     Ok(items)
 }
 
+fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
+    let file_menu = Submenu::with_items(
+        app,
+        "File",
+        true,
+        &[
+            &MenuItem::with_id(app, "open_file", "Open Audio Track...", true, Some("CmdOrCtrl+O"))?,
+            &MenuItem::with_id(app, "open_alternate", "Open Alternate Track...", true, Some("CmdOrCtrl+Alt+O"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "open_playlist", "Open Playlist / Set...", true, Some("CmdOrCtrl+Shift+O"))?,
+            &MenuItem::with_id(app, "save_playlist", "Save Playlist / Set...", true, Some("CmdOrCtrl+S"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "export_audio", "Export Audio File...", true, Some("CmdOrCtrl+Shift+E"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::close_window(app, None)?,
+        ],
+    )?;
+
+    let edit_menu = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &MenuItem::with_id(app, "add_marker", "Add Landmark / Marker", true, Some("M"))?,
+            &MenuItem::with_id(app, "create_region", "Create Region from Selection", true, Some("R"))?,
+            &MenuItem::with_id(app, "toggle_loop", "Toggle Loop Region", true, Some("L"))?,
+            &MenuItem::with_id(app, "toggle_cut", "Toggle Cut Region", true, Some("X"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+
+    let playback_menu = Submenu::with_items(
+        app,
+        "Playback",
+        true,
+        &[
+            &MenuItem::with_id(app, "play_pause", "Play / Pause", true, Some("Space"))?,
+            &MenuItem::with_id(app, "stop", "Stop & Return to Start", true, Some("Enter"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "prev_marker", "Previous Marker", true, Some("Left"))?,
+            &MenuItem::with_id(app, "next_marker", "Next Marker", true, Some("Right"))?,
+        ],
+    )?;
+
+    let view_menu = Submenu::with_items(
+        app,
+        "View",
+        true,
+        &[
+            &MenuItem::with_id(app, "tab_notes", "Notes Tab", true, Some("CmdOrCtrl+1"))?,
+            &MenuItem::with_id(app, "tab_lyrics", "Lyrics Tab", true, Some("CmdOrCtrl+2"))?,
+            &MenuItem::with_id(app, "tab_metadata", "Metadata Tab", true, Some("CmdOrCtrl+3"))?,
+            &MenuItem::with_id(app, "tab_files", "Files & Alternate Takes Tab", true, Some("CmdOrCtrl+4"))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::fullscreen(app, None)?,
+        ],
+    )?;
+
+    Menu::with_items(app, &[
+        &file_menu,
+        &edit_menu,
+        &playback_menu,
+        &view_menu,
+    ])
+}
+
 fn main() {
     let (mut engine, command_bus, shared_state) = trackhelm_engine::AudioEngine::new();
 
@@ -1012,6 +1086,15 @@ fn main() {
             shared_engine_state: shared_state,
             active_audio: Mutex::new(None),
             track_cache: Mutex::new(LruTrackCache::new(6)),
+        })
+        .setup(|app| {
+            let menu = create_app_menu(app.handle())?;
+            app.set_menu(menu)?;
+            app.on_menu_event(|app_handle, event| {
+                let id_str = event.id().as_ref().to_string();
+                let _ = app_handle.emit("menu-action", id_str);
+            });
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             load_track,

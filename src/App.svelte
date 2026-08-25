@@ -1699,6 +1699,28 @@
     };
     window.addEventListener("click", closeMenu);
 
+    // Listen to native macOS Menu Bar events
+    const unlistenMenu = listen("menu-action", (event: any) => {
+      const action = event.payload;
+      if (action === "open_file") pickMainTrack();
+      else if (action === "open_alternate") pickAlternateTrack();
+      else if (action === "open_playlist") loadPlaylistFromFile();
+      else if (action === "save_playlist") savePlaylistToFile();
+      else if (action === "export_audio") openExportModal();
+      else if (action === "add_marker") addMarker();
+      else if (action === "create_region") createRegionFromSelectionOrMarkers();
+      else if (action === "toggle_loop") handleLoopHotkey();
+      else if (action === "toggle_cut") handleCutHotkey();
+      else if (action === "play_pause") handlePlayPause();
+      else if (action === "stop") handleStop();
+      else if (action === "prev_marker") jumpToPrevMarker();
+      else if (action === "next_marker") jumpToNextMarker();
+      else if (action === "tab_notes") switchCenterTab("notes");
+      else if (action === "tab_lyrics") switchCenterTab("lyrics");
+      else if (action === "tab_metadata") switchCenterTab("metadata");
+      else if (action === "tab_files") switchCenterTab("files");
+    });
+
     // Global keyboard shortcuts: Space = Play/Pause/Load, Up/Down = Playlist/Browser Nav, Left/Right = Marker Jump, M = Add Marker, Enter = Stop & Return to 0, Cmd+Shift+E = Export Audio
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
@@ -1825,6 +1847,7 @@
       clearInterval(statusInterval);
       if (resizeObserver) resizeObserver.disconnect();
       unlistenDragDrop.then(fn => fn());
+      unlistenMenu.then(fn => fn());
       window.removeEventListener("click", closeMenu);
       window.removeEventListener("keydown", handleKeyDown);
     };
@@ -5098,33 +5121,29 @@
                     {:else}
                       <span class="region-name" on:dblclick={() => startRenameRegion(region)} title="Double-click to rename">{region.name}</span>
                     {/if}
-                    <div class="region-meta-row">
-                      <span class="region-span">{formatTime(region.startTime)} – {formatTime(region.endTime)}</span>
-                      {#if region.isCut}
-                        <!-- svelte-ignore a11y-click-events-have-key-events -->
-                        <!-- svelte-ignore a11y-no-static-element-interactions -->
-                        <span 
-                          class="region-xfade-pill" 
-                          title="Click to change splice crossfade duration (ms)"
-                          on:click|stopPropagation={() => {
-                            const val = prompt("Enter cut splice crossfade (0 - 100 ms):", (region.crossfadeMs ?? 5).toString());
-                            if (val !== null) {
-                              const num = parseFloat(val);
-                              if (!isNaN(num)) {
-                                region.crossfadeMs = Math.max(0, Math.min(100, num));
-                                syncRegionsToEngine();
-                              }
-                            }
-                          }}
-                        >
-                          ⚡ {region.crossfadeMs ?? 5}ms xfade
-                        </span>
-                      {/if}
-                    </div>
+                    <span class="region-span">{formatTime(region.startTime)} – {formatTime(region.endTime)}</span>
                   </div>
                 </div>
 
                 <div class="region-item-toggles">
+                  {#if region.isCut}
+                    <button 
+                      class="region-xfade-pill" 
+                      title="Click to edit cut splice crossfade (ms)"
+                      on:click|stopPropagation={() => {
+                        const val = prompt("Enter cut splice crossfade (0 - 100 ms):", (region.crossfadeMs ?? 5).toString());
+                        if (val !== null) {
+                          const num = parseFloat(val);
+                          if (!isNaN(num)) {
+                            region.crossfadeMs = Math.max(0, Math.min(100, num));
+                            syncRegionsToEngine();
+                          }
+                        }
+                      }}
+                    >
+                      ⚡ {region.crossfadeMs ?? 5}ms
+                    </button>
+                  {/if}
                   <button 
                     class="marker-action-btn" 
                     title="Rename region" 
@@ -8151,19 +8170,21 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 5px 8px;
-    border-bottom: 1px solid #222225;
-    background-color: #171719;
+    padding: 3px 6px;
+    height: 32px;
+    box-sizing: border-box;
+    border-bottom: 1px solid #1f1f22;
+    background-color: #141416;
     cursor: pointer;
     transition: background 0.12s ease;
   }
 
   .region-sidebar-item:hover {
-    background-color: #222226;
+    background-color: #1c1c20;
   }
 
   .region-sidebar-item.active-region {
-    background-color: #1f2a38;
+    background-color: #1a2533;
   }
 
   .region-sidebar-item.is-loop {
@@ -8177,43 +8198,48 @@
   .region-item-main {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     min-width: 0;
     flex-grow: 1;
+    overflow: hidden;
   }
 
   .region-color-bar {
     width: 3px;
-    height: 18px;
-    border-radius: 2px;
+    height: 16px;
+    border-radius: 1px;
     flex-shrink: 0;
   }
 
   .region-item-info {
     display: flex;
     flex-direction: column;
+    justify-content: center;
     min-width: 0;
+    gap: 1px;
   }
 
   .region-name {
-    font-size: 0.75rem;
+    font-size: 0.72rem;
     font-weight: 600;
-    color: #e0e0e0;
+    color: #e2e8f0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    line-height: 1.1;
   }
 
   .region-span {
-    font-size: 0.65rem;
-    color: #888890;
+    font-size: 0.62rem;
+    color: #7a7e8a;
     font-family: Menlo, monospace;
+    line-height: 1;
   }
 
   .region-item-toggles {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 3px;
     flex-shrink: 0;
   }
 
@@ -8221,8 +8247,8 @@
     background: transparent;
     border: 1px solid #38383e;
     border-radius: 4px;
-    padding: 2px 5px;
-    font-size: 0.72rem;
+    padding: 1px 4px;
+    font-size: 0.7rem;
     cursor: pointer;
     opacity: 0.5;
     transition: all 0.12s ease;
