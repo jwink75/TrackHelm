@@ -162,6 +162,12 @@
   let pdfChartName = "";
   let associatedVersions: PlaylistItem[] = [];
 
+  function switchCenterTab(tab: "notes" | "lyrics" | "metadata" | "pdf") {
+    activeCenterTab = tab;
+    localStorage.setItem("th_last_center_tab", tab);
+    saveCurrentTrackProfile(filePath);
+  }
+
   // Per-Track Persistent Project Profiles (AnyTune style)
   interface TrackProfile {
     dbVolume: number;
@@ -182,6 +188,7 @@
     alternateTrackPath?: string | null;
     notes?: string;
     lyrics?: string;
+    lastCenterTab?: "notes" | "lyrics" | "metadata" | "pdf";
   }
 
   function getProfilesStore(): Record<string, TrackProfile> {
@@ -214,7 +221,8 @@
       associatedVersions,
       alternateTrackPath: alternateTrack ? alternateTrack.path : null,
       notes: songNotes,
-      lyrics: songLyrics
+      lyrics: songLyrics,
+      lastCenterTab: activeCenterTab
     };
     localStorage.setItem("th_track_profiles", JSON.stringify(store));
   }
@@ -452,6 +460,129 @@
     }
   }
 
+  // Universal Pointer Drag Engine for Markers (Waveform, Sidebar & PDF Score)
+  let activePointerDragMarker: Marker | null = null;
+  let pointerDragGhost: HTMLDivElement | null = null;
+  let pointerDragIsFromPdf = false;
+  let pointerDragStartX = 0;
+  let pointerDragStartY = 0;
+  let hasPointerDragMoved = false;
+
+  function handleMarkerItemMouseDown(e: MouseEvent, marker: Marker) {
+    const target = e.target as HTMLElement;
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'BUTTON' || target.classList.contains('marker-color-dot') || target.classList.contains('delete-marker-btn') || target.classList.contains('marker-action-btn'))) {
+      return;
+    }
+    if (editingMarkerId === marker.id) return;
+    startMarkerPointerDrag(e, marker, false);
+  }
+
+  function startMarkerPointerDrag(e: MouseEvent, marker: Marker, isFromPdf = false) {
+    if (e.button !== 0) return;
+    activePointerDragMarker = marker;
+    pointerDragIsFromPdf = isFromPdf;
+    pointerDragStartX = e.clientX;
+    pointerDragStartY = e.clientY;
+    hasPointerDragMoved = false;
+
+    window.addEventListener("mousemove", handleMarkerPointerMouseMove);
+    window.addEventListener("mouseup", handleMarkerPointerMouseUp);
+  }
+
+  function handleMarkerPointerMouseMove(e: MouseEvent) {
+    if (!activePointerDragMarker) return;
+    const dx = e.clientX - pointerDragStartX;
+    const dy = e.clientY - pointerDragStartY;
+    if (!hasPointerDragMoved && Math.hypot(dx, dy) > 4) {
+      hasPointerDragMoved = true;
+      if (!pointerDragGhost) {
+        pointerDragGhost = document.createElement("div");
+        pointerDragGhost.className = "marker-pointer-drag-ghost";
+        pointerDragGhost.style.backgroundColor = activePointerDragMarker.color || "#ff9500";
+        pointerDragGhost.innerHTML = `
+          <span class="pdf-marker-dot"></span>
+          <span>${activePointerDragMarker.name}</span>
+        `;
+        document.body.appendChild(pointerDragGhost);
+      }
+    }
+
+    if (pointerDragGhost) {
+      pointerDragGhost.style.left = `${e.clientX + 10}px`;
+      pointerDragGhost.style.top = `${e.clientY + 10}px`;
+    }
+  }
+
+  function handleMarkerPointerMouseUp(e: MouseEvent) {
+    window.removeEventListener("mousemove", handleMarkerPointerMouseMove);
+    window.removeEventListener("mouseup", handleMarkerPointerMouseUp);
+
+    if (pointerDragGhost) {
+      pointerDragGhost.remove();
+      pointerDragGhost = null;
+    }
+
+    if (!activePointerDragMarker) return;
+    const marker = activePointerDragMarker;
+    const isFromPdf = pointerDragIsFromPdf;
+    activePointerDragMarker = null;
+
+    if (!hasPointerDragMoved) {
+      return;
+    }
+
+    const elem = document.elementFromPoint(e.clientX, e.clientY);
+    
+    // 1. Check if dropped onto a PDF page card
+    const pageCard = elem ? (elem.closest(".pdf-page-card") as HTMLElement | null) : null;
+    if (pageCard) {
+      const pageNum = parseInt(pageCard.dataset.pageNum || "1", 10);
+      const rect = pageCard.getBoundingClientRect();
+      const xPct = Math.max(0.01, Math.min(0.95, (e.clientX - rect.left) / rect.width));
+      const yPct = Math.max(0.01, Math.min(0.98, (e.clientY - rect.top) / rect.height));
+
+      marker.pdfAnchor = {
+        page: pageNum,
+        xPct,
+        yPct
+      };
+      markers = markers;
+      saveCurrentTrackProfile(filePath);
+      renderPdfMarkerBadges();
+      return;
+    }
+
+    // 2. Check if dropped onto Main Waveform
+    const waveformBlock = elem ? (elem.closest(".block-main-waveform") as HTMLElement | null) : null;
+    if (waveformBlock && mainCanvas && duration > 0) {
+      const rect = mainCanvas.getBoundingClientRect();
+      const dropX = e.clientX - rect.left;
+      const clickPct = Math.max(0, Math.min(1.0, dropX / rect.width));
+      const windowWidth = 1.0 / zoom;
+      const startProgress = zoom > 1.001 ? Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2)) : 0;
+      const dropTime = Math.max(0, Math.min(duration, (startProgress + clickPct * windowWidth) * duration));
+
+      marker.time = dropTime;
+      markers.sort((a, b) => a.time - b.time);
+      markers = markers;
+      saveCurrentTrackProfile(filePath);
+      drawMainWaveform();
+      drawOverviewWaveform();
+      if (activeCenterTab === "pdf") {
+        renderPdfMarkerBadges();
+      }
+      return;
+    }
+
+    // 3. If dragged from PDF and dropped elsewhere outside PDF -> remove association
+    if (isFromPdf) {
+      marker.pdfAnchor = null;
+      markers = markers;
+      saveCurrentTrackProfile(filePath);
+      renderPdfMarkerBadges();
+    }
+  }
+
   function renderPdfMarkerBadges() {
     if (!pdfContainer) return;
     const cards = pdfContainer.querySelectorAll(".pdf-page-card");
@@ -470,7 +601,6 @@
         badge.style.left = `${(m.pdfAnchor.xPct * 100).toFixed(2)}%`;
         badge.style.top = `${(m.pdfAnchor.yPct * 100).toFixed(2)}%`;
         badge.style.backgroundColor = m.color || "#ff9500";
-        badge.draggable = true;
         badge.title = `Marker: ${m.name} (${formatTime(m.time)}) • Click to jump • Drag to move (drag off to unpin)`;
 
         badge.innerHTML = `
@@ -499,24 +629,11 @@
           });
         }
 
-        // Drag to reposition
-        badge.addEventListener("dragstart", (e) => {
+        // Mouse pointer drag to reposition or unpin
+        badge.addEventListener("mousedown", (e) => {
+          if ((e.target as HTMLElement).classList.contains("pdf-marker-unpin")) return;
           e.stopPropagation();
-          currentlyDraggedMarkerId = m.id;
-          isDraggingBadgeFromPdf = true;
-          if (e.dataTransfer) {
-            e.dataTransfer.setData("text/plain", m.id.toString());
-            e.dataTransfer.setData("text/trackhelm-marker-id", m.id.toString());
-            e.dataTransfer.effectAllowed = "move";
-          }
-        });
-
-        badge.addEventListener("dragend", (e) => {
-          if (e.dataTransfer && e.dataTransfer.dropEffect === "none") {
-            removeMarkerPdfAnchor(m.id);
-          }
-          currentlyDraggedMarkerId = null;
-          isDraggingBadgeFromPdf = false;
+          startMarkerPointerDrag(e, m, true);
         });
 
         card.appendChild(badge);
@@ -552,6 +669,9 @@
       associatedVersions = Array.isArray(profile.associatedVersions) ? profile.associatedVersions : [];
       songNotes = profile.notes || "";
       songLyrics = profile.lyrics || "";
+      if (profile.lastCenterTab) {
+        activeCenterTab = profile.lastCenterTab;
+      }
       
       if (profile.alternateTrackPath && profile.alternateTrackPath !== trackPath) {
         loadAudioPath(profile.alternateTrackPath, "alternate", false);
@@ -578,6 +698,11 @@
       songNotes = "";
       songLyrics = "";
       alternateTrack = null;
+
+      const savedTab = localStorage.getItem("th_last_center_tab") as "notes" | "lyrics" | "metadata" | "pdf" | null;
+      if (savedTab) {
+        activeCenterTab = savedTab;
+      }
     }
 
     // Apply restored volume, speed, and pitch directly to audio engine
@@ -640,6 +765,9 @@
 
     const savedInvert = localStorage.getItem("th_pdf_inverted");
     if (savedInvert === "1") isPdfInverted = true;
+
+    const savedCenterTab = localStorage.getItem("th_last_center_tab") as "notes" | "lyrics" | "metadata" | "pdf" | null;
+    if (savedCenterTab) activeCenterTab = savedCenterTab;
 
     const savedVersions = localStorage.getItem("th_associated_versions");
     if (savedVersions) associatedVersions = JSON.parse(savedVersions);
@@ -2316,28 +2444,28 @@
           <button 
             class="deck-tab-btn" 
             class:active={activeCenterTab === "notes"} 
-            on:click={() => activeCenterTab = "notes"}
+            on:click={() => switchCenterTab("notes")}
           >
             NOTES
           </button>
           <button 
             class="deck-tab-btn" 
             class:active={activeCenterTab === "lyrics"} 
-            on:click={() => activeCenterTab = "lyrics"}
+            on:click={() => switchCenterTab("lyrics")}
           >
             LYRICS
           </button>
           <button 
             class="deck-tab-btn" 
             class:active={activeCenterTab === "metadata"} 
-            on:click={() => activeCenterTab = "metadata"}
+            on:click={() => switchCenterTab("metadata")}
           >
             METADATA
           </button>
           <button 
             class="deck-tab-btn pdf-tab-btn" 
             class:active={activeCenterTab === "pdf"} 
-            on:click={() => activeCenterTab = "pdf"}
+            on:click={() => switchCenterTab("pdf")}
             title={pdfChartPath || "Sheet Music / Lead Sheet"}
           >
             {pdfChartName || "SHEET MUSIC (PDF)"}
@@ -2755,6 +2883,7 @@
               <div 
                 class="marker-item" 
                 style="border-left: 3px solid {marker.color || '#ff9500'};"
+                on:mousedown={(e) => handleMarkerItemMouseDown(e, marker)}
                 draggable={editingMarkerId !== marker.id}
                 on:dragstart={(e) => {
                   currentlyDraggedMarkerId = marker.id;
@@ -4419,6 +4548,25 @@
 
   :global(.pdf-marker-badge:active) {
     cursor: grabbing;
+  }
+
+  :global(.marker-pointer-drag-ghost) {
+    position: fixed;
+    pointer-events: none;
+    z-index: 99999;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 14px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: #ffffff;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.7);
+    border: 1.5px solid rgba(255, 255, 255, 0.5);
+    white-space: nowrap;
+    opacity: 0.95;
+    transform: translate(-10px, -50%);
   }
 
   :global(.pdf-marker-dot) {
