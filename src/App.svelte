@@ -522,24 +522,27 @@
   let dragWaveformPreviewMarker: Marker | null = null;
   let dragWaveformPreviewX: number | null = null;
 
+  let pointerDragIsFromWaveform = false;
+
   function handleMarkerItemMouseDown(e: MouseEvent, marker: Marker) {
     const target = e.target as HTMLElement;
     if (target && (target.tagName === 'INPUT' || target.tagName === 'BUTTON' || target.classList.contains('marker-color-dot') || target.classList.contains('delete-marker-btn') || target.classList.contains('marker-action-btn'))) {
       return;
     }
     if (editingMarkerId === marker.id) return;
-    startMarkerPointerDrag(e, marker, false);
+    startMarkerPointerDrag(e, marker, false, false);
   }
 
-  function startMarkerPointerDrag(e: MouseEvent, marker: Marker, isFromPdf = false) {
+  function startMarkerPointerDrag(e: MouseEvent, marker: Marker, isFromPdf = false, isFromWaveform = false) {
     if (e.button !== 0) return;
     activePointerDragMarker = marker;
     pointerDragIsFromPdf = isFromPdf;
+    pointerDragIsFromWaveform = isFromWaveform;
     pointerDragStartX = e.clientX;
     pointerDragStartY = e.clientY;
     hasPointerDragMoved = false;
-    dragWaveformPreviewMarker = null;
-    dragWaveformPreviewX = null;
+    dragWaveformPreviewMarker = isFromWaveform ? marker : null;
+    dragWaveformPreviewX = isFromWaveform ? e.clientX : null;
 
     window.addEventListener("mousemove", handleMarkerPointerMouseMove);
     window.addEventListener("mouseup", handleMarkerPointerMouseUp);
@@ -614,6 +617,7 @@
     if (!activePointerDragMarker) return;
     const marker = activePointerDragMarker;
     const isFromPdf = pointerDragIsFromPdf;
+    const isFromWaveform = pointerDragIsFromWaveform;
     activePointerDragMarker = null;
 
     if (!hasPointerDragMoved) {
@@ -630,11 +634,12 @@
       const xPct = Math.max(0.01, Math.min(0.95, (e.clientX - rect.left) / rect.width));
       const yPct = Math.max(0.01, Math.min(0.98, (e.clientY - rect.top) / rect.height));
 
-      marker.pdfAnchor = {
-        page: pageNum,
-        xPct,
-        yPct
-      };
+      const existing = markers.find(m => m.id === marker.id);
+      if (existing) {
+        existing.pdfAnchor = { page: pageNum, xPct, yPct };
+      } else {
+        markers = [...markers, { ...marker, id: nextMarkerId++, pdfAnchor: { page: pageNum, xPct, yPct } }];
+      }
       markers = markers;
       saveCurrentTrackProfile(filePath);
       renderPdfMarkerBadges();
@@ -675,6 +680,19 @@
       markers = markers;
       saveCurrentTrackProfile(filePath);
       renderPdfMarkerBadges();
+      return;
+    }
+
+    // 4. If dragged from Waveform and dropped outside waveform and PDF -> unassign from this track!
+    if (isFromWaveform) {
+      markers = markers.filter(m => m.id !== marker.id);
+      saveCurrentTrackProfile(filePath);
+      drawMainWaveform();
+      drawOverviewWaveform();
+      if (activeCenterTab === "pdf") {
+        renderPdfMarkerBadges();
+      }
+      return;
     }
   }
 
@@ -1710,17 +1728,14 @@
     const startProgress = zoom > 1.001 ? Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2)) : 0;
     const endProgress = startProgress + windowWidth;
 
-    // Check if clicked near a marker flag in the top ruler area (top 20px)
-    if (clickY <= 22) {
+    // Check if clicked near a marker flag in the top ruler area (top 24px)
+    if (clickY <= 24) {
       for (const m of markers) {
         const markerPct = m.time / duration;
         if (markerPct >= startProgress && markerPct <= endProgress) {
           const markerX = ((markerPct - startProgress) / windowWidth) * rect.width;
-          if (clickX >= markerX - 6 && clickX <= markerX + 16) {
-            isDraggingMarker = true;
-            draggingMarkerId = m.id;
-            window.addEventListener("mousemove", handleMainMouseMove);
-            window.addEventListener("mouseup", handleMainMouseUp);
+          if (clickX >= markerX - 6 && clickX <= markerX + 18) {
+            startMarkerPointerDrag(e, m, false, true);
             return;
           }
         }
