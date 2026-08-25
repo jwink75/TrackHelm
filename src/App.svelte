@@ -1654,6 +1654,27 @@
       ctx.fillRect(x, y, Math.max(1, barWidth * 2 - 0.5), barHeight);
     }
 
+    // Draw Markers on Overview Waveform
+    if (track && track.duration > 0 && markers.length > 0) {
+      for (const marker of markers) {
+        const markerPct = marker.time / track.duration;
+        if (markerPct >= 0 && markerPct <= 1.0) {
+          const markerX = Math.round(markerPct * width);
+          const color = marker.color || "#ff9500";
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(markerX + 0.5, 0);
+          ctx.lineTo(markerX + 0.5, height);
+          ctx.stroke();
+
+          // Top flag cap
+          ctx.fillStyle = color;
+          ctx.fillRect(markerX - 1.5, 0, 3, 4);
+        }
+      }
+    }
+
     if (isActive) {
       const windowWidth = 1.0 / zoom;
       const startProgress = Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2));
