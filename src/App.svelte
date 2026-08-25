@@ -900,17 +900,21 @@
     (async () => {
       const lastMainPath = localStorage.getItem("th_last_main_track_path");
       const lastAltPath = localStorage.getItem("th_last_alt_track_path");
-      const lastActiveMode = localStorage.getItem("th_last_active_track_mode") as "main" | "alternate" | null;
+      const lastActiveMode = (localStorage.getItem("th_last_active_track_mode") as "main" | "alternate" | null) || "main";
 
       try {
-        if (lastMainPath) {
-          await loadAudioPath(lastMainPath, "main");
-        }
-        if (lastAltPath) {
-          await loadAudioPath(lastAltPath, "alternate");
-        }
-        if (lastActiveMode && lastActiveMode !== activeTrackMode) {
-          await toggleActiveTrack(lastActiveMode);
+        if (lastActiveMode === "alternate" && lastAltPath) {
+          if (lastMainPath) {
+            await loadAudioPath(lastMainPath, "main", false);
+          }
+          await loadAudioPath(lastAltPath, "alternate", true);
+        } else {
+          if (lastAltPath) {
+            await loadAudioPath(lastAltPath, "alternate", false);
+          }
+          if (lastMainPath) {
+            await loadAudioPath(lastMainPath, "main", true);
+          }
         }
       } catch (err) {
         console.error("Failed to restore last loaded tracks:", err);
@@ -1215,16 +1219,19 @@
   }
 
   // Load a file into main or alternate track slots
-  async function loadAudioPath(path: string, target: "main" | "alternate", switchActive = true) {
+  async function loadAudioPath(path: string, target: "main" | "alternate", switchActive = (target === "main")) {
     try {
       const wasPlaying = isPlaying;
 
       // Save current track profile before switching
-      if (filePath) {
+      if (switchActive && filePath) {
         saveCurrentTrackProfile(filePath);
       }
 
-      const metadata: any = await invoke("load_track", { path });
+      const metadata: any = switchActive
+        ? await invoke("load_track", { path })
+        : await invoke("preload_track", { path });
+
       const track: Track = {
         name: path.split("/").pop() || path,
         path: path,
@@ -1246,7 +1253,7 @@
         }
       }
 
-      if (switchActive || target === "main") {
+      if (switchActive) {
         filePath = path;
         fileName = track.name;
         duration = track.duration;
