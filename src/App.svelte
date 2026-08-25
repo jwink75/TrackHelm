@@ -117,7 +117,15 @@
     "#af52de", // Purple
     "#ff3b30", // Red
     "#ffd60a", // Yellow
+    "#ff2d55", // Magenta / Pink
+    "#00c7be", // Teal
+    "#5856d6", // Indigo
+    "#ffffff", // White
   ];
+
+  let colorPaletteMarker: Marker | null = null;
+  let colorPaletteX = 0;
+  let colorPaletteY = 0;
 
   let editingMarkerId: number | null = null;
   let editingMarkerName = "";
@@ -900,8 +908,11 @@
       }
     });
 
-    // Close context menu on window click
-    const closeMenu = () => { showContextMenu = false; };
+    // Close context menu & color palette on window click
+    const closeMenu = () => { 
+      showContextMenu = false; 
+      colorPaletteMarker = null;
+    };
     window.addEventListener("click", closeMenu);
 
     // Global keyboard shortcuts: Space = Play/Pause, Left/Right = Prev/Next Marker, Enter = Stop & Return to 0
@@ -1853,13 +1864,32 @@
     drawMainWaveform();
   }
 
-  function cycleMarkerColor(marker: Marker) {
-    const currentIndex = MARKER_COLORS.indexOf(marker.color || "#ff9500");
-    const nextIndex = (currentIndex + 1) % MARKER_COLORS.length;
-    marker.color = MARKER_COLORS[nextIndex];
+  function openColorPalette(e: MouseEvent, marker: Marker) {
+    e.stopPropagation();
+    colorPaletteMarker = marker;
+    const target = e.currentTarget as HTMLElement;
+    if (target) {
+      const rect = target.getBoundingClientRect();
+      const popoverHeight = 85;
+      if (rect.bottom + popoverHeight > window.innerHeight) {
+        colorPaletteY = Math.max(10, rect.top - popoverHeight - 4);
+      } else {
+        colorPaletteY = rect.bottom + 6;
+      }
+      colorPaletteX = Math.max(10, Math.min(window.innerWidth - 180, rect.left - 40));
+    }
+  }
+
+  function setMarkerColor(marker: Marker, color: string) {
+    marker.color = color;
     markers = [...markers];
     saveCurrentTrackProfile(filePath);
     drawMainWaveform();
+    drawOverviewWaveform();
+    if (activeCenterTab === "pdf") {
+      renderPdfMarkerBadges();
+    }
+    colorPaletteMarker = null;
   }
 
   function startRenameMarker(marker: Marker) {
@@ -2990,14 +3020,14 @@
                   isDraggingBadgeFromPdf = false;
                 }}
               >
-                <!-- Color Dot Switcher -->
+                <!-- Color Dot Palette Opener -->
                 <!-- svelte-ignore a11y-click-events-have-key-events -->
                 <!-- svelte-ignore a11y-no-static-element-interactions -->
                 <span 
                   class="marker-color-dot" 
                   style="background-color: {marker.color || '#ff9500'};"
-                  title="Click to cycle color"
-                  on:click={() => cycleMarkerColor(marker)}
+                  title="Click to choose color"
+                  on:click={(e) => openColorPalette(e, marker)}
                 ></span>
 
                 {#if editingMarkerId === marker.id}
@@ -3336,6 +3366,35 @@
           Create New Playlist from File
         </div>
       {/if}
+    </div>
+  {/if}
+
+  <!-- Marker Color Palette Popover -->
+  {#if colorPaletteMarker}
+    <!-- svelte-ignore a11y-click-events-have-key-events -->
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div 
+      class="marker-color-palette-popover" 
+      style="top: {colorPaletteY}px; left: {colorPaletteX}px;"
+      on:click|stopPropagation
+    >
+      <div class="palette-header">Marker Color</div>
+      <div class="palette-grid">
+        {#each MARKER_COLORS as color}
+          <button 
+            type="button"
+            class="palette-swatch" 
+            class:selected={colorPaletteMarker.color === color}
+            style="background-color: {color};" 
+            title="Choose {color}"
+            on:click={() => setMarkerColor(colorPaletteMarker, color)}
+          >
+            {#if colorPaletteMarker.color === color}
+              <span class="swatch-check">✓</span>
+            {/if}
+          </button>
+        {/each}
+      </div>
     </div>
   {/if}
 </main>
@@ -5016,5 +5075,71 @@
     height: 1px;
     background-color: #3e3e42;
     margin: 4px 0;
+  }
+
+  /* Marker Color Palette Popover */
+  .marker-color-palette-popover {
+    position: fixed;
+    z-index: 100000;
+    background-color: #202024;
+    border: 1px solid #44444a;
+    border-radius: 8px;
+    padding: 8px 10px;
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.75), 0 2px 6px rgba(0, 0, 0, 0.4);
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    user-select: none;
+    animation: fadeInScale 0.12s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  @keyframes fadeInScale {
+    from { opacity: 0; transform: scale(0.92) translateY(-4px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
+  }
+
+  .palette-header {
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: #8e8e96;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .palette-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 6px;
+  }
+
+  .palette-swatch {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 2px solid rgba(0, 0, 0, 0.35);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: transform 0.1s ease, box-shadow 0.1s ease, border-color 0.1s ease;
+  }
+
+  .palette-swatch:hover {
+    transform: scale(1.18);
+    box-shadow: 0 0 8px rgba(255, 255, 255, 0.4);
+    border-color: #ffffff;
+  }
+
+  .palette-swatch.selected {
+    box-shadow: 0 0 0 2px #3b99fc, 0 0 8px rgba(59, 153, 252, 0.6);
+    border-color: #ffffff;
+  }
+
+  .swatch-check {
+    font-size: 0.65rem;
+    font-weight: 900;
+    color: #000000;
+    text-shadow: 0 0 2px rgba(255, 255, 255, 0.8);
   }
 </style>
