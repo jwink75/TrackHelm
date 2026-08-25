@@ -267,10 +267,22 @@
           "markdownDescription": "Enables the set_compressor command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_dual_compressor command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-dual-compressor",
+          "markdownDescription": "Enables the set_dual_compressor command without any pre-configured scope."
+        },
+        {
           "description": "Enables the set_eq command without any pre-configured scope.",
           "type": "string",
           "const": "allow-set-eq",
           "markdownDescription": "Enables the set_eq command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_eq_bands command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-eq-bands",
+          "markdownDescription": "Enables the set_eq_bands command without any pre-configured scope."
         },
         {
           "description": "Enables the set_pitch command without any pre-configured scope.",
@@ -393,10 +405,22 @@
           "markdownDescription": "Denies the set_compressor command without any pre-configured scope."
         },
         {
+          "description": "Denies the set_dual_compressor command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-dual-compressor",
+          "markdownDescription": "Denies the set_dual_compressor command without any pre-configured scope."
+        },
+        {
           "description": "Denies the set_eq command without any pre-configured scope.",
           "type": "string",
           "const": "deny-set-eq",
           "markdownDescription": "Denies the set_eq command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_eq_bands command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-eq-bands",
+          "markdownDescription": "Denies the set_eq_bands command without any pre-configured scope."
         },
         {
           "description": "Denies the set_pitch command without any pre-configured scope.",

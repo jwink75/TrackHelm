@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-dual-compressor"
+description = "Enables the set_dual_compressor command without any pre-configured scope."
+commands.allow = ["set_dual_compressor"]
+
+[[permission]]
+identifier = "deny-set-dual-compressor"
+description = "Denies the set_dual_compressor command without any pre-configured scope."
+commands.deny = ["set_dual_compressor"]

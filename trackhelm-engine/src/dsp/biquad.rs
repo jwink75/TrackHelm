@@ -1,10 +1,13 @@
 // High-precision Robert Bristow-Johnson (RBJ) Audio EQ Biquad Filter
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum FilterType {
     LowShelf,
     Peaking,
     HighShelf,
+    LowPass,
+    HighPass,
+    Notch,
 }
 
 #[derive(Clone, Debug)]
@@ -65,6 +68,33 @@ impl Biquad {
                 let a0 = (a + 1.0) - (a - 1.0) * cos_w + two_sqrt_a_alpha;
                 let a1 = 2.0 * ((a - 1.0) - (a + 1.0) * cos_w);
                 let a2 = (a + 1.0) - (a - 1.0) * cos_w - two_sqrt_a_alpha;
+                (b0, b1, b2, a0, a1, a2)
+            }
+            FilterType::LowPass => {
+                let b0 = (1.0 - cos_w) / 2.0;
+                let b1 = 1.0 - cos_w;
+                let b2 = (1.0 - cos_w) / 2.0;
+                let a0 = 1.0 + alpha;
+                let a1 = -2.0 * cos_w;
+                let a2 = 1.0 - alpha;
+                (b0, b1, b2, a0, a1, a2)
+            }
+            FilterType::HighPass => {
+                let b0 = (1.0 + cos_w) / 2.0;
+                let b1 = -(1.0 + cos_w);
+                let b2 = (1.0 + cos_w) / 2.0;
+                let a0 = 1.0 + alpha;
+                let a1 = -2.0 * cos_w;
+                let a2 = 1.0 - alpha;
+                (b0, b1, b2, a0, a1, a2)
+            }
+            FilterType::Notch => {
+                let b0 = 1.0;
+                let b1 = -2.0 * cos_w;
+                let b2 = 1.0;
+                let a0 = 1.0 + alpha;
+                let a1 = -2.0 * cos_w;
+                let a2 = 1.0 - alpha;
                 (b0, b1, b2, a0, a1, a2)
             }
         };

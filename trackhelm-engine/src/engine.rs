@@ -78,11 +78,9 @@ impl AudioEngine {
             let mut stretch_out_buffers: Vec<Vec<f32>> = vec![Vec::new(); 2];
 
             let mut current_sample_rate = config.sample_rate().0 as f64;
-            let mut biquad_low = crate::dsp::Biquad::new(output_channels);
-            let mut biquad_mid = crate::dsp::Biquad::new(output_channels);
-            let mut biquad_high = crate::dsp::Biquad::new(output_channels);
+            let mut biquads: Vec<crate::dsp::Biquad> = Vec::new();
             let mut eq_active = false;
-            let mut compressor = crate::dsp::Compressor::new(current_sample_rate);
+            let mut dual_compressor = crate::dsp::DualCompressor::new(current_sample_rate);
             let mut active_regions: Vec<crate::command::EngineRegion> = Vec::new();
 
             let shared_is_playing = shared_state.is_playing.clone();
@@ -122,10 +120,10 @@ impl AudioEngine {
                                         if let Some(ref mut s) = stretch {
                                             s.reset();
                                         }
-                                        biquad_low.reset();
-                                        biquad_mid.reset();
-                                        biquad_high.reset();
-                                        compressor.reset();
+                                        for b in &mut biquads {
+                                            b.reset();
+                                        }
+                                        dual_compressor.reset();
                                     }
                                     Command::Seek(duration) => {
                                         if let Some(ref audio) = active_audio {
@@ -154,13 +152,54 @@ impl AudioEngine {
                                     Command::SetEq { bass_db, mid_db, treble_db } => {
                                         eq_active = bass_db.abs() > 0.001 || mid_db.abs() > 0.001 || treble_db.abs() > 0.001;
                                         if eq_active {
-                                            biquad_low.set_params(crate::dsp::FilterType::LowShelf, current_sample_rate, 100.0, bass_db as f64, 0.707);
-                                            biquad_mid.set_params(crate::dsp::FilterType::Peaking, current_sample_rate, 1000.0, mid_db as f64, 0.707);
-                                            biquad_high.set_params(crate::dsp::FilterType::HighShelf, current_sample_rate, 8000.0, treble_db as f64, 0.707);
+                                            let mut b_low = crate::dsp::Biquad::new(output_channels);
+                                            let mut b_mid = crate::dsp::Biquad::new(output_channels);
+                                            let mut b_high = crate::dsp::Biquad::new(output_channels);
+                                            b_low.set_params(crate::dsp::FilterType::LowShelf, current_sample_rate, 100.0, bass_db as f64, 0.707);
+                                            b_mid.set_params(crate::dsp::FilterType::Peaking, current_sample_rate, 1000.0, mid_db as f64, 0.707);
+                                            b_high.set_params(crate::dsp::FilterType::HighShelf, current_sample_rate, 8000.0, treble_db as f64, 0.707);
+                                            biquads = vec![b_low, b_mid, b_high];
+                                        } else {
+                                            biquads.clear();
+                                        }
+                                    }
+                                    Command::SetEqBands(bands) => {
+                                        let active_bands: Vec<&crate::command::EqBand> = bands.iter().filter(|b| b.enabled && (b.gain_db.abs() > 0.01 || matches!(b.filter_type, crate::dsp::FilterType::LowPass | crate::dsp::FilterType::HighPass | crate::dsp::FilterType::Notch))).collect();
+                                        eq_active = !active_bands.is_empty();
+                                        if eq_active {
+                                            let mut new_biquads = Vec::new();
+                                            for band in active_bands {
+                                                let mut b = crate::dsp::Biquad::new(output_channels);
+                                                b.set_params(band.filter_type, current_sample_rate, band.freq, band.gain_db, band.q);
+                                                new_biquads.push(b);
+                                            }
+                                            biquads = new_biquads;
+                                        } else {
+                                            biquads.clear();
                                         }
                                     }
                                     Command::SetCompressor { threshold_db, ratio, makeup_db, attack_ms, release_ms } => {
-                                        compressor.set_params(current_sample_rate, threshold_db, ratio, makeup_db, attack_ms, release_ms);
+                                        dual_compressor.stage1.set_params(
+                                            current_sample_rate,
+                                            crate::dsp::CompStageParams {
+                                                enabled: true,
+                                                comp_type: crate::dsp::CompType::Vintage,
+                                                threshold_db,
+                                                ratio,
+                                                knee_db: 3.0,
+                                                attack_ms,
+                                                release_ms,
+                                                makeup_db,
+                                            },
+                                        );
+                                        dual_compressor.stage2.params.enabled = false;
+                                        dual_compressor.routing = crate::dsp::CompRouting::Series;
+                                    }
+                                    Command::SetDualCompressor { stage1, stage2, routing, parallel_blend } => {
+                                        dual_compressor.stage1.set_params(current_sample_rate, stage1);
+                                        dual_compressor.stage2.set_params(current_sample_rate, stage2);
+                                        dual_compressor.routing = routing;
+                                        dual_compressor.parallel_blend = parallel_blend;
                                     }
                                     Command::SetRegions(regs) => {
                                         active_regions = regs;
@@ -181,10 +220,10 @@ impl AudioEngine {
                                         stretch_in_buffers = vec![Vec::new(); ch];
                                         stretch_out_buffers = vec![Vec::new(); ch];
 
-                                        biquad_low = crate::dsp::Biquad::new(output_channels);
-                                        biquad_mid = crate::dsp::Biquad::new(output_channels);
-                                        biquad_high = crate::dsp::Biquad::new(output_channels);
-                                        compressor = crate::dsp::Compressor::new(current_sample_rate);
+                                        for b in &mut biquads {
+                                            b.reset();
+                                        }
+                                        dual_compressor.reset();
 
                                         active_audio = Some(audio);
                                         playback_frame = 0;
@@ -292,25 +331,25 @@ impl AudioEngine {
                                     }
 
                                     // 3. Apply High-Quality Biquad EQ Filters
-                                    if eq_active {
+                                    if eq_active && !biquads.is_empty() {
                                         for frame_idx in 0..num_out_frames {
                                             for ch in 0..output_channels {
                                                 let idx = frame_idx * output_channels + ch;
                                                 let mut s = data[idx];
-                                                s = biquad_low.process_sample(ch, s);
-                                                s = biquad_mid.process_sample(ch, s);
-                                                s = biquad_high.process_sample(ch, s);
+                                                for b in &mut biquads {
+                                                    s = b.process_sample(ch, s);
+                                                }
                                                 data[idx] = s;
                                             }
                                         }
                                     }
 
-                                    // 4. Apply Feedforward Soft-Knee Dynamic Compressor
-                                    if !compressor.is_bypassed() {
+                                    // 4. Apply Dual-Stage Dynamic Compressor
+                                    if !dual_compressor.is_bypassed() {
                                         for frame_idx in 0..num_out_frames {
                                             let left_idx = frame_idx * output_channels;
                                             let right_idx = if output_channels > 1 { left_idx + 1 } else { left_idx };
-                                            let (l, r) = compressor.process_stereo_frame(data[left_idx], data[right_idx]);
+                                            let (l, r) = dual_compressor.process_stereo_frame(data[left_idx], data[right_idx]);
                                             data[left_idx] = l;
                                             if output_channels > 1 {
                                                 data[right_idx] = r;

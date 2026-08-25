@@ -467,6 +467,11 @@ fn set_eq(state: State<'_, AppState>, bass_db: f32, mid_db: f32, treble_db: f32)
 }
 
 #[tauri::command]
+fn set_eq_bands(state: State<'_, AppState>, bands: Vec<trackhelm_engine::command::EqBand>) -> Result<(), String> {
+    state.command_bus.send(Command::SetEqBands(bands))
+}
+
+#[tauri::command]
 fn set_compressor(
     state: State<'_, AppState>,
     threshold_db: f32,
@@ -481,6 +486,22 @@ fn set_compressor(
         makeup_db,
         attack_ms,
         release_ms,
+    })
+}
+
+#[tauri::command]
+fn set_dual_compressor(
+    state: State<'_, AppState>,
+    stage1: trackhelm_engine::dsp::CompStageParams,
+    stage2: trackhelm_engine::dsp::CompStageParams,
+    routing: trackhelm_engine::dsp::CompRouting,
+    parallel_blend: f32,
+) -> Result<(), String> {
+    state.command_bus.send(Command::SetDualCompressor {
+        stage1,
+        stage2,
+        routing,
+        parallel_blend,
     })
 }
 
@@ -735,7 +756,9 @@ fn main() {
             set_speed,
             set_pitch,
             set_eq,
+            set_eq_bands,
             set_compressor,
+            set_dual_compressor,
             set_regions,
             get_playback_status,
             read_dir,

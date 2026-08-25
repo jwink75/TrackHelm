@@ -148,12 +148,54 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
 * **Dual Ghost + Compressed Waveform Visualization:**
   * When dynamic compression is active (Threshold $< 0\text{ dB}$, Ratio $> 1.0:1$), the uncompressed track waveform remains visible as a subtle translucent white ghost, while the dynamically compressed waveform is rendered in full vibrant theme color.
 
-### 2.20 Effects Modules UI & Advanced Inspectors
-* **Vertical 90° Module Tab Buttons:**
-  * Rotated blue tab buttons (`COMP` and `EQ`) mounted along the left edge of each rack module row.
-* **Advanced Inspector Modals:**
-  * **Advanced Compressor Inspector:** Features a dynamic compression transfer curve SVG graph, interactive gain reduction meter, and ballistic specifications.
-  * **Advanced Parametric EQ Inspector:** Features a frequency response curve visualizer across $20\text{ Hz} - 20\text{ kHz}$ with interactive node indicators for $100\text{ Hz}$, $1\text{ kHz}$, and $8\text{ kHz}$.
+### 2.20 Advanced Dual-Stage Dynamic Compressor Console (Sonitus Inspired)
+* **Dual Serial & Parallel Compressor Topology:**
+  * Native CPAL DSP support for two independent compressor stages (`CompStage1` and `CompStage2`), switchable between **Series** (Stage 1 feeds into Stage 2) and **Parallel** routing with a continuous wet/dry blend slider.
+* **4 Distinct Analog & Modern Character Models:**
+  * **Vintage:** Tube-style soft compression with progressive non-linear saturation curve.
+  * **Modern:** Transparent, ultra-clean VCA detection with linear transfer slope.
+  * **FET:** Lightning-fast ballistic response ($0.1\text{ ms}$ attack, aggressive punch).
+  * **Opto:** Smooth, musical electro-optical two-stage decay curve.
+* **Sonitus-Inspired Visual Console & Real-time Meters:**
+  * **Input Stereo Peak Meter & Vertical Threshold Slider:** Dual L/R level meters directly beside an analog-style vertical slider controlling threshold ($-60\text{ dB}$ to $0\text{ dB}$).
+  * **Dynamic Transfer Function Graph:** Real-time SVG transfer curve with soft knee quadratic bezier curve, $1:1$ faint diagonal reference line, and an **animated live signal dot** tracing the incoming audio level along the curve in real time.
+  * **Gain Reduction (GR) Meter:** Fast-decay ballistic visual meter displaying current gain attenuation in decibels.
+  * **Vertical Makeup Gain Slider & Output Stereo Meter:** Post-compression makeup amplification ($0\text{ dB}$ to $+24\text{ dB}$) with stereo output peak monitoring.
+
+### 2.21 Advanced Parametric Equalizer Console (Kirchhoff & AnyTune Inspired)
+* **Multi-Filter RBJ Biquad Cascade Engine:**
+  * Real-time audio thread cascaded biquad vector supporting arbitrary numbers of simultaneous filter bands.
+  * Supported filter types: **Parametric Bell (Peaking)**, **Low Shelf**, **High Shelf**, **Low Pass (High Cut)**, **High Pass (Low Cut)**, and **Notch (Band Stop)**.
+* **Interactive Visual Kirchhoff Spectrum Graph:**
+  * Continuous logarithmic frequency grid ($20\text{ Hz}$ to $20\text{ kHz}$) with calibrated $+24\text{ dB}$ to $-24\text{ dB}$ gain markings.
+  * **Ghosted Audio Spectrum Background:** Visual representation of incoming audio energy across frequency bands.
+  * **Dynamic Cumulative EQ Curve:** Rendered spline path tracking the composite frequency and phase response of all active filter bands.
+  * **Interactive Node Handles:** Draggable SVG nodes with color-coded frequency/gain positioning, hover animations, and $Q$-bandwidth indicator wings.
+* **Selected Node Parameter Deck:**
+  * Bottom dock with pill selectors for instant band switching, filter type dropdowns, frequency sliders, gain controls, $Q$ bandwidth adjustment, active/mute toggles, and new band creation/deletion.
+
+### 2.22 Rehearsal Deck Associated Media Hub & Dynamic Multi-PDF Tabs
+* **Dedicated Center Deck `FILES` Manager:**
+  * Replaced the static single PDF tab with a permanent rehearsal media hub managing all attached sheet music, chord charts, alternate takes, guide vocals, and backing tracks.
+  * Interactive file cards with one-click **"Open PDF"** or **"Load as Main Audio"** actions, path tags, and unlinking controls.
+* **Dynamic Multi-PDF Tabs:**
+  * Opening any associated PDF automatically creates an independent dynamic tab (e.g. `📄 Lead_Sheet.pdf ×`) with individual close buttons.
+  * Each tab tracks its own rendering state, page position, canvas resolution, and **Negative Invert** mode for low-light stage reading.
+
+### 2.23 Markdown Rehearsal Notes & Lyrics Deck with Auto Chord Badges
+* **Obsidian-Style Dark Markdown Renderer:**
+  * Full Markdown support for song notes, arrangement guides, setlist cues, and rehearsal lyrics.
+  * Tri-mode toolbar: **Edit (Raw Markdown)**, **Preview (Formatted)**, and **Split View (Side-by-Side)**.
+* **Automatic Rehearsal Chord Badge Parsing:**
+  * Regex-based detection parses inline and bracketed musical chords (e.g., `[Am7]`, `[G/B]`, `[F#m7b5]`, `[Cadd9]`, `[D7sus4]`) and renders them as glowing blue monospace badges for optimal stage visibility.
+* **Full Per-Track Persistence:**
+  * Markdown text, active view modes, and attached documents are saved automatically to the persistent `TrackProfile`.
+
+### 2.24 Rack Effects Bypass Toggles & Sidebar Workspace Optimization
+* **Dedicated Module Bypass Toggles (`BYP`):**
+  * Hardware-style bypass switches on both Compressor and EQ rack module rows, allowing instantaneous A/B comparison without altering saved dial settings.
+* **Right Sidebar Clean-up:**
+  * Removed redundant top project setup and file association cards, allocating 100% of the right sidebar height to the combined Markers and Regions list for streamlined live navigation.
 
 ---
 

@@ -10,11 +10,23 @@ It combines real-time DSP pitch/time manipulation, instant deep-zoom waveform vi
 
 ### 🎧 Real-Time Rehearsal DSP Engine
 * **Signalsmith Stretch Real-Time Integration**: Pristine tempo stretching ($0.25\times$ to $4.00\times$) and musical pitch transposition ($-24$ to $+24$ semitones) without cross-talk artifacts.
-* **3-Band Biquad Parametric Equalizer**: 64-bit precision Robert Bristow-Johnson (RBJ) cascade with Low Shelf ($100\text{ Hz}$), Peaking Mid Bell ($1\text{ kHz}$), and High Shelf ($8\text{ kHz}$) filters ($\pm 12\text{ dB}$). Zero-overhead bypass at $0\text{ dB}$.
-* **Feedforward Soft-Knee Compressor**: Log-domain envelope follower ($30\text{ ms}$ attack, $300\text{ ms}$ adaptive release), $3\text{ dB}$ soft knee, $1:1$ to $4:1$ ratio, makeup gain up to $+24\text{ dB}$, and threshold control.
-* **Vertical 90° Module Tab Buttons & Inspectors**: Rotated `COMP` and `EQ` side tabs open dedicated graphical inspectors (compression curve, Gain Reduction meter, frequency spectrum curve).
+* **Sonitus-Inspired Dual-Stage Compressor Console**:
+  * Dual independent compressor stages (`Stage 1` & `Stage 2`) switchable between **Series** and **Parallel** routing with wet/dry blend.
+  * 4 analog & digital character models: **Vintage** (Tube), **Modern** (Clean VCA), **FET** (Ultra-Fast), and **Opto** (Smooth Optical).
+  * Real-time transfer curve SVG graph with **animated live signal tracing dot**, dual stereo input/output peak meters, vertical threshold/makeup sliders, and fast-decay gain reduction (GR) meter.
+* **Kirchhoff & AnyTune-Inspired Parametric Equalizer Console**:
+  * Multi-filter cascaded biquad engine: **Parametric Bell (Peaking)**, **Low Shelf**, **High Shelf**, **Low Pass (High Cut)**, **High Pass (Low Cut)**, and **Notch (Band Stop)**.
+  * Continuous logarithmic frequency spectrum graph ($20\text{ Hz} - 20\text{ kHz}$) with ghosted audio spectrum background and dynamic cumulative EQ response curve.
+  * Interactive draggable SVG node handles with $Q$-bandwidth wings and bottom parameter editing deck.
+* **Dedicated Module Bypass Toggles (`BYP`)**: Instant A/B bypass switches directly on the effects rack rows and inspector dialogs.
 * **Low-Latency CPAL CoreAudio Engine**: Lock-free native audio thread with zero-latency hardware bypass when at unity settings ($1.0\times$ speed, $0\text{ st}$ pitch).
 * **Hardware-Style Analog Dials**: Vertical drag controls with top 12 o'clock zero reference ticks (`.knob-zero-tick`) and double-click instant reset.
+
+### 📝 Rehearsal Deck: Dynamic Multi-PDFs & Markdown Notes/Lyrics
+* **Rehearsal Files Hub (`FILES` Tab)**: Central manager for all associated sheet music, chord charts, alternate takes, guide tracks, and stems with one-click opening and loading.
+* **Dynamic Multi-PDF Tabs**: Opening associated PDFs automatically spawns dedicated dynamic tabs (e.g. `📄 Chart.pdf ×`) with independent page scroll tracking, close buttons, and **Negative Invert** dark mode for stage readability.
+* **Obsidian-Style Markdown Notes & Lyrics**: Rich formatting for song notes, arrangement guides, and lyrics with Edit, Preview, and Side-by-Side Split view modes.
+* **Automatic Rehearsal Chord Badge Parsing**: Parses chords (e.g. `[Am7]`, `[G/B]`, `[Cadd9]`) into glowing high-contrast badges optimized for live performance reading.
 
 ### ⚡ Instant Loading & Deep Waveform Visualization
 * **Zero-Delay Playback Readiness ($< 1\text{ms}$)**: Single-click background pre-decoding (`preload_track`) and SIMD/NEON compiler optimizations (`opt-level = 3`) ensure songs start playing instantaneously.
@@ -35,15 +47,16 @@ It combines real-time DSP pitch/time manipulation, instant deep-zoom waveform vi
   * **Region Edge Dragging**: Post-commit draggable handles adjust region boundaries in real-time.
   * **Inline Renaming**: Double-click any marker or region in the sidebar, click `✏️`, or right-click to rename.
 * **Keyboard Navigation**: Jump between markers with `ArrowLeft` / `ArrowRight`.
+* **Maximized Sidebar Height**: 100% full-height sidebar allocation for markers and regions list.
 
 ### 📂 Per-Track Persistent Project Profiles (AnyTune Style)
 * **Automatic State Preservation**: Every song maintains an independent persistent profile (`TrackProfile`):
   * Speed & Pitch knob settings (including Fine Tune $\pm 100\text{ ct}$)
   * Volume & Master Gain
-  * EQ (Bass/Mid/Treble) and Compressor settings
+  * EQ cascade bands (Peaking/Shelves/Filters) and Dual Compressor parameters
+  * Bypass flags (`isEqBypassed`, `isCompressorBypassed`)
   * Markers and Regions (timestamps, names, colors, loop/cut modes)
-  * Linked PDF Chart path & sheet music attachments
-  * Associated alternate versions, backing tracks, stems, and live takes
+  * Associated files list, dynamic PDF tabs, and notes/lyrics markdown text with view modes
 * Hot-swappable Main and Alternate audio track modes.
 
 ### 📁 OS Folder Browser & Playlist

@@ -237,17 +237,238 @@
   let selectedPlaylistIndex = -1;
 
   // Project Setup: File Associations (saved in localStorage)
-  let pdfChartPath = "";
-  let pdfChartName = "";
-  let associatedVersions: PlaylistItem[] = [];
+  // Associated Files Management
+  interface AssociatedFileItem {
+    id: string;
+    name: string;
+    path: string;
+    fileType: "pdf" | "audio" | "other";
+  }
+  let associatedFiles: AssociatedFileItem[] = [];
 
-  function switchCenterTab(tab: "notes" | "lyrics" | "metadata" | "pdf") {
+  // Dynamic Open PDF Tabs
+  interface OpenPdfTab {
+    id: string;
+    name: string;
+    path: string;
+    totalPages: number;
+    currentPage: number;
+    isLoading: boolean;
+    error: string | null;
+    isInverted: boolean;
+  }
+  let openPdfTabs: OpenPdfTab[] = [];
+  let activePdfTabId: string | null = null;
+
+  // Notes & Lyrics View Modes (edit, preview, split)
+  let notesViewMode: "edit" | "preview" | "split" = "edit";
+  let lyricsViewMode: "edit" | "preview" | "split" = "edit";
+
+  function renderMarkdown(md: string): string {
+    if (!md || !md.trim()) return "<div class='markdown-empty-hint'>No notes recorded yet. Click <strong>Edit</strong> or <strong>Split</strong> to add notes or chord charts...</div>";
+    
+    let html = md
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+
+    // Highlight chords in brackets e.g. [C#m7], [G/B], [F#7b9]
+    html = html.replace(/\[([A-G][b#]?(?:m|maj|min|dim|aug|sus|add)?[0-9]?(?:[b#][0-9])?(?:\/[A-G][b#]?)?)\]/g, '<span class="chord-badge">$1</span>');
+
+    // Headings
+    html = html.replace(/^### (.*$)/gim, '<h3 class="md-h3">$1</h3>');
+    html = html.replace(/^## (.*$)/gim, '<h2 class="md-h2">$1</h2>');
+    html = html.replace(/^# (.*$)/gim, '<h1 class="md-h1">$1</h1>');
+
+    // Blockquotes
+    html = html.replace(/^\> (.*$)/gim, '<blockquote class="md-quote">$1</blockquote>');
+
+    // Bold & Italics
+    html = html.replace(/\*\*\*(.*?)\*\*\*/gim, '<strong><em>$1</em></strong>');
+    html = html.replace(/\*\*(.*?)\*\*/gim, '<strong>$1</strong>');
+    html = html.replace(/\*(.*?)\*/gim, '<em>$1</em>');
+    html = html.replace(/~~(.*?)~~/gim, '<del>$1</del>');
+
+    // Inline code / chord lines
+    html = html.replace(/`([^`]+)`/gim, '<code class="md-code">$1</code>');
+
+    // Lists
+    html = html.replace(/^\s*-\s+(.*$)/gim, '<li class="md-li">$1</li>');
+
+    // Paragraphs and newlines
+    html = html.replace(/\n\n+/g, '</p><p class="md-p">');
+    html = html.replace(/\n/g, '<br/>');
+
+    return `<div class="markdown-rendered-body"><p class="md-p">${html}</p></div>`;
+  }
+
+  // DSP Effects Bypass States
+  let isEqBypassed = false;
+  let isCompressorBypassed = false;
+
+  // Multi-Node EQ State (Kirchhoff / AnyTune Inspired)
+  interface EqNodeState {
+    id: string;
+    name: string;
+    filterType: "LowShelf" | "Peaking" | "HighShelf" | "LowPass" | "HighPass" | "Notch";
+    freq: number;
+    gainDb: number;
+    q: number;
+    enabled: boolean;
+    color: string;
+  }
+
+  let eqNodes: EqNodeState[] = [
+    { id: "node-1", name: "Low Shelf", filterType: "LowShelf", freq: 100, gainDb: 0, q: 0.707, enabled: true, color: "#3b99fc" },
+    { id: "node-2", name: "Mid Bell", filterType: "Peaking", freq: 1000, gainDb: 0, q: 1.0, enabled: true, color: "#30d158" },
+    { id: "node-3", name: "High Shelf", filterType: "HighShelf", freq: 8000, gainDb: 0, q: 0.707, enabled: true, color: "#ff9500" },
+  ];
+  let selectedEqNodeId: string = "node-2";
+  $: selEqNode = eqNodes.find(n => n.id === selectedEqNodeId) || eqNodes[0];
+  let showEqFilterMenu = false;
+  let eqFilterMenuX = 0;
+  let eqFilterMenuY = 0;
+  let eqFilterMenuTargetNode: EqNodeState | null = null;
+
+  function getEqPath(nodes: EqNodeState[]): string {
+    if (!nodes || nodes.length === 0) return "M 20 120 L 580 120";
+    let d = "M 20 120";
+    const sorted = [...nodes].sort((a, b) => a.freq - b.freq);
+    for (const node of sorted) {
+      const nx = 20 + ((Math.log10(Math.max(20, Math.min(20000, node.freq))) - 1.30103) / 3.0) * 560;
+      const ny = node.enabled ? 120 - Math.max(-24, Math.min(24, node.gainDb)) * (100 / 24) : 120;
+      d += ` S ${nx - 20} ${ny} ${nx} ${ny}`;
+    }
+    d += " L 580 120";
+    return d;
+  }
+
+  // Dual Stage Compressor State (Sonitus Inspired)
+  interface CompStageState {
+    enabled: boolean;
+    compType: "Vintage" | "Modern" | "FET" | "Opto";
+    thresholdDb: number;
+    ratio: number;
+    kneeDb: number;
+    attackMs: number;
+    releaseMs: number;
+    makeupDb: number;
+    limiter: boolean;
+  }
+
+  let compStage1: CompStageState = {
+    enabled: true,
+    compType: "Vintage",
+    thresholdDb: 0.0,
+    ratio: 1.0,
+    kneeDb: 3.0,
+    attackMs: 30.0,
+    releaseMs: 300.0,
+    makeupDb: 0.0,
+    limiter: false,
+  };
+
+  let compStage2: CompStageState = {
+    enabled: false,
+    compType: "Opto",
+    thresholdDb: -12.0,
+    ratio: 2.0,
+    kneeDb: 4.0,
+    attackMs: 50.0,
+    releaseMs: 500.0,
+    makeupDb: 0.0,
+    limiter: false,
+  };
+
+  let compRouting: "Series" | "Parallel" = "Series";
+  let compParallelBlend: number = 0.5;
+  let activeCompStageTab: 1 | 2 = 1;
+  $: curCompStage = activeCompStageTab === 1 ? compStage1 : compStage2;
+
+  function getSonitusCurvePath(stage: CompStageState): string {
+    if (!stage) return "M 20 180 L 280 20";
+    const threshPxX = 20 + (60 + stage.thresholdDb) * (260 / 60);
+    const threshPxY = 180 - (60 + stage.thresholdDb + stage.makeupDb) * (160 / 60);
+    const kneeHalfX = (stage.kneeDb / 2) * (260 / 60);
+    const kneeHalfY = (stage.kneeDb / 2) * (160 / 60);
+    const endOutDb = stage.thresholdDb + ((0 - stage.thresholdDb) / stage.ratio) + stage.makeupDb;
+    const endPxY = 180 - (60 + endOutDb) * (160 / 60);
+
+    if (stage.kneeDb > 0.5) {
+      return `M 20 ${180 - stage.makeupDb * (160 / 60)} L ${Math.max(20, threshPxX - kneeHalfX)} ${Math.min(180, threshPxY + kneeHalfY)} Q ${threshPxX} ${threshPxY} ${Math.min(280, threshPxX + kneeHalfX)} ${threshPxY - kneeHalfY / stage.ratio} L 280 ${endPxY}`;
+    } else {
+      return `M 20 ${180 - stage.makeupDb * (160 / 60)} L ${threshPxX} ${threshPxY} L 280 ${endPxY}`;
+    }
+  }
+
+  function getSonitusSignalDot(stage: CompStageState, inDb: number): { x: number, y: number } {
+    if (!stage) return { x: 20, y: 180 };
+    const liveDotX = 20 + (60 + Math.max(-60, Math.min(0, inDb))) * (260 / 60);
+    const liveDotOutDb = inDb <= stage.thresholdDb ? inDb + stage.makeupDb : stage.thresholdDb + ((inDb - stage.thresholdDb) / stage.ratio) + stage.makeupDb;
+    const liveDotY = 180 - (60 + Math.max(-60, Math.min(6, liveDotOutDb))) * (160 / 60);
+    return { x: liveDotX, y: liveDotY };
+  }
+
+  // Real-time Visual Meter Values
+  let liveInputPeakL: number = -60.0;
+  let liveInputPeakR: number = -60.0;
+  let liveGainReductionDb: number = 0.0;
+  let liveOutputPeakL: number = -60.0;
+  let liveOutputPeakR: number = -60.0;
+
+  function switchCenterTab(tab: string) {
     activeCenterTab = tab;
     lastScrolledMarkerId = null;
     localStorage.setItem("th_last_center_tab", tab);
     saveCurrentTrackProfile(filePath);
-    if (tab === "pdf") {
+    if (tab.startsWith("pdf-")) {
+      activePdfTabId = tab.replace("pdf-", "");
       tick().then(() => renderPdfMarkerBadges());
+    }
+  }
+
+  function toggleDynamicTabInvert(tabId: string) {
+    const tab = openPdfTabs.find(t => t.id === tabId);
+    if (tab) {
+      tab.isInverted = !tab.isInverted;
+      openPdfTabs = [...openPdfTabs];
+      renderOpenPdfTab(tab);
+    }
+  }
+
+  function openPdfTab(path: string, name?: string) {
+    if (!path) return;
+    const docName = name || (path.split("/").pop() || "Document.pdf");
+    let existing = openPdfTabs.find(t => t.path === path);
+    if (!existing) {
+      const newTab: OpenPdfTab = {
+        id: "pdf_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
+        name: docName,
+        path: path,
+        totalPages: 0,
+        currentPage: 1,
+        isLoading: true,
+        error: null,
+        isInverted: false
+      };
+      openPdfTabs = [...openPdfTabs, newTab];
+      existing = newTab;
+    }
+    activePdfTabId = existing.id;
+    switchCenterTab("pdf-" + existing.id);
+    tick().then(() => renderOpenPdfTab(existing!));
+  }
+
+  function closePdfTab(id: string) {
+    const tabIndex = openPdfTabs.findIndex(t => t.id === id);
+    openPdfTabs = openPdfTabs.filter(t => t.id !== id);
+    if (activeCenterTab === "pdf-" + id) {
+      if (openPdfTabs.length > 0) {
+        const nextTab = openPdfTabs[Math.max(0, tabIndex - 1)];
+        switchCenterTab("pdf-" + nextTab.id);
+      } else {
+        switchCenterTab("files");
+      }
     }
   }
 
@@ -260,20 +481,30 @@
     eqBass: number;
     eqMid: number;
     eqTreble: number;
+    isEqBypassed?: boolean;
+    eqNodes?: EqNodeState[];
     compressorThreshold: number;
     compressorRatio: number;
     compressorMakeup: number;
+    isCompressorBypassed?: boolean;
+    compStage1?: CompStageState;
+    compStage2?: CompStageState;
+    compRouting?: "Series" | "Parallel";
+    compParallelBlend?: number;
     markers: Marker[];
     nextMarkerId: number;
     regions?: Region[];
     nextRegionId?: number;
-    pdfChartPath: string;
-    pdfChartName: string;
-    associatedVersions: PlaylistItem[];
+    associatedFiles?: AssociatedFileItem[];
+    pdfChartPath?: string;
+    pdfChartName?: string;
+    associatedVersions?: PlaylistItem[];
     alternateTrackPath?: string | null;
     notes?: string;
     lyrics?: string;
-    lastCenterTab?: "notes" | "lyrics" | "metadata" | "pdf";
+    notesViewMode?: "edit" | "preview" | "split";
+    lyricsViewMode?: "edit" | "preview" | "split";
+    lastCenterTab?: string;
   }
 
   function getProfilesStore(): Record<string, TrackProfile> {
@@ -300,19 +531,29 @@
       eqBass,
       eqMid,
       eqTreble,
-      compressorThreshold,
-      compressorRatio,
-      compressorMakeup,
+      isEqBypassed,
+      eqNodes: JSON.parse(JSON.stringify(eqNodes)),
+      compressorThreshold: compStage1.thresholdDb,
+      compressorRatio: compStage1.ratio,
+      compressorMakeup: compStage1.makeupDb,
+      isCompressorBypassed,
+      compStage1: JSON.parse(JSON.stringify(compStage1)),
+      compStage2: JSON.parse(JSON.stringify(compStage2)),
+      compRouting,
+      compParallelBlend,
       markers: JSON.parse(JSON.stringify(markers)),
       nextMarkerId,
       regions: JSON.parse(JSON.stringify(regions)),
       nextRegionId,
+      associatedFiles: isMain ? JSON.parse(JSON.stringify(associatedFiles)) : (existing.associatedFiles || []),
       pdfChartPath: isMain ? pdfChartPath : (existing.pdfChartPath || ""),
       pdfChartName: isMain ? pdfChartName : (existing.pdfChartName || ""),
       associatedVersions: isMain ? associatedVersions : (existing.associatedVersions || []),
       alternateTrackPath: isMain ? (alternateTrack ? alternateTrack.path : null) : (existing.alternateTrackPath || null),
       notes: isMain ? songNotes : (existing.notes || ""),
       lyrics: isMain ? songLyrics : (existing.lyrics || ""),
+      notesViewMode,
+      lyricsViewMode,
       lastCenterTab: activeCenterTab
     };
     localStorage.setItem("th_track_profiles", JSON.stringify(store));
@@ -325,18 +566,63 @@
   }
 
   async function updateEqEngine() {
-    await invoke("set_eq", { bassDb: eqBass, midDb: eqMid, trebleDb: eqTreble });
+    if (isEqBypassed) {
+      await invoke("set_eq_bands", { bands: [] });
+    } else if (eqNodes && eqNodes.length > 0) {
+      await invoke("set_eq_bands", {
+        bands: eqNodes.map(n => ({
+          filter_type: n.filterType,
+          freq: n.freq,
+          gain_db: n.enabled ? n.gainDb : 0.0,
+          q: n.q,
+          enabled: n.enabled
+        }))
+      });
+    } else {
+      await invoke("set_eq", { bassDb: eqBass, midDb: eqMid, trebleDb: eqTreble });
+    }
     saveCurrentTrackProfile(filePath);
   }
 
   async function updateCompressorEngine() {
-    await invoke("set_compressor", {
-      thresholdDb: compressorThreshold,
-      ratio: compressorRatio,
-      makeupDb: compressorMakeup,
-      attackMs: 30.0,
-      releaseMs: 300.0
-    });
+    compressorThreshold = compStage1.thresholdDb;
+    compressorRatio = compStage1.ratio;
+    compressorMakeup = compStage1.makeupDb;
+
+    if (isCompressorBypassed) {
+      await invoke("set_compressor", {
+        thresholdDb: 0.0,
+        ratio: 1.0,
+        makeupDb: 0.0,
+        attackMs: 30.0,
+        releaseMs: 300.0
+      });
+    } else {
+      await invoke("set_dual_compressor", {
+        stage1: {
+          enabled: compStage1.enabled,
+          comp_type: compStage1.compType,
+          threshold_db: compStage1.thresholdDb,
+          ratio: compStage1.ratio,
+          knee_db: compStage1.kneeDb,
+          attack_ms: compStage1.attackMs,
+          release_ms: compStage1.releaseMs,
+          makeup_db: compStage1.makeupDb
+        },
+        stage2: {
+          enabled: compStage2.enabled,
+          comp_type: compStage2.compType,
+          threshold_db: compStage2.thresholdDb,
+          ratio: compStage2.ratio,
+          knee_db: compStage2.kneeDb,
+          attack_ms: compStage2.attackMs,
+          release_ms: compStage2.releaseMs,
+          makeup_db: compStage2.makeupDb
+        },
+        routing: compRouting,
+        parallel_blend: compParallelBlend
+      });
+    }
     saveCurrentTrackProfile(filePath);
     drawMainWaveform();
   }
@@ -379,29 +665,129 @@
     }
   }
 
-  // In-Tab PDF Viewer State
-  let pdfContainer: HTMLDivElement;
-  let isLoadingPdf = false;
-  let pdfTotalPages = 0;
-  let pdfCurrentPage = 1;
-  let isPdfInverted = false;
-  let pdfRenderError = "";
-  let currentRenderTaskId = 0;
-  let lastRenderedWidth = 0;
-
-  function togglePdfInvert() {
-    isPdfInverted = !isPdfInverted;
-    localStorage.setItem("th_pdf_inverted", isPdfInverted ? "1" : "0");
-    if (pdfContainer) {
-      const cards = pdfContainer.querySelectorAll(".pdf-page-card");
-      cards.forEach(c => {
-        if (isPdfInverted) {
-          c.classList.add("inverted");
-        } else {
-          c.classList.remove("inverted");
-        }
+  // Associated Files Management Methods
+  async function addAssociatedFilePicker() {
+    try {
+      const selected = await openDialog({
+        multiple: true,
+        filters: [{
+          name: "All Associated Rehearsal Media",
+          extensions: ["pdf", "wav", "mp3", "flac", "m4a", "aac", "ogg", "aiff", "aif"]
+        }, {
+          name: "PDF Sheet Music & Charts",
+          extensions: ["pdf"]
+        }, {
+          name: "Audio Tracks & Stems",
+          extensions: ["wav", "mp3", "flac", "m4a", "aac", "ogg", "aiff", "aif"]
+        }]
       });
+
+      if (!selected) return;
+      const paths = Array.isArray(selected) ? selected : [selected];
+      for (const p of paths) {
+        if (!p) continue;
+        const ext = p.split(".").pop()?.toLowerCase() || "";
+        const fName = p.split("/").pop() || p;
+        const isPdf = ext === "pdf";
+        const isAudio = ["wav", "mp3", "flac", "m4a", "aac", "ogg", "aiff", "aif"].includes(ext);
+
+        if (!associatedFiles.some(f => f.path === p)) {
+          associatedFiles.push({
+            id: "file_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
+            name: fName,
+            path: p,
+            fileType: isPdf ? "pdf" : isAudio ? "audio" : "other"
+          });
+        }
+      }
+      associatedFiles = [...associatedFiles];
+      saveCurrentTrackProfile(filePath);
+    } catch (e) {
+      console.error("Failed to add associated file:", e);
     }
+  }
+
+  function unlinkAssociatedFile(id: string) {
+    associatedFiles = associatedFiles.filter(f => f.id !== id);
+    saveCurrentTrackProfile(filePath);
+  }
+
+  async function renderOpenPdfTab(tab: OpenPdfTab) {
+    const container = document.getElementById("pdf-container-" + tab.id) as HTMLDivElement | null;
+    if (!container) return;
+    tab.isLoading = true;
+    tab.error = null;
+    openPdfTabs = [...openPdfTabs];
+
+    try {
+      const bytes: number[] = await invoke("read_file_bytes", { path: tab.path });
+      const uint8 = new Uint8Array(bytes);
+      const loadingTask = pdfjsLib.getDocument({ data: uint8 });
+      const doc = await loadingTask.promise;
+      
+      tab.totalPages = doc.numPages;
+      container.innerHTML = "";
+      const containerWidth = Math.max(300, (container.clientWidth || 800) - 32);
+      const dpr = window.devicePixelRatio || 1;
+
+      for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
+        const page = await doc.getPage(pageNum);
+        const unscaledViewport = page.getViewport({ scale: 1.0 });
+        const baseScale = containerWidth / unscaledViewport.width;
+        const viewport = page.getViewport({ scale: baseScale * dpr });
+
+        const pageWrapper = document.createElement("div");
+        pageWrapper.className = `pdf-page-card ${tab.isInverted ? 'inverted' : ''}`;
+        pageWrapper.dataset.pageNum = pageNum.toString();
+
+        const canvas = document.createElement("canvas");
+        canvas.className = "pdf-page-canvas";
+        canvas.width = Math.floor(viewport.width);
+        canvas.height = Math.floor(viewport.height);
+        canvas.style.width = `${Math.floor(viewport.width / dpr)}px`;
+        canvas.style.height = `${Math.floor(viewport.height / dpr)}px`;
+
+        const ctx = canvas.getContext("2d")!;
+        pageWrapper.appendChild(canvas);
+        container.appendChild(pageWrapper);
+
+        await page.render({ canvasContext: ctx, viewport }).promise;
+      }
+
+      tab.isLoading = false;
+      openPdfTabs = [...openPdfTabs];
+      renderPdfMarkerBadges();
+    } catch (err: any) {
+      tab.isLoading = false;
+      tab.error = "Failed to render PDF: " + (err.message || err);
+      openPdfTabs = [...openPdfTabs];
+    }
+  }
+
+  function handleDynamicPdfScroll(e: Event, tab: OpenPdfTab) {
+    const container = e.target as HTMLElement;
+    if (!container) return;
+    const cards = container.querySelectorAll(".pdf-page-card");
+    const containerTop = container.getBoundingClientRect().top;
+    const containerMid = containerTop + (container.clientHeight * 0.35);
+
+    for (let i = 0; i < cards.length; i++) {
+      const card = cards[i] as HTMLElement;
+      const rect = card.getBoundingClientRect();
+      if (rect.top <= containerMid && rect.bottom >= containerMid) {
+        const p = parseInt(card.dataset.pageNum || "1", 10);
+        if (p !== tab.currentPage) {
+          tab.currentPage = p;
+          openPdfTabs = [...openPdfTabs];
+        }
+        break;
+      }
+    }
+  }
+
+  function handleDynamicPdfContainerDrop(e: DragEvent, tab: OpenPdfTab) {
+    e.preventDefault();
+    e.stopPropagation();
   }
 
   function handlePdfScroll() {
@@ -868,9 +1254,57 @@
       eqBass = typeof profile.eqBass === "number" ? profile.eqBass : 0;
       eqMid = typeof profile.eqMid === "number" ? profile.eqMid : 0;
       eqTreble = typeof profile.eqTreble === "number" ? profile.eqTreble : 0;
+      isEqBypassed = !!profile.isEqBypassed;
+      if (Array.isArray(profile.eqNodes) && profile.eqNodes.length > 0) {
+        eqNodes = [...profile.eqNodes];
+      } else {
+        eqNodes = [
+          { id: "node-1", name: "Low Shelf", filterType: "LowShelf", freq: 100, gainDb: eqBass, q: 0.707, enabled: true, color: "#3b99fc" },
+          { id: "node-2", name: "Mid Bell", filterType: "Peaking", freq: 1000, gainDb: eqMid, q: 1.0, enabled: true, color: "#30d158" },
+          { id: "node-3", name: "High Shelf", filterType: "HighShelf", freq: 8000, gainDb: eqTreble, q: 0.707, enabled: true, color: "#ff9500" },
+        ];
+      }
+
       compressorThreshold = typeof profile.compressorThreshold === "number" ? profile.compressorThreshold : 0.0;
       compressorRatio = typeof profile.compressorRatio === "number" ? profile.compressorRatio : 1.0;
       compressorMakeup = typeof profile.compressorMakeup === "number" ? profile.compressorMakeup : 0.0;
+      isCompressorBypassed = !!profile.isCompressorBypassed;
+
+      if (profile.compStage1) {
+        compStage1 = { ...profile.compStage1 };
+      } else {
+        compStage1 = {
+          enabled: true,
+          compType: "Vintage",
+          thresholdDb: compressorThreshold,
+          ratio: compressorRatio,
+          kneeDb: 3.0,
+          attackMs: 30.0,
+          releaseMs: 300.0,
+          makeupDb: compressorMakeup,
+          limiter: false
+        };
+      }
+
+      if (profile.compStage2) {
+        compStage2 = { ...profile.compStage2 };
+      } else {
+        compStage2 = {
+          enabled: false,
+          compType: "Opto",
+          thresholdDb: -12.0,
+          ratio: 2.0,
+          kneeDb: 4.0,
+          attackMs: 50.0,
+          releaseMs: 500.0,
+          makeupDb: 0.0,
+          limiter: false
+        };
+      }
+
+      compRouting = profile.compRouting || "Series";
+      compParallelBlend = typeof profile.compParallelBlend === "number" ? profile.compParallelBlend : 0.5;
+
       markers = Array.isArray(profile.markers) ? [...profile.markers] : [];
       nextMarkerId = typeof profile.nextMarkerId === "number" ? profile.nextMarkerId : (markers.length + 1);
       regions = Array.isArray(profile.regions) ? [...profile.regions] : [];
@@ -880,10 +1314,39 @@
         pdfChartPath = profile.pdfChartPath || "";
         pdfChartName = profile.pdfChartName || (pdfChartPath ? (pdfChartPath.split("/").pop() || "") : "");
         associatedVersions = Array.isArray(profile.associatedVersions) ? profile.associatedVersions : [];
+        
+        // Populate associatedFiles
+        if (Array.isArray(profile.associatedFiles)) {
+          associatedFiles = [...profile.associatedFiles];
+        } else {
+          associatedFiles = [];
+          if (pdfChartPath) {
+            associatedFiles.push({
+              id: "pdf-main",
+              name: pdfChartName || "Sheet Music.pdf",
+              path: pdfChartPath,
+              fileType: "pdf"
+            });
+          }
+          for (const ver of associatedVersions) {
+            associatedFiles.push({
+              id: "track-" + ver.path,
+              name: ver.name,
+              path: ver.path,
+              fileType: "audio"
+            });
+          }
+        }
+
         songNotes = profile.notes || "";
         songLyrics = profile.lyrics || "";
+        notesViewMode = profile.notesViewMode || "edit";
+        lyricsViewMode = profile.lyricsViewMode || "edit";
+
         if (profile.lastCenterTab) {
           activeCenterTab = profile.lastCenterTab;
+        } else {
+          activeCenterTab = "notes";
         }
         
         if (profile.alternateTrackPath && profile.alternateTrackPath !== trackPath) {
@@ -901,9 +1364,42 @@
       eqBass = 0.0;
       eqMid = 0.0;
       eqTreble = 0.0;
+      isEqBypassed = false;
+      eqNodes = [
+        { id: "node-1", name: "Low Shelf", filterType: "LowShelf", freq: 100, gainDb: 0, q: 0.707, enabled: true, color: "#3b99fc" },
+        { id: "node-2", name: "Mid Bell", filterType: "Peaking", freq: 1000, gainDb: 0, q: 1.0, enabled: true, color: "#30d158" },
+        { id: "node-3", name: "High Shelf", filterType: "HighShelf", freq: 8000, gainDb: 0, q: 0.707, enabled: true, color: "#ff9500" },
+      ];
+
       compressorThreshold = 0.0;
       compressorRatio = 1.0;
       compressorMakeup = 0.0;
+      isCompressorBypassed = false;
+      compStage1 = {
+        enabled: true,
+        compType: "Vintage",
+        thresholdDb: 0.0,
+        ratio: 1.0,
+        kneeDb: 3.0,
+        attackMs: 30.0,
+        releaseMs: 300.0,
+        makeupDb: 0.0,
+        limiter: false
+      };
+      compStage2 = {
+        enabled: false,
+        compType: "Opto",
+        thresholdDb: -12.0,
+        ratio: 2.0,
+        kneeDb: 4.0,
+        attackMs: 50.0,
+        releaseMs: 500.0,
+        makeupDb: 0.0,
+        limiter: false
+      };
+      compRouting = "Series";
+      compParallelBlend = 0.5;
+
       markers = [];
       nextMarkerId = 1;
       regions = [];
@@ -913,14 +1409,13 @@
         pdfChartPath = "";
         pdfChartName = "";
         associatedVersions = [];
+        associatedFiles = [];
         songNotes = "";
         songLyrics = "";
+        notesViewMode = "edit";
+        lyricsViewMode = "edit";
         alternateTrack = null;
-
-        const savedTab = localStorage.getItem("th_last_center_tab") as "notes" | "lyrics" | "metadata" | "pdf" | null;
-        if (savedTab) {
-          activeCenterTab = savedTab;
-        }
+        activeCenterTab = "notes";
       }
     }
 
@@ -930,14 +1425,8 @@
     await invoke("set_speed", { speed });
     const totalSemitones = pitch + (pitchCents / 100.0);
     await invoke("set_pitch", { pitch: totalSemitones });
-    await invoke("set_eq", { bassDb: eqBass, midDb: eqMid, trebleDb: eqTreble });
-    await invoke("set_compressor", {
-      thresholdDb: compressorThreshold,
-      ratio: compressorRatio,
-      makeupDb: compressorMakeup,
-      attackMs: 30.0,
-      releaseMs: 300.0
-    });
+    await updateEqEngine();
+    await updateCompressorEngine();
     await syncRegionsToEngine();
   }
 
@@ -3546,35 +4035,174 @@
             METADATA
           </button>
           <button 
-            class="deck-tab-btn pdf-tab-btn" 
-            class:active={activeCenterTab === "pdf"} 
-            on:click={() => switchCenterTab("pdf")}
-            title={pdfChartPath || "Sheet Music / Lead Sheet"}
+            class="deck-tab-btn" 
+            class:active={activeCenterTab === "files"} 
+            on:click={() => switchCenterTab("files")}
           >
-            {pdfChartName || "SHEET MUSIC (PDF)"}
+            FILES {#if associatedFiles.length > 0}<span class="files-badge-count">({associatedFiles.length})</span>{/if}
           </button>
+
+          <!-- Dynamic Open PDF Tabs -->
+          {#each openPdfTabs as tab (tab.id)}
+            <button 
+              class="deck-tab-btn pdf-tab-btn" 
+              class:active={activeCenterTab === "pdf-" + tab.id} 
+              on:click={() => switchCenterTab("pdf-" + tab.id)}
+              title={tab.path}
+            >
+              📄 {tab.name}
+              <!-- svelte-ignore a11y-click-events-have-key-events -->
+              <!-- svelte-ignore a11y-no-static-element-interactions -->
+              <span 
+                class="tab-close-btn" 
+                title="Close sheet music tab"
+                on:click|stopPropagation={() => closePdfTab(tab.id)}
+              >
+                ×
+              </span>
+            </button>
+          {/each}
         </div>
 
         <div class="deck-tab-content">
           {#if activeCenterTab === "notes"}
-            <div class="tab-pane notes-pane">
-              <textarea 
-                class="rehearsal-textarea notes-textarea" 
-                placeholder="Type rehearsal notes, arrangement cues, key changes, or performance reminders here (auto-saved with this song)..."
-                bind:value={songNotes}
-                on:input={() => saveCurrentTrackProfile(filePath)}
-              ></textarea>
+            <!-- NOTES TAB (Markdown Compatible) -->
+            <div class="tab-pane notes-pane markdown-deck-pane">
+              <div class="markdown-toolbar">
+                <span class="md-toolbar-title">REHEARSAL NOTES</span>
+                <div class="md-view-toggles">
+                  <button class="md-toggle-btn" class:active={notesViewMode === 'edit'} on:click={() => notesViewMode = 'edit'}>✏️ Edit</button>
+                  <button class="md-toggle-btn" class:active={notesViewMode === 'preview'} on:click={() => notesViewMode = 'preview'}>👁️ Preview</button>
+                  <button class="md-toggle-btn" class:active={notesViewMode === 'split'} on:click={() => notesViewMode = 'split'}>◫ Split</button>
+                </div>
+              </div>
+
+              <div class="markdown-editor-container mode-{notesViewMode}">
+                {#if notesViewMode === 'edit' || notesViewMode === 'split'}
+                  <textarea 
+                    class="rehearsal-textarea md-textarea" 
+                    placeholder="Type rehearsal notes, chord cues (e.g. [C#m7]), key changes, or arrangement details using Markdown (auto-saved)..."
+                    bind:value={songNotes}
+                    on:input={() => saveCurrentTrackProfile(filePath)}
+                  ></textarea>
+                {/if}
+
+                {#if notesViewMode === 'preview' || notesViewMode === 'split'}
+                  <div class="markdown-preview-pane">
+                    {@html renderMarkdown(songNotes)}
+                  </div>
+                {/if}
+              </div>
             </div>
           {:else if activeCenterTab === "lyrics"}
-            <div class="tab-pane lyrics-pane">
-              <textarea 
-                class="rehearsal-textarea lyrics-textarea" 
-                placeholder="Type or paste song lyrics, vocal harmony cues, or performance text here (auto-saved with this song)..."
-                bind:value={songLyrics}
-                on:input={() => saveCurrentTrackProfile(filePath)}
-              ></textarea>
+            <!-- LYRICS TAB (Markdown Compatible) -->
+            <div class="tab-pane lyrics-pane markdown-deck-pane">
+              <div class="markdown-toolbar">
+                <span class="md-toolbar-title">SONG LYRICS & CUES</span>
+                <div class="md-view-toggles">
+                  <button class="md-toggle-btn" class:active={lyricsViewMode === 'edit'} on:click={() => lyricsViewMode = 'edit'}>✏️ Edit</button>
+                  <button class="md-toggle-btn" class:active={lyricsViewMode === 'preview'} on:click={() => lyricsViewMode = 'preview'}>👁️ Preview</button>
+                  <button class="md-toggle-btn" class:active={lyricsViewMode === 'split'} on:click={() => lyricsViewMode = 'split'}>◫ Split</button>
+                </div>
+              </div>
+
+              <div class="markdown-editor-container mode-{lyricsViewMode}">
+                {#if lyricsViewMode === 'edit' || lyricsViewMode === 'split'}
+                  <textarea 
+                    class="rehearsal-textarea md-textarea lyrics-textarea" 
+                    placeholder="Type or paste lyrics with chord badges e.g. [G/B] or [Am7] (auto-saved with this song)..."
+                    bind:value={songLyrics}
+                    on:input={() => saveCurrentTrackProfile(filePath)}
+                  ></textarea>
+                {/if}
+
+                {#if lyricsViewMode === 'preview' || lyricsViewMode === 'split'}
+                  <div class="markdown-preview-pane lyrics-preview">
+                    {@html renderMarkdown(songLyrics)}
+                  </div>
+                {/if}
+              </div>
+            </div>
+          {:else if activeCenterTab === "files"}
+            <!-- FILES TAB (Associated Media, PDFs, Stems, Alternate Versions) -->
+            <div class="tab-pane files-pane">
+              <div class="files-pane-header">
+                <div class="files-header-left">
+                  <span class="files-pane-title">ASSOCIATED MEDIA & FILES</span>
+                  <span class="files-pane-subtitle">PDF sheet music, chord charts, backing tracks, stems, and alternate rehearsal takes</span>
+                </div>
+                <button class="add-assoc-file-btn" on:click={addAssociatedFilePicker}>
+                  + Add Associated File...
+                </button>
+              </div>
+
+              <div class="associated-files-list">
+                {#if associatedFiles.length === 0}
+                  <div class="empty-files-card">
+                    <span class="empty-icon">📁</span>
+                    <h3>No Associated Files Linked Yet</h3>
+                    <p>Link PDF lead sheets, score charts, backing tracks, or stems to this song for quick access during rehearsal.</p>
+                    <div class="empty-actions-row">
+                      <button class="action-card-btn" on:click={addAssociatedFilePicker}>
+                        📄 Link Sheet Music (PDF)
+                      </button>
+                      <button class="action-card-btn" on:click={addAssociatedFilePicker}>
+                        🎵 Link Alternate Track / Stem
+                      </button>
+                    </div>
+                  </div>
+                {:else}
+                  <div class="assoc-files-grid">
+                    {#each associatedFiles as item (item.id)}
+                      <div class="assoc-card" class:pdf-card={item.fileType === 'pdf'} class:audio-card={item.fileType === 'audio'}>
+                        <div class="assoc-card-icon">
+                          {item.fileType === 'pdf' ? '📄' : '🎵'}
+                        </div>
+                        <div class="assoc-card-info">
+                          <span class="assoc-card-name" title={item.name}>{item.name}</span>
+                          <span class="assoc-card-path" title={item.path}>{item.path}</span>
+                        </div>
+                        <div class="assoc-card-actions">
+                          {#if item.fileType === 'pdf'}
+                            <button 
+                              class="assoc-action-btn open-pdf-action" 
+                              on:click={() => openPdfTab(item.path, item.name)}
+                              title="Open PDF Sheet Music in Tab"
+                            >
+                              📄 Open Tab
+                            </button>
+                          {:else if item.fileType === 'audio'}
+                            <button 
+                              class="assoc-action-btn load-main-action" 
+                              on:click={() => loadAudioPath(item.path, 'main')}
+                              title="Load as Main Track"
+                            >
+                              ▶ Load Main
+                            </button>
+                            <button 
+                              class="assoc-action-btn load-alt-action" 
+                              on:click={() => loadAudioPath(item.path, 'alternate')}
+                              title="Load as Alternate Track"
+                            >
+                              ⌥ Load Alt
+                            </button>
+                          {/if}
+                          <button 
+                            class="assoc-action-btn unlink-action" 
+                            on:click={() => unlinkAssociatedFile(item.id)}
+                            title="Unlink file from this project"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
             </div>
           {:else if activeCenterTab === "metadata"}
+            <!-- METADATA TAB -->
             <div class="tab-pane metadata-pane">
               <div class="metadata-split-layout">
                 <!-- Left: Editable Audio Tags (Lofty ID3 / Vorbis / MP4 / FLAC) -->
@@ -3730,72 +4358,60 @@
                       <span class="spec-label">Markers:</span>
                       <span class="spec-val">{markers.length} markers</span>
                     </div>
-                    <div class="spec-row">
-                      <span class="spec-label">Sheet Music:</span>
-                      <span class="spec-val">{pdfChartName || "None linked"}</span>
-                    </div>
                   </div>
                 </div>
               </div>
             </div>
-          {:else if activeCenterTab === "pdf"}
-            <div class="tab-pane pdf-pane">
-              {#if pdfChartPath}
+          {:else if activeCenterTab.startsWith("pdf-")}
+            <!-- DYNAMIC MULTI-PDF VIEWER TAB -->
+            {@const currentTab = openPdfTabs.find(t => t.id === activePdfTabId)}
+            {#if currentTab}
+              <div class="tab-pane pdf-pane">
                 <div class="pdf-viewer-container">
-                  <!-- Sleek floating overlay in corner -->
                   <div class="pdf-floating-controls">
-                    {#if pdfTotalPages > 0}
-                      <span class="pdf-page-pill">{pdfCurrentPage}/{pdfTotalPages}</span>
+                    {#if currentTab.totalPages > 0}
+                      <span class="pdf-page-pill">{currentTab.currentPage}/{currentTab.totalPages}</span>
                     {/if}
                     <button 
                       class="pdf-mini-btn" 
-                      class:active-toggle={isPdfInverted}
-                      on:click={togglePdfInvert} 
-                      title="Toggle Inverted / Negative Dark Mode (White notes on Black paper)"
+                      class:active-toggle={currentTab.isInverted}
+                      on:click={() => toggleDynamicTabInvert(currentTab.id)} 
+                      title="Toggle Inverted / Negative Dark Mode"
                     >
-                      {isPdfInverted ? "☀️ Normal" : "🌙 Invert"}
+                      {currentTab.isInverted ? "☀️ Normal" : "🌙 Invert"}
                     </button>
-                    <button class="pdf-mini-btn" on:click={associatePdfChart} title="Change PDF file">
-                      Change
+                    <button class="pdf-mini-btn popout" on:click={() => invoke("open_file_external", { path: currentTab.path })} title="Open in System Default Viewer">
+                      ⤢ External
                     </button>
-                    <button class="pdf-mini-btn popout" on:click={openPdfInExternalViewer} title="Open in Floating Window">
-                      ⤢ Float
+                    <button class="pdf-mini-btn close-btn" on:click={() => closePdfTab(currentTab.id)} title="Close tab">
+                      × Close
                     </button>
                   </div>
 
-                  {#if isLoadingPdf}
+                  {#if currentTab.isLoading}
                     <div class="pdf-loading-overlay">
                       <span class="pdf-loading-spinner">⏳</span>
                       <span>Rendering sheet music...</span>
                     </div>
                   {/if}
 
-                  {#if pdfRenderError}
+                  {#if currentTab.error}
                     <div class="pdf-error-card">
-                      <span>⚠️ {pdfRenderError}</span>
-                      <button class="retry-pdf-btn" on:click={renderPdfPages}>Retry</button>
+                      <span>⚠️ {currentTab.error}</span>
+                      <button class="retry-pdf-btn" on:click={() => renderOpenPdfTab(currentTab)}>Retry</button>
                     </div>
                   {/if}
 
-                  <!-- Single scrollable column of auto-scaled PDF page canvases -->
                   <div 
                     class="pdf-scroll-column" 
-                    bind:this={pdfContainer} 
-                    on:scroll={handlePdfScroll}
+                    id={"pdf-container-" + currentTab.id}
+                    on:scroll={(e) => handleDynamicPdfScroll(e, currentTab)}
                     on:dragover={(e) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = "copy"; }}
-                    on:drop={handlePdfContainerDrop}
+                    on:drop={(e) => handleDynamicPdfContainerDrop(e, currentTab)}
                   ></div>
                 </div>
-              {:else}
-                <div class="no-pdf-placeholder">
-                  <span class="pdf-placeholder-icon">📄</span>
-                  <p>No sheet music or lead sheet PDF linked to this song.</p>
-                  <button class="link-pdf-btn" on:click={associatePdfChart}>
-                    + Link PDF Sheet Music / Lead Sheet...
-                  </button>
-                </div>
-              {/if}
-            </div>
+              </div>
+            {/if}
           {/if}
         </div>
       </div>
@@ -3895,70 +4511,10 @@
       </div>
     </section>
 
-    <!-- RIGHT SIDEBAR: Markers, FX, Project Setup (Dorico Theme) -->
+    <!-- RIGHT SIDEBAR: Markers & Regions, Effects Rack (Dorico Theme) -->
     <aside class="sidebar-right">
       
-      <!-- Project and File Associations -->
-      <div class="panel-section">
-        <div class="panel-header">PROJECT SETUP</div>
-        <div class="linked-files">
-          <div class="setup-row">
-            <span class="label">Main Track:</span>
-            <span class="value" class:active-val={mainTrack}>{mainTrack ? "LOADED" : "EMPTY"}</span>
-          </div>
-          <div class="setup-row mb-12">
-            <span class="label">Alt Track:</span>
-            <span class="value" class:active-val={alternateTrack}>{alternateTrack ? "LOADED" : "EMPTY"}</span>
-          </div>
-
-          <div class="associations-divider">FILE ASSOCIATIONS</div>
-          
-          <!-- PDF Chart Association -->
-          <div class="assoc-block">
-            <div class="assoc-title-row">
-              <span class="assoc-label">PDF Chart:</span>
-              {#if pdfChartPath}
-                <button class="clear-assoc-btn" on:click={clearPdfChart}>Clear</button>
-              {/if}
-            </div>
-            {#if pdfChartPath}
-              <span class="assoc-value" title={pdfChartPath}>📄 {pdfChartName}</span>
-            {:else}
-              <button class="assoc-add-btn" on:click={associatePdfChart}>Link PDF Chart...</button>
-            {/if}
-          </div>
-
-          <!-- Other Associated Versions -->
-          <div class="assoc-block mt-8">
-            <div class="assoc-title-row">
-              <span class="assoc-label">Associated Tracks:</span>
-              <button class="clear-assoc-btn" on:click={associateAlternativeVersion}>+ Link</button>
-            </div>
-            <div class="associated-versions-list">
-              {#if associatedVersions.length === 0}
-                <span class="placeholder-text">None linked (e.g. vocals-only, live).</span>
-              {:else}
-                {#each associatedVersions as version, idx}
-                  <div class="assoc-version-item">
-                    <!-- svelte-ignore a11y-click-events-have-key-events -->
-                    <!-- svelte-ignore a11y-no-static-element-interactions -->
-                    <span 
-                      class="assoc-version-name" 
-                      title="Load as alternate track"
-                      on:click={() => loadAssociatedTrack(version.path)}
-                    >
-                      {version.name}
-                    </span>
-                    <button class="remove-assoc-btn" on:click={() => removeAssociatedVersion(idx)}>×</button>
-                  </div>
-                {/each}
-              {/if}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Markers/Regions List -->
+      <!-- Markers & Regions List (Dedicated full vertical height) -->
       <div class="panel-section markers-section">
         <div class="panel-header">
           MARKERS & REGIONS
@@ -4049,7 +4605,7 @@
             {/each}
           {/if}
 
-          <!-- Shared Project Landmarks Bin: Markers created in other takes/versions not yet placed on this track -->
+          <!-- Shared Project Landmarks Bin -->
           {#if projectUnplacedLandmarks.length > 0}
             <div class="unplaced-markers-header">
               <span>UNASSIGNED</span>
@@ -4119,6 +4675,8 @@
               <span class="regions-count">{regions.length}</span>
             </div>
             {#each regions as region}
+              <!-- svelte-ignore a11y-click-events-have-key-events -->
+              <!-- svelte-ignore a11y-no-static-element-interactions -->
               <div 
                 class="region-sidebar-item" 
                 class:active-region={selectedRegionId === region.id}
@@ -4157,7 +4715,7 @@
                   <button 
                     class="region-toggle-btn" 
                     class:active={region.isLoop} 
-                    title="Toggle Loop / Vamp mode"
+                    title="Toggle Loop / Vamp mode (L)"
                     on:click|stopPropagation={() => toggleRegionLoop(region)}
                   >
                     🔁
@@ -4165,7 +4723,7 @@
                   <button 
                     class="region-toggle-btn cut-toggle-btn" 
                     class:active={region.isCut} 
-                    title="Toggle Cut / Skip mode"
+                    title="Toggle Cut / Skip mode (X)"
                     on:click|stopPropagation={() => toggleRegionCut(region)}
                   >
                     ✂️
@@ -4184,86 +4742,106 @@
         </div>
       </div>
 
-      <!-- DSP Effects Rack Panel (Knobs layout from BOTTOM up) -->
+      <!-- DSP Effects Rack Panel -->
       <div class="panel-section dsp-section">
-        <div class="panel-header">EFFECTS MODULES</div>
+        <div class="panel-header">EFFECTS & DSP</div>
 
-        <!-- 4. Compressor row with 90° COMP Tab Button -->
+        <!-- 4. Compressor row with 90° COMP Tab Button & BYP toggle -->
         <div class="effects-module-row">
-          <button 
-            class="module-tab-btn comp-btn" 
-            on:click={() => showAdvancedCompModal = true}
-            title="Open Advanced Compressor Inspector"
-          >
-            <span>COMP</span>
-          </button>
-          <div class="knobs-row">
+          <div class="module-tab-col">
+            <button 
+              class="module-tab-btn comp-btn" 
+              on:click={() => showAdvancedCompModal = true}
+              title="Open Advanced Dynamic Compressor Inspector"
+            >
+              <span>COMP</span>
+            </button>
+            <button 
+              class="module-bypass-btn" 
+              class:is-bypassed={isCompressorBypassed}
+              on:click={() => { isCompressorBypassed = !isCompressorBypassed; updateCompressorEngine(); }}
+              title="Toggle Compressor Bypass"
+            >
+              {isCompressorBypassed ? "BYP" : "ON"}
+            </button>
+          </div>
+          <div class="knobs-row" class:effect-bypassed={isCompressorBypassed}>
             <!-- Threshold (0 dB down to -60 dB, default 0 dB) -->
             <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
             <div 
               class="knob-container" 
-              on:mousedown={(e) => handleKnobMousedown(e, "comp_thresh", compressorThreshold, -60, 0, 1, (v) => { compressorThreshold = v; updateCompressorEngine(); })}
-              on:dblclick={() => resetKnob("comp_thresh", 0, (v) => { compressorThreshold = v; updateCompressorEngine(); })}
+              on:mousedown={(e) => handleKnobMousedown(e, "comp_thresh", compStage1.thresholdDb, -60, 0, 1, (v) => { compStage1.thresholdDb = v; updateCompressorEngine(); })}
+              on:dblclick={() => resetKnob("comp_thresh", 0, (v) => { compStage1.thresholdDb = v; updateCompressorEngine(); })}
               title="Threshold (0 dB to -60 dB) • Double-click resets to 0 dB"
             >
               <span class="knob-label">Threshold</span>
               <div class="knob-circle">
                 <div class="knob-zero-tick"></div>
-                <div class="knob-marker" style="transform: rotate({getKnobRotation(compressorThreshold, -60, 0)}deg)"></div>
+                <div class="knob-marker" style="transform: rotate({getKnobRotation(compStage1.thresholdDb, -60, 0)}deg)"></div>
               </div>
-              <span class="knob-value">{compressorThreshold} dB</span>
+              <span class="knob-value">{compStage1.thresholdDb.toFixed(0)} dB</span>
             </div>
 
             <!-- Ratio (1.0:1 up to 4.0:1, default 1.0:1) -->
             <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
             <div 
               class="knob-container" 
-              on:mousedown={(e) => handleKnobMousedown(e, "comp_ratio", compressorRatio, 1.0, 4.0, 0.1, (v) => { compressorRatio = v; updateCompressorEngine(); })}
-              on:dblclick={() => resetKnob("comp_ratio", 1.0, (v) => { compressorRatio = v; updateCompressorEngine(); })}
+              on:mousedown={(e) => handleKnobMousedown(e, "comp_ratio", compStage1.ratio, 1.0, 4.0, 0.1, (v) => { compStage1.ratio = v; updateCompressorEngine(); })}
+              on:dblclick={() => resetKnob("comp_ratio", 1.0, (v) => { compStage1.ratio = v; updateCompressorEngine(); })}
               title="Ratio (1:1 to 4:1) • Double-click resets to 1.0:1"
             >
               <span class="knob-label">Ratio</span>
               <div class="knob-circle">
                 <div class="knob-zero-tick"></div>
-                <div class="knob-marker" style="transform: rotate({getKnobRotation(compressorRatio, 1.0, 4.0)}deg)"></div>
+                <div class="knob-marker" style="transform: rotate({getKnobRotation(compStage1.ratio, 1.0, 4.0)}deg)"></div>
               </div>
-              <span class="knob-value">{compressorRatio.toFixed(1)}:1</span>
+              <span class="knob-value">{compStage1.ratio.toFixed(1)}:1</span>
             </div>
 
             <!-- Makeup (0 dB to 24 dB, default 0 dB) -->
             <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
             <div 
               class="knob-container" 
-              on:mousedown={(e) => handleKnobMousedown(e, "comp_makeup", compressorMakeup, 0, 24, 0.5, (v) => { compressorMakeup = v; updateCompressorEngine(); })}
-              on:dblclick={() => resetKnob("comp_makeup", 0, (v) => { compressorMakeup = v; updateCompressorEngine(); })}
+              on:mousedown={(e) => handleKnobMousedown(e, "comp_makeup", compStage1.makeupDb, 0, 24, 0.5, (v) => { compStage1.makeupDb = v; updateCompressorEngine(); })}
+              on:dblclick={() => resetKnob("comp_makeup", 0, (v) => { compStage1.makeupDb = v; updateCompressorEngine(); })}
               title="Makeup Gain • Double-click resets to 0 dB"
             >
               <span class="knob-label">Makeup</span>
               <div class="knob-circle">
                 <div class="knob-zero-tick"></div>
-                <div class="knob-marker" style="transform: rotate({getKnobRotation(compressorMakeup, 0, 24)}deg)"></div>
+                <div class="knob-marker" style="transform: rotate({getKnobRotation(compStage1.makeupDb, 0, 24)}deg)"></div>
               </div>
-              <span class="knob-value">+{compressorMakeup.toFixed(1)} dB</span>
+              <span class="knob-value">+{compStage1.makeupDb.toFixed(1)} dB</span>
             </div>
           </div>
         </div>
 
-        <!-- 3. Equalizer row with 90° EQ Tab Button -->
+        <!-- 3. Equalizer row with 90° EQ Tab Button & BYP toggle -->
         <div class="effects-module-row">
-          <button 
-            class="module-tab-btn eq-btn" 
-            on:click={() => showAdvancedEqModal = true}
-            title="Open Advanced Parametric EQ Inspector"
-          >
-            <span>EQ</span>
-          </button>
-          <div class="knobs-row">
+          <div class="module-tab-col">
+            <button 
+              class="module-tab-btn eq-btn" 
+              on:click={() => showAdvancedEqModal = true}
+              title="Open Advanced Parametric EQ Inspector"
+            >
+              <span>EQ</span>
+            </button>
+            <button 
+              class="module-bypass-btn" 
+              class:is-bypassed={isEqBypassed}
+              on:click={() => { isEqBypassed = !isEqBypassed; updateEqEngine(); }}
+              title="Toggle Equalizer Bypass"
+            >
+              {isEqBypassed ? "BYP" : "ON"}
+            </button>
+          </div>
+          <div class="knobs-row" class:effect-bypassed={isEqBypassed}>
             <!-- Low Shelf (100 Hz) -->
             <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
             <div 
               class="knob-container" 
-              on:mousedown={(e) => handleKnobMousedown(e, "eq_bass", eqBass, -12, 12, 0.5, (v) => { eqBass = v; updateEqEngine(); })}
-              on:dblclick={() => resetKnob("eq_bass", 0, (v) => { eqBass = v; updateEqEngine(); })}
+              on:mousedown={(e) => handleKnobMousedown(e, "eq_bass", eqBass, -12, 12, 0.5, (v) => { eqBass = v; const n = eqNodes.find(x => x.filterType === 'LowShelf'); if (n) n.gainDb = v; updateEqEngine(); })}
+              on:dblclick={() => resetKnob("eq_bass", 0, (v) => { eqBass = v; const n = eqNodes.find(x => x.filterType === 'LowShelf'); if (n) n.gainDb = v; updateEqEngine(); })}
               title="Low Shelf 100 Hz • Double-click resets to 0 dB"
             >
               <span class="knob-label">Low 100Hz</span>
@@ -4278,8 +4856,8 @@
             <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
             <div 
               class="knob-container" 
-              on:mousedown={(e) => handleKnobMousedown(e, "eq_mid", eqMid, -12, 12, 0.5, (v) => { eqMid = v; updateEqEngine(); })}
-              on:dblclick={() => resetKnob("eq_mid", 0, (v) => { eqMid = v; updateEqEngine(); })}
+              on:mousedown={(e) => handleKnobMousedown(e, "eq_mid", eqMid, -12, 12, 0.5, (v) => { eqMid = v; const n = eqNodes.find(x => x.filterType === 'Peaking'); if (n) n.gainDb = v; updateEqEngine(); })}
+              on:dblclick={() => resetKnob("eq_mid", 0, (v) => { eqMid = v; const n = eqNodes.find(x => x.filterType === 'Peaking'); if (n) n.gainDb = v; updateEqEngine(); })}
               title="Mid Bell 1 kHz • Double-click resets to 0 dB"
             >
               <span class="knob-label">Mid 1kHz</span>
@@ -4294,8 +4872,8 @@
             <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
             <div 
               class="knob-container" 
-              on:mousedown={(e) => handleKnobMousedown(e, "eq_treble", eqTreble, -12, 12, 0.5, (v) => { eqTreble = v; updateEqEngine(); })}
-              on:dblclick={() => resetKnob("eq_treble", 0, (v) => { eqTreble = v; updateEqEngine(); })}
+              on:mousedown={(e) => handleKnobMousedown(e, "eq_treble", eqTreble, -12, 12, 0.5, (v) => { eqTreble = v; const n = eqNodes.find(x => x.filterType === 'HighShelf'); if (n) n.gainDb = v; updateEqEngine(); })}
+              on:dblclick={() => resetKnob("eq_treble", 0, (v) => { eqTreble = v; const n = eqNodes.find(x => x.filterType === 'HighShelf'); if (n) n.gainDb = v; updateEqEngine(); })}
               title="High Shelf 8 kHz • Double-click resets to 0 dB"
             >
               <span class="knob-label">High 8kHz</span>
@@ -4521,133 +5099,616 @@
     </div>
   {/if}
 
-  <!-- Advanced Compressor Inspector Modal -->
+  <!-- Advanced Compressor Inspector Modal (Sonitus Inspired) -->
   {#if showAdvancedCompModal}
     <!-- svelte-ignore a11y-click-events-have-key-events -->
     <!-- svelte-ignore a11y-no-static-element-interactions -->
     <div class="modal-backdrop" on:click={() => showAdvancedCompModal = false}>
-      <div class="inspector-modal" on:click|stopPropagation>
+      <div class="inspector-modal advanced-comp-modal" on:click|stopPropagation>
         <div class="modal-header">
           <div class="modal-title-row">
             <span class="modal-badge comp-badge">COMP</span>
-            <h3>Advanced Dynamic Compressor</h3>
+            <h3>Dynamic Dual-Stage Compressor</h3>
+            <span class="stage-subhead">Sonitus Pro Architecture</span>
           </div>
-          <button class="modal-close-btn" on:click={() => showAdvancedCompModal = false}>×</button>
+
+          <div class="modal-header-actions">
+            <!-- Stage Tabs (1 vs 2) -->
+            <div class="comp-stage-tabs">
+              <button 
+                class="stage-tab-btn" 
+                class:active={activeCompStageTab === 1} 
+                on:click={() => activeCompStageTab = 1}
+              >
+                Stage 1 {compStage1.enabled ? "• ON" : "• OFF"}
+              </button>
+              <button 
+                class="stage-tab-btn" 
+                class:active={activeCompStageTab === 2} 
+                on:click={() => activeCompStageTab = 2}
+              >
+                Stage 2 {compStage2.enabled ? "• ON" : "• OFF"}
+              </button>
+            </div>
+
+            <!-- Routing Selector -->
+            <div class="comp-routing-selector">
+              <button 
+                class="routing-btn" 
+                class:active={compRouting === 'Series'} 
+                on:click={() => { compRouting = 'Series'; updateCompressorEngine(); }}
+                title="Series: Stage 1 feeds into Stage 2"
+              >
+                Series ➔
+              </button>
+              <button 
+                class="routing-btn" 
+                class:active={compRouting === 'Parallel'} 
+                on:click={() => { compRouting = 'Parallel'; updateCompressorEngine(); }}
+                title="Parallel: Stage 1 and Stage 2 blended together"
+              >
+                Parallel 🔀
+              </button>
+            </div>
+
+            <button 
+              class="modal-byp-btn" 
+              class:is-bypassed={isCompressorBypassed} 
+              on:click={() => { isCompressorBypassed = !isCompressorBypassed; updateCompressorEngine(); }}
+            >
+              {isCompressorBypassed ? "BYPASS ON" : "COMPRESSOR ACTIVE"}
+            </button>
+
+            <button class="modal-close-btn" on:click={() => showAdvancedCompModal = false}>×</button>
+          </div>
         </div>
 
-        <div class="modal-body">
-          <div class="dsp-graph-placeholder">
-            <div class="comp-curve-canvas-box">
-              <svg viewBox="0 0 200 120" class="comp-svg-graph">
-                <!-- 1:1 Reference Line -->
-                <line x1="10" y1="110" x2="190" y2="10" stroke="rgba(255,255,255,0.15)" stroke-width="1" stroke-dasharray="2 2" />
-                <!-- Dynamic Knee & Gain Reduction Curve -->
-                <path d="M 10 110 L {10 + (60 + compressorThreshold) * 1.5} {110 - (60 + compressorThreshold) * 1.5} Q {10 + (60 + compressorThreshold) * 1.5 + 10} {110 - (60 + compressorThreshold) * 1.5 - 10 / compressorRatio} 190 {110 - (60 + compressorThreshold) * 1.5 - (120 - (60 + compressorThreshold) * 1.5) / compressorRatio}" stroke="#ffcc00" stroke-width="2.5" fill="none" />
+        <div class="modal-body comp-inspector-body">
+          <!-- Sonitus Graph & Metering Console -->
+          <div class="sonitus-console-grid">
+            
+            <!-- 1. Input Meter & Threshold Vertical Slider -->
+            <div class="console-meter-col input-meter-col">
+              <span class="meter-label">INPUT</span>
+              <div class="meter-slider-combo">
+                <!-- Dual Peak Meter L/R -->
+                <div class="stereo-peak-track">
+                  <div class="peak-channel">
+                    <div class="peak-fill" style="height: {Math.min(100, Math.max(0, (liveInputPeakL + 60) * (100 / 60)))}%;"></div>
+                  </div>
+                  <div class="peak-channel">
+                    <div class="peak-fill" style="height: {Math.min(100, Math.max(0, (liveInputPeakR + 60) * (100 / 60)))}%;"></div>
+                  </div>
+                </div>
+                <!-- Vertical Threshold Slider -->
+                <div class="vert-slider-wrapper">
+                  <input 
+                    type="range" 
+                    min="-60" 
+                    max="0" 
+                    step="0.5" 
+                    bind:value={curCompStage.thresholdDb} 
+                    on:input={() => updateCompressorEngine()}
+                    class="vert-slider thresh-slider" 
+                    title="Threshold: {curCompStage.thresholdDb.toFixed(1)} dB"
+                  />
+                </div>
+              </div>
+              <span class="meter-val-tag">{curCompStage.thresholdDb.toFixed(0)} dB</span>
+            </div>
+
+            <!-- 2. Central Transfer Function Graph (Sonitus Curve + Live Tracing Dot) -->
+            <div class="sonitus-graph-card">
+              <svg viewBox="0 0 300 200" class="sonitus-svg">
+                <!-- Grid Lines -->
+                {#each [0, 1, 2, 3, 4, 5] as i}
+                  <line x1="20" y1="{20 + i * 32}" x2="280" y2="{20 + i * 32}" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+                  <line x1="{20 + i * 52}" y1="20" x2="{20 + i * 52}" y2="180" stroke="rgba(255,255,255,0.08)" stroke-width="1" />
+                {/each}
+
+                <!-- 1:1 Faint Diagonal Reference Line -->
+                <line x1="20" y1="180" x2="280" y2="20" stroke="rgba(255,255,255,0.2)" stroke-width="1.5" stroke-dasharray="3 3" />
+
+                <!-- Dynamic Transfer Function Path -->
+                <path 
+                  d={getSonitusCurvePath(curCompStage)} 
+                  stroke="#ffcc00" 
+                  stroke-width="3" 
+                  fill="none" 
+                  stroke-linecap="round" 
+                />
+
+                <!-- Animated Signal Dot tracing along compression transfer line -->
+                <circle 
+                  cx={getSonitusSignalDot(curCompStage, liveInputPeakL).x} 
+                  cy={getSonitusSignalDot(curCompStage, liveInputPeakL).y} 
+                  r="5" 
+                  fill="#30d158" 
+                  stroke="#ffffff" 
+                  stroke-width="1.5" 
+                />
               </svg>
-              <div class="graph-legend">
-                <span>-60 dB</span>
-                <span>Threshold: {compressorThreshold.toFixed(1)} dB</span>
-                <span>0 dB</span>
+
+              <!-- Graph Scale Labels -->
+              <div class="graph-axes-labels">
+                <span class="axis-lbl top-left">OUT 0 dB</span>
+                <span class="axis-lbl bottom-left">IN -60 dB</span>
+                <span class="axis-lbl bottom-right">IN 0 dB</span>
+                <span class="axis-lbl curve-type-tag">{curCompStage.compType.toUpperCase()} MODE</span>
               </div>
             </div>
-            <div class="comp-meter-box">
-              <span class="meter-title">GAIN REDUCTION</span>
-              <div class="gr-bar-track">
-                <div class="gr-bar-fill" style="height: {Math.min(100, Math.abs(compressorThreshold) * (compressorRatio - 1) * 2)}%;"></div>
+
+            <!-- 3. Gain Reduction Meter -->
+            <div class="console-meter-col gr-meter-col">
+              <span class="meter-label">GR</span>
+              <div class="meter-slider-combo">
+                <div class="gr-peak-track">
+                  <div class="gr-fill" style="height: {Math.min(100, liveGainReductionDb * (100 / 30))}%;"></div>
+                </div>
               </div>
-              <span class="meter-val">-{((compressorRatio - 1) * Math.abs(compressorThreshold) / compressorRatio).toFixed(1)} dB</span>
+              <span class="meter-val-tag gr-val">-{liveGainReductionDb.toFixed(1)} dB</span>
             </div>
+
+            <!-- 4. Gain Makeup Vertical Slider -->
+            <div class="console-meter-col makeup-meter-col">
+              <span class="meter-label">MAKEUP</span>
+              <div class="meter-slider-combo">
+                <div class="vert-slider-wrapper">
+                  <input 
+                    type="range" 
+                    min="0" 
+                    max="24" 
+                    step="0.5" 
+                    bind:value={curCompStage.makeupDb} 
+                    on:input={() => updateCompressorEngine()}
+                    class="vert-slider makeup-slider" 
+                    title="Makeup Gain: +{curCompStage.makeupDb.toFixed(1)} dB"
+                  />
+                </div>
+              </div>
+              <span class="meter-val-tag">+{curCompStage.makeupDb.toFixed(1)} dB</span>
+            </div>
+
+            <!-- 5. Output Stereo Meter -->
+            <div class="console-meter-col output-meter-col">
+              <span class="meter-label">OUTPUT</span>
+              <div class="meter-slider-combo">
+                <div class="stereo-peak-track">
+                  <div class="peak-channel out-peak">
+                    <div class="peak-fill" style="height: {Math.min(100, Math.max(0, (liveOutputPeakL + 60) * (100 / 66)))}%;"></div>
+                  </div>
+                  <div class="peak-channel out-peak">
+                    <div class="peak-fill" style="height: {Math.min(100, Math.max(0, (liveOutputPeakR + 60) * (100 / 66)))}%;"></div>
+                  </div>
+                </div>
+              </div>
+              <span class="meter-val-tag">{liveOutputPeakL.toFixed(0)} dB</span>
+            </div>
+
           </div>
 
-          <div class="advanced-params-grid">
-            <div class="param-card">
-              <span class="param-name">Knee Characteristic</span>
-              <span class="param-detail">Soft Knee (3.0 dB transition)</span>
+          <!-- Bottom Advanced Parameter Deck -->
+          <div class="sonitus-params-rack">
+            <!-- Stage Power -->
+            <div class="param-knob-box">
+              <span class="param-header-label">STAGE POWER</span>
+              <button 
+                class="stage-power-toggle" 
+                class:active={curCompStage.enabled}
+                on:click={() => { curCompStage.enabled = !curCompStage.enabled; updateCompressorEngine(); }}
+              >
+                {curCompStage.enabled ? "ENABLED" : "BYPASS"}
+              </button>
             </div>
-            <div class="param-card">
-              <span class="param-name">Attack Ballistics</span>
-              <span class="param-detail">30 ms (Fast Transient Catch)</span>
+
+            <!-- Compressor Type -->
+            <div class="param-knob-box">
+              <span class="param-header-label">CHARACTER</span>
+              <select 
+                class="comp-type-dropdown" 
+                bind:value={curCompStage.compType} 
+                on:change={() => updateCompressorEngine()}
+              >
+                <option value="Vintage">Vintage (Warm Tube)</option>
+                <option value="Modern">Modern (Clean VCA)</option>
+                <option value="FET">FET (Lightning Fast)</option>
+                <option value="Opto">Opto (Musical Smooth)</option>
+              </select>
             </div>
-            <div class="param-card">
-              <span class="param-name">Release Ballistics</span>
-              <span class="param-detail">300 ms (Adaptive Smooth Decay)</span>
+
+            <!-- Ratio Slider -->
+            <div class="param-knob-box">
+              <div class="param-title-val">
+                <span>Ratio</span>
+                <span class="val-highlight">{curCompStage.ratio.toFixed(1)}:1</span>
+              </div>
+              <input 
+                type="range" 
+                min="1.0" 
+                max="20.0" 
+                step="0.1" 
+                bind:value={curCompStage.ratio} 
+                on:input={() => updateCompressorEngine()}
+                class="rack-h-slider" 
+              />
             </div>
-            <div class="param-card">
-              <span class="param-name">Detection Topology</span>
-              <span class="param-detail">Feedforward Peak Log-Domain</span>
+
+            <!-- Knee Slider -->
+            <div class="param-knob-box">
+              <div class="param-title-val">
+                <span>Knee</span>
+                <span class="val-highlight">{curCompStage.kneeDb.toFixed(1)} dB</span>
+              </div>
+              <input 
+                type="range" 
+                min="0.0" 
+                max="12.0" 
+                step="0.5" 
+                bind:value={curCompStage.kneeDb} 
+                on:input={() => updateCompressorEngine()}
+                class="rack-h-slider" 
+              />
             </div>
+
+            <!-- Attack Slider -->
+            <div class="param-knob-box">
+              <div class="param-title-val">
+                <span>Attack</span>
+                <span class="val-highlight">{curCompStage.attackMs.toFixed(1)} ms</span>
+              </div>
+              <input 
+                type="range" 
+                min="0.1" 
+                max="200.0" 
+                step="0.5" 
+                bind:value={curCompStage.attackMs} 
+                on:input={() => updateCompressorEngine()}
+                class="rack-h-slider" 
+              />
+            </div>
+
+            <!-- Release Slider -->
+            <div class="param-knob-box">
+              <div class="param-title-val">
+                <span>Release</span>
+                <span class="val-highlight">{curCompStage.releaseMs.toFixed(0)} ms</span>
+              </div>
+              <input 
+                type="range" 
+                min="10.0" 
+                max="2000.0" 
+                step="10" 
+                bind:value={curCompStage.releaseMs} 
+                on:input={() => updateCompressorEngine()}
+                class="rack-h-slider" 
+              />
+            </div>
+
+            {#if compRouting === 'Parallel'}
+              <!-- Parallel Blend Slider -->
+              <div class="param-knob-box blend-box">
+                <div class="param-title-val">
+                  <span>Parallel Blend</span>
+                  <span class="val-highlight">{Math.round(compParallelBlend * 100)}% S2</span>
+                </div>
+                <input 
+                  type="range" 
+                  min="0.0" 
+                  max="1.0" 
+                  step="0.01" 
+                  bind:value={compParallelBlend} 
+                  on:input={() => updateCompressorEngine()}
+                  class="rack-h-slider" 
+                />
+              </div>
+            {/if}
           </div>
         </div>
 
         <div class="modal-footer">
-          <span class="footer-hint">Real-time DSP active on playback bus</span>
+          <span class="footer-hint">Dynamic real-time series/parallel DSP processing on audio thread</span>
           <button class="modal-action-btn" on:click={() => showAdvancedCompModal = false}>Close</button>
         </div>
       </div>
     </div>
   {/if}
 
-  <!-- Advanced Parametric EQ Inspector Modal -->
+  <!-- Advanced Parametric EQ Inspector Modal (Kirchhoff & AnyTune Inspired) -->
   {#if showAdvancedEqModal}
     <!-- svelte-ignore a11y-click-events-have-key-events -->
     <!-- svelte-ignore a11y-no-static-element-interactions -->
     <div class="modal-backdrop" on:click={() => showAdvancedEqModal = false}>
-      <div class="inspector-modal" on:click|stopPropagation>
+      <div class="inspector-modal advanced-eq-modal" on:click|stopPropagation>
         <div class="modal-header">
           <div class="modal-title-row">
             <span class="modal-badge eq-badge">EQ</span>
-            <h3>Advanced Parametric Equalizer</h3>
+            <h3>Parametric Equalizer</h3>
+            <span class="stage-subhead">64-bit RBJ Cascaded Biquads</span>
           </div>
-          <button class="modal-close-btn" on:click={() => showAdvancedEqModal = false}>×</button>
+
+          <div class="modal-header-actions">
+            <button 
+              class="add-eq-band-btn" 
+              on:click={() => {
+                const newId = "node-" + (eqNodes.length + 1);
+                eqNodes = [...eqNodes, {
+                  id: newId,
+                  name: "Band " + (eqNodes.length + 1),
+                  filterType: "Peaking",
+                  freq: 2500,
+                  gainDb: 0.0,
+                  q: 1.0,
+                  enabled: true,
+                  color: "#ff375f"
+                }];
+                selectedEqNodeId = newId;
+                updateEqEngine();
+              }}
+            >
+              + Add Filter Band
+            </button>
+
+            <button 
+              class="modal-byp-btn" 
+              class:is-bypassed={isEqBypassed} 
+              on:click={() => { isEqBypassed = !isEqBypassed; updateEqEngine(); }}
+            >
+              {isEqBypassed ? "BYPASS ON" : "EQ ACTIVE"}
+            </button>
+
+            <button class="modal-close-btn" on:click={() => showAdvancedEqModal = false}>×</button>
+          </div>
         </div>
 
-        <div class="modal-body">
-          <div class="dsp-graph-placeholder eq-graph-placeholder">
-            <svg viewBox="0 0 400 120" class="eq-svg-graph">
-              <!-- 0 dB Center line -->
-              <line x1="10" y1="60" x2="390" y2="60" stroke="rgba(255,255,255,0.2)" stroke-width="1" />
-              <!-- Low Shelf Node (100 Hz) -->
-              <circle cx="80" cy="{60 - eqBass * 3.5}" r="6" fill="#3b99fc" stroke="#ffffff" stroke-width="1.5" />
-              <!-- Mid Bell Node (1 kHz) -->
-              <circle cx="200" cy="{60 - eqMid * 3.5}" r="6" fill="#30d158" stroke="#ffffff" stroke-width="1.5" />
-              <!-- High Shelf Node (8 kHz) -->
-              <circle cx="320" cy="{60 - eqTreble * 3.5}" r="6" fill="#ff9500" stroke="#ffffff" stroke-width="1.5" />
-              <!-- Simulated EQ Curve -->
-              <path d="M 10 {60 - eqBass * 3.5} Q 80 {60 - eqBass * 3.5} 140 {60 - eqMid * 1.5} T 200 {60 - eqMid * 3.5} T 260 {60 - eqTreble * 1.5} Q 320 {60 - eqTreble * 3.5} 390 {60 - eqTreble * 3.5}" stroke="#64d2ff" stroke-width="2.5" fill="none" />
+        <div class="modal-body eq-inspector-body">
+          <!-- Kirchhoff Interactive EQ Graph Canvas -->
+          <div class="kirchhoff-eq-canvas-card">
+            <svg viewBox="0 0 600 240" class="kirchhoff-eq-svg">
+              <!-- Logarithmic Frequency Grid Lines (20Hz to 20kHz) -->
+              <!-- log10(20)=1.301, log10(20000)=4.301. range = 3.0. x = (log10(f) - 1.301) / 3.0 * 560 + 20 -->
+              {#each [50, 100, 200, 500, 1000, 2000, 5000, 10000] as f}
+                {@const x = 20 + ((Math.log10(f) - 1.30103) / 3.0) * 560}
+                <line x1={x} y1="20" x2={x} y2="220" stroke="rgba(255,255,255,0.07)" stroke-width="1" />
+              {/each}
+
+              <!-- Gain Grid Lines (+24dB to -24dB) -->
+              {#each [-24, -18, -12, -6, 0, 6, 12, 18, 24] as g}
+                {@const y = 120 - g * (100 / 24)}
+                <line x1="20" y1={y} x2="580" y2={y} stroke={g === 0 ? "rgba(255,255,255,0.25)" : "rgba(255,255,255,0.07)"} stroke-width={g === 0 ? "1.5" : "1"} />
+                <text x="24" y={y - 3} fill="rgba(255,255,255,0.3)" font-size="9">{g > 0 ? "+" : ""}{g}dB</text>
+              {/each}
+
+              <!-- Ghosted Incoming Spectrum Representation (Simulated Audio Presence) -->
+              <path 
+                d="M 20 220 Q 80 {isPlaying ? 160 + Math.sin(Date.now()/200)*20 : 210} 180 {isPlaying ? 140 + Math.cos(Date.now()/180)*25 : 210} T 350 {isPlaying ? 150 + Math.sin(Date.now()/160)*18 : 210} T 520 {isPlaying ? 180 + Math.cos(Date.now()/220)*15 : 210} L 580 220 Z" 
+                fill="rgba(100, 210, 255, 0.08)" 
+                stroke="rgba(100, 210, 255, 0.2)" 
+                stroke-width="1" 
+              />
+
+              <!-- Cumulative EQ Curve Path -->
+              <path 
+                d={getEqPath(eqNodes)} 
+                stroke="#64d2ff" 
+                stroke-width="3" 
+                fill="none" 
+                stroke-linecap="round" 
+              />
+
+              <!-- Interactive Node Handles -->
+              {#each eqNodes as node}
+                {@const nx = 20 + ((Math.log10(Math.max(20, Math.min(20000, node.freq))) - 1.30103) / 3.0) * 560}
+                {@const ny = node.enabled ? 120 - Math.max(-24, Math.min(24, node.gainDb)) * (100 / 24) : 120}
+                {@const isSel = selectedEqNodeId === node.id}
+                {@const qWidth = Math.max(15, 60 / node.q)}
+
+                <!-- Selected Node Q Bandwidth Wings -->
+                {#if isSel}
+                  <line x1={nx - qWidth} y1={ny} x2={nx + qWidth} y2={ny} stroke={node.color} stroke-width="2" stroke-dasharray="2 2" />
+                  <circle cx={nx - qWidth} cy={ny} r="3.5" fill={node.color} />
+                  <circle cx={nx + qWidth} cy={ny} r="3.5" fill={node.color} />
+                {/if}
+
+                <!-- Draggable Node Circle -->
+                <!-- svelte-ignore a11y-click-events-have-key-events -->
+                <circle 
+                  cx={nx} 
+                  cy={ny} 
+                  r={isSel ? "8" : "6"} 
+                  fill={node.enabled ? node.color : "#555555"} 
+                  stroke="#ffffff" 
+                  stroke-width={isSel ? "2.5" : "1.5"}
+                  class="eq-node-handle"
+                  on:click={() => selectedEqNodeId = node.id}
+                  on:contextmenu={(e) => {
+                    e.preventDefault();
+                    selectedEqNodeId = node.id;
+                    eqFilterMenuTargetNode = node;
+                    eqFilterMenuX = e.clientX;
+                    eqFilterMenuY = e.clientY;
+                    showEqFilterMenu = true;
+                  }}
+                />
+
+                <!-- Node Label Pill -->
+                <text x={nx} y={ny - 12} text-anchor="middle" fill="#ffffff" font-size="10" font-weight="700">
+                  {node.freq >= 1000 ? (node.freq / 1000).toFixed(1) + "k" : Math.round(node.freq)}Hz
+                </text>
+              {/each}
             </svg>
-            <div class="eq-ruler-labels">
+
+            <!-- Frequency Axis Legend -->
+            <div class="eq-freq-ruler">
               <span>20 Hz</span>
-              <span>100 Hz (Low)</span>
-              <span>1 kHz (Mid)</span>
-              <span>8 kHz (High)</span>
+              <span>100 Hz</span>
+              <span>500 Hz</span>
+              <span>1 kHz</span>
+              <span>5 kHz</span>
+              <span>10 kHz</span>
               <span>20 kHz</span>
             </div>
           </div>
 
-          <div class="advanced-params-grid">
-            <div class="param-card">
-              <span class="param-name">Low Shelf Filter</span>
-              <span class="param-detail">100 Hz • {eqBass > 0 ? "+" : ""}{eqBass.toFixed(1)} dB (Q: 0.707)</span>
+          <!-- Bottom Parameter Deck for Selected Node -->
+          {#if selEqNode}
+            <div class="selected-eq-node-deck">
+              <!-- Node Tabs Selector -->
+              <div class="eq-node-pills-row">
+                {#each eqNodes as node, idx}
+                  <button 
+                    class="eq-node-pill-btn" 
+                    class:active={selectedEqNodeId === node.id}
+                    style="--node-color: {node.color};"
+                    on:click={() => selectedEqNodeId = node.id}
+                  >
+                    <span class="pill-dot" style="background-color: {node.color};"></span>
+                    <span>{idx + 1}. {node.name}</span>
+                  </button>
+                {/each}
+              </div>
+
+              <!-- Node Parameters Control Grid -->
+              <div class="eq-node-controls-grid">
+                <!-- Filter Type -->
+                <div class="eq-ctrl-group">
+                  <label class="eq-ctrl-label" for="eq-filter-type">Filter Type</label>
+                  <select 
+                    id="eq-filter-type"
+                    class="eq-ctrl-select" 
+                    bind:value={selEqNode.filterType} 
+                    on:change={() => updateEqEngine()}
+                  >
+                    <option value="Peaking">Parametric Bell (Peaking)</option>
+                    <option value="LowShelf">Low Shelf</option>
+                    <option value="HighShelf">High Shelf</option>
+                    <option value="HighPass">High Pass (Low Cut)</option>
+                    <option value="LowPass">Low Pass (High Cut)</option>
+                    <option value="Notch">Notch (Band Stop)</option>
+                  </select>
+                </div>
+
+                <!-- Frequency -->
+                <div class="eq-ctrl-group">
+                  <div class="eq-label-val-row">
+                    <label class="eq-ctrl-label" for="eq-freq-input">Frequency</label>
+                    <span class="eq-val-badge">{selEqNode.freq >= 1000 ? (selEqNode.freq / 1000).toFixed(2) + " kHz" : selEqNode.freq.toFixed(0) + " Hz"}</span>
+                  </div>
+                  <input 
+                    id="eq-freq-input"
+                    type="range" 
+                    min="20" 
+                    max="20000" 
+                    step="1" 
+                    bind:value={selEqNode.freq} 
+                    on:input={() => updateEqEngine()}
+                    class="rack-h-slider" 
+                  />
+                </div>
+
+                <!-- Gain (for Bell and Shelves) -->
+                {#if selEqNode.filterType === 'Peaking' || selEqNode.filterType === 'LowShelf' || selEqNode.filterType === 'HighShelf'}
+                  <div class="eq-ctrl-group">
+                    <div class="eq-label-val-row">
+                      <label class="eq-ctrl-label" for="eq-gain-input">Gain</label>
+                      <span class="eq-val-badge">{selEqNode.gainDb > 0 ? "+" : ""}{selEqNode.gainDb.toFixed(1)} dB</span>
+                    </div>
+                    <input 
+                      id="eq-gain-input"
+                      type="range" 
+                      min="-24.0" 
+                      max="24.0" 
+                      step="0.5" 
+                      bind:value={selEqNode.gainDb} 
+                      on:input={() => updateEqEngine()}
+                      class="rack-h-slider" 
+                    />
+                  </div>
+                {/if}
+
+                <!-- Q / Bandwidth -->
+                <div class="eq-ctrl-group">
+                  <div class="eq-label-val-row">
+                    <label class="eq-ctrl-label" for="eq-q-input">Q (Bandwidth)</label>
+                    <span class="eq-val-badge">Q: {selEqNode.q.toFixed(2)}</span>
+                  </div>
+                  <input 
+                    id="eq-q-input"
+                    type="range" 
+                    min="0.1" 
+                    max="10.0" 
+                    step="0.05" 
+                    bind:value={selEqNode.q} 
+                    on:input={() => updateEqEngine()}
+                    class="rack-h-slider" 
+                  />
+                </div>
+
+                <!-- Actions: Enable / Delete -->
+                <div class="eq-ctrl-group actions-group">
+                  <button 
+                    class="eq-node-power-btn" 
+                    class:active={selEqNode.enabled}
+                    on:click={() => { selEqNode.enabled = !selEqNode.enabled; updateEqEngine(); }}
+                  >
+                    {selEqNode.enabled ? "ACTIVE" : "MUTED"}
+                  </button>
+
+                  {#if eqNodes.length > 1}
+                    <button 
+                      class="eq-delete-node-btn" 
+                      on:click={() => {
+                        eqNodes = eqNodes.filter(n => n.id !== selEqNode.id);
+                        selectedEqNodeId = eqNodes[0].id;
+                        updateEqEngine();
+                      }}
+                      title="Delete this filter band"
+                    >
+                      Delete Band
+                    </button>
+                  {/if}
+                </div>
+              </div>
             </div>
-            <div class="param-card">
-              <span class="param-name">Parametric Bell Filter</span>
-              <span class="param-detail">1.0 kHz • {eqMid > 0 ? "+" : ""}{eqMid.toFixed(1)} dB (Q: 0.707)</span>
-            </div>
-            <div class="param-card">
-              <span class="param-name">High Shelf Filter</span>
-              <span class="param-detail">8.0 kHz • {eqTreble > 0 ? "+" : ""}{eqTreble.toFixed(1)} dB (Q: 0.707)</span>
-            </div>
-            <div class="param-card">
-              <span class="param-name">Filter Architecture</span>
-              <span class="param-detail">RBJ Audio EQ 64-bit Biquad Cascade</span>
-            </div>
-          </div>
+          {/if}
         </div>
 
         <div class="modal-footer">
-          <span class="footer-hint">Real-time stereo biquad filtering active</span>
+          <span class="footer-hint">Interactive multi-filter biquad equalization active</span>
           <button class="modal-action-btn" on:click={() => showAdvancedEqModal = false}>Close</button>
         </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- EQ Node Right-Click Context Menu -->
+  {#if showEqFilterMenu && eqFilterMenuTargetNode}
+    <!-- svelte-ignore a11y-click-events-have-key-events -->
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div 
+      class="context-menu" 
+      style="top: {eqFilterMenuY}px; left: {eqFilterMenuX}px;"
+      on:click|stopPropagation
+    >
+      <div class="menu-item font-semibold" style="color: #64d2ff; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 4px; margin-bottom: 4px;">
+        FILTER TYPE: {eqFilterMenuTargetNode.name}
+      </div>
+      <div class="menu-item" on:click={() => { if (eqFilterMenuTargetNode) eqFilterMenuTargetNode.filterType = 'Peaking'; updateEqEngine(); showEqFilterMenu = false; }}>
+        {eqFilterMenuTargetNode.filterType === 'Peaking' ? '✓ ' : '  '}Parametric Bell
+      </div>
+      <div class="menu-item" on:click={() => { if (eqFilterMenuTargetNode) eqFilterMenuTargetNode.filterType = 'LowShelf'; updateEqEngine(); showEqFilterMenu = false; }}>
+        {eqFilterMenuTargetNode.filterType === 'LowShelf' ? '✓ ' : '  '}Low Shelf
+      </div>
+      <div class="menu-item" on:click={() => { if (eqFilterMenuTargetNode) eqFilterMenuTargetNode.filterType = 'HighShelf'; updateEqEngine(); showEqFilterMenu = false; }}>
+        {eqFilterMenuTargetNode.filterType === 'HighShelf' ? '✓ ' : '  '}High Shelf
+      </div>
+      <div class="menu-item" on:click={() => { if (eqFilterMenuTargetNode) eqFilterMenuTargetNode.filterType = 'HighPass'; updateEqEngine(); showEqFilterMenu = false; }}>
+        {eqFilterMenuTargetNode.filterType === 'HighPass' ? '✓ ' : '  '}High Pass (Low Cut)
+      </div>
+      <div class="menu-item" on:click={() => { if (eqFilterMenuTargetNode) eqFilterMenuTargetNode.filterType = 'LowPass'; updateEqEngine(); showEqFilterMenu = false; }}>
+        {eqFilterMenuTargetNode.filterType === 'LowPass' ? '✓ ' : '  '}Low Pass (High Cut)
+      </div>
+      <div class="menu-item" on:click={() => { if (eqFilterMenuTargetNode) eqFilterMenuTargetNode.filterType = 'Notch'; updateEqEngine(); showEqFilterMenu = false; }}>
+        {eqFilterMenuTargetNode.filterType === 'Notch' ? '✓ ' : '  '}Notch Filter
       </div>
     </div>
   {/if}
@@ -6595,7 +7656,905 @@
     border-color: #ff453a;
   }
 
-  /* Advanced DSP Inspector Modals */
+  /* Markdown Deck & Chord Badges (Obsidian Dark Styled) */
+  .markdown-deck-pane {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  .markdown-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 6px 10px;
+    background-color: #1a1a1d;
+    border-bottom: 1px solid #28282c;
+    flex-shrink: 0;
+  }
+
+  .md-toolbar-title {
+    font-size: 0.65rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    color: #8e8e96;
+  }
+
+  .md-view-toggles {
+    display: flex;
+    gap: 4px;
+  }
+
+  .md-toggle-btn {
+    background: #242428;
+    border: 1px solid #36363c;
+    color: #b0b0b8;
+    border-radius: 4px;
+    padding: 2px 8px;
+    font-size: 0.68rem;
+    cursor: pointer;
+    transition: all 0.12s ease;
+  }
+
+  .md-toggle-btn:hover {
+    background: #303038;
+    color: #ffffff;
+  }
+
+  .md-toggle-btn.active {
+    background: #007aff;
+    border-color: #0088ff;
+    color: #ffffff;
+    font-weight: 700;
+  }
+
+  .markdown-editor-container {
+    flex-grow: 1;
+    display: flex;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .markdown-editor-container.mode-split {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .md-textarea {
+    width: 100%;
+    height: 100%;
+    border: none;
+    outline: none;
+    resize: none;
+    background-color: #141416;
+    color: #e0e0e6;
+    font-family: "SF Mono", Menlo, Monaco, Consolas, monospace;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    padding: 12px 14px;
+    box-sizing: border-box;
+    border-right: 1px solid #232326;
+  }
+
+  .markdown-preview-pane {
+    flex-grow: 1;
+    height: 100%;
+    overflow-y: auto;
+    padding: 12px 16px;
+    background-color: #161619;
+    color: #d1d1d6;
+    box-sizing: border-box;
+    font-size: 0.85rem;
+    line-height: 1.6;
+  }
+
+  .markdown-empty-hint {
+    color: #636366;
+    font-style: italic;
+    padding: 20px 0;
+  }
+
+  :global(.chord-badge) {
+    display: inline-block;
+    background: linear-gradient(135deg, #1c355e, #132442);
+    color: #64d2ff;
+    border: 1px solid rgba(100, 210, 255, 0.4);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-weight: 700;
+    font-family: "SF Mono", Menlo, monospace;
+    font-size: 0.78rem;
+    margin: 0 2px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  }
+
+  :global(.md-h1) {
+    font-size: 1.25rem;
+    font-weight: 800;
+    color: #ffffff;
+    border-bottom: 1px solid #2e2e34;
+    padding-bottom: 4px;
+    margin: 8px 0 6px;
+  }
+
+  :global(.md-h2) {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #3b99fc;
+    margin: 8px 0 4px;
+  }
+
+  :global(.md-h3) {
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: #ff9500;
+    margin: 6px 0 2px;
+  }
+
+  :global(.md-quote) {
+    border-left: 3px solid #30d158;
+    background-color: rgba(48, 209, 88, 0.08);
+    margin: 6px 0;
+    padding: 4px 10px;
+    color: #a1a1aa;
+    border-radius: 0 4px 4px 0;
+  }
+
+  :global(.md-code) {
+    background-color: #242428;
+    color: #ffcc00;
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-family: monospace;
+    font-size: 0.8rem;
+  }
+
+  :global(.md-p) {
+    margin: 4px 0;
+  }
+
+  /* Center Deck Files Tab */
+  .files-pane {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    padding: 14px 16px;
+    box-sizing: border-box;
+    overflow-y: auto;
+  }
+
+  .files-pane-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid #2c2c30;
+    padding-bottom: 10px;
+    margin-bottom: 12px;
+  }
+
+  .files-header-left {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .files-pane-title {
+    font-size: 0.82rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    color: #ffffff;
+  }
+
+  .files-pane-subtitle {
+    font-size: 0.68rem;
+    color: #8e8e93;
+  }
+
+  .add-assoc-file-btn {
+    background-color: #007aff;
+    color: #ffffff;
+    border: none;
+    border-radius: 4px;
+    padding: 5px 12px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background 0.12s ease;
+  }
+
+  .add-assoc-file-btn:hover {
+    background-color: #0088ff;
+  }
+
+  .empty-files-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background-color: #141416;
+    border: 1px dashed #36363d;
+    border-radius: 8px;
+    padding: 36px 20px;
+    text-align: center;
+    margin-top: 10px;
+  }
+
+  .empty-icon {
+    font-size: 2.2rem;
+    margin-bottom: 8px;
+  }
+
+  .empty-files-card h3 {
+    margin: 0 0 6px;
+    color: #ffffff;
+    font-size: 0.95rem;
+  }
+
+  .empty-files-card p {
+    margin: 0 0 16px;
+    color: #8e8e96;
+    font-size: 0.78rem;
+    max-width: 440px;
+  }
+
+  .empty-actions-row {
+    display: flex;
+    gap: 10px;
+  }
+
+  .action-card-btn {
+    background-color: #242429;
+    border: 1px solid #3d3d45;
+    color: #ffffff;
+    border-radius: 4px;
+    padding: 6px 14px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .action-card-btn:hover {
+    background-color: #32323a;
+    border-color: #007aff;
+  }
+
+  .assoc-files-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 10px;
+  }
+
+  .assoc-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background-color: #18181b;
+    border: 1px solid #2b2b30;
+    border-radius: 6px;
+    padding: 8px 10px;
+    transition: border-color 0.15s ease;
+  }
+
+  .assoc-card:hover {
+    border-color: #3e3e48;
+  }
+
+  .assoc-card.pdf-card {
+    border-left: 3px solid #ff9500;
+  }
+
+  .assoc-card.audio-card {
+    border-left: 3px solid #30d158;
+  }
+
+  .assoc-card-icon {
+    font-size: 1.2rem;
+    flex-shrink: 0;
+  }
+
+  .assoc-card-info {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex-grow: 1;
+  }
+
+  .assoc-card-name {
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: #ffffff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .assoc-card-path {
+    font-size: 0.62rem;
+    color: #71717a;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: monospace;
+  }
+
+  .assoc-card-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+  }
+
+  .assoc-action-btn {
+    background-color: #242429;
+    border: 1px solid #36363d;
+    color: #d1d1d6;
+    border-radius: 3px;
+    padding: 3px 6px;
+    font-size: 0.68rem;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.12s ease;
+  }
+
+  .assoc-action-btn:hover {
+    background-color: #34343d;
+    color: #ffffff;
+  }
+
+  .assoc-action-btn.open-pdf-action {
+    background-color: rgba(255, 149, 0, 0.15);
+    border-color: rgba(255, 149, 0, 0.35);
+    color: #ff9500;
+  }
+
+  .assoc-action-btn.open-pdf-action:hover {
+    background-color: #ff9500;
+    color: #000000;
+  }
+
+  .assoc-action-btn.load-main-action {
+    background-color: rgba(48, 209, 88, 0.15);
+    border-color: rgba(48, 209, 88, 0.35);
+    color: #30d158;
+  }
+
+  .assoc-action-btn.load-main-action:hover {
+    background-color: #30d158;
+    color: #000000;
+  }
+
+  .assoc-action-btn.unlink-action {
+    color: #8e8e96;
+    padding: 2px 5px;
+  }
+
+  .assoc-action-btn.unlink-action:hover {
+    color: #ff453a;
+    background-color: rgba(255, 69, 58, 0.15);
+  }
+
+  .files-badge-count {
+    font-size: 0.62rem;
+    color: #3b99fc;
+    margin-left: 3px;
+  }
+
+  .tab-close-btn {
+    font-size: 0.9rem;
+    color: #8e8e96;
+    margin-left: 6px;
+    padding: 0 3px;
+    border-radius: 50%;
+  }
+
+  .tab-close-btn:hover {
+    color: #ff453a;
+    background: rgba(255, 255, 255, 0.1);
+  }
+
+  /* Right Sidebar Effects Module Tab Column & Bypass Buttons */
+  .module-tab-col {
+    display: flex;
+    flex-direction: column;
+    width: 24px;
+    flex-shrink: 0;
+    border-right: 1px solid #2d2d2d;
+    background-color: #141416;
+  }
+
+  .module-tab-col .module-tab-btn {
+    flex-grow: 1;
+    width: 100%;
+  }
+
+  .module-bypass-btn {
+    background-color: #1f1f23;
+    border: none;
+    border-top: 1px solid #2d2d2d;
+    color: #30d158;
+    font-size: 0.55rem;
+    font-weight: 900;
+    padding: 2px 0;
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.12s ease;
+  }
+
+  .module-bypass-btn:hover {
+    filter: brightness(1.3);
+  }
+
+  .module-bypass-btn.is-bypassed {
+    background-color: #3a1c1c;
+    color: #ff453a;
+  }
+
+  .knobs-row.effect-bypassed {
+    opacity: 0.45;
+    filter: grayscale(0.8);
+  }
+
+  /* Advanced Modal Sizing */
+  .advanced-comp-modal {
+    width: 640px !important;
+  }
+
+  .advanced-eq-modal {
+    width: 720px !important;
+  }
+
+  .stage-subhead {
+    font-size: 0.65rem;
+    color: #8e8e96;
+    margin-left: 6px;
+  }
+
+  .modal-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .comp-stage-tabs, .comp-routing-selector {
+    display: flex;
+    background: #101012;
+    border-radius: 4px;
+    padding: 2px;
+    border: 1px solid #2e2e34;
+  }
+
+  .stage-tab-btn, .routing-btn {
+    background: transparent;
+    border: none;
+    color: #8e8e96;
+    font-size: 0.65rem;
+    font-weight: 700;
+    padding: 3px 7px;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: all 0.12s ease;
+  }
+
+  .stage-tab-btn.active, .routing-btn.active {
+    background: #007aff;
+    color: #ffffff;
+  }
+
+  .modal-byp-btn {
+    background: rgba(48, 209, 88, 0.15);
+    border: 1px solid #30d158;
+    color: #30d158;
+    font-size: 0.65rem;
+    font-weight: 800;
+    padding: 3px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .modal-byp-btn.is-bypassed {
+    background: rgba(255, 69, 58, 0.15);
+    border-color: #ff453a;
+    color: #ff453a;
+  }
+
+  /* Sonitus Console Grid & Controls */
+  .sonitus-console-grid {
+    display: grid;
+    grid-template-columns: 50px 1fr 40px 50px 50px;
+    gap: 8px;
+    background-color: #0c0c0e;
+    border: 1px solid #26262c;
+    border-radius: 6px;
+    padding: 10px;
+    align-items: stretch;
+  }
+
+  .console-meter-col {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .meter-label {
+    font-size: 0.58rem;
+    font-weight: 800;
+    color: #8e8e96;
+    letter-spacing: 0.04em;
+  }
+
+  .meter-slider-combo {
+    flex-grow: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    height: 160px;
+  }
+
+  .stereo-peak-track {
+    display: flex;
+    gap: 2px;
+    width: 14px;
+    height: 100%;
+    background-color: #141418;
+    border-radius: 2px;
+    padding: 1px;
+  }
+
+  .peak-channel {
+    flex: 1;
+    background-color: #181820;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    border-radius: 1px;
+    overflow: hidden;
+  }
+
+  .peak-fill {
+    width: 100%;
+    background: linear-gradient(to top, #30d158 0%, #30d158 70%, #ffcc00 85%, #ff453a 100%);
+  }
+
+  .gr-peak-track {
+    width: 14px;
+    height: 100%;
+    background-color: #141418;
+    border-radius: 2px;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    overflow: hidden;
+    padding: 1px;
+  }
+
+  .gr-fill {
+    width: 100%;
+    background: linear-gradient(to top, #ffcc00, #ff453a);
+  }
+
+  .vert-slider-wrapper {
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+  }
+
+  .vert-slider {
+    -webkit-appearance: slider-vertical;
+    writing-mode: bt-lr;
+    width: 16px;
+    height: 140px;
+    cursor: pointer;
+  }
+
+  .meter-val-tag {
+    font-size: 0.62rem;
+    font-family: monospace;
+    color: #a1a1aa;
+    font-weight: 700;
+  }
+
+  .meter-val-tag.gr-val {
+    color: #ffcc00;
+  }
+
+  .sonitus-graph-card {
+    position: relative;
+    background-color: #08080a;
+    border: 1px solid #202026;
+    border-radius: 4px;
+    overflow: hidden;
+    height: 180px;
+  }
+
+  .sonitus-svg {
+    width: 100%;
+    height: 100%;
+  }
+
+  .graph-axes-labels {
+    position: absolute;
+    top: 4px;
+    left: 6px;
+    right: 6px;
+    bottom: 4px;
+    pointer-events: none;
+  }
+
+  .axis-lbl {
+    position: absolute;
+    font-size: 0.58rem;
+    font-family: monospace;
+    color: rgba(255, 255, 255, 0.35);
+  }
+
+  .axis-lbl.top-left { top: 0; left: 0; }
+  .axis-lbl.bottom-left { bottom: 0; left: 0; }
+  .axis-lbl.bottom-right { bottom: 0; right: 0; }
+  .axis-lbl.curve-type-tag {
+    top: 0;
+    right: 0;
+    font-weight: 800;
+    color: #ffcc00;
+  }
+
+  .sonitus-params-rack {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 8px;
+    background-color: #121215;
+    border: 1px solid #26262c;
+    border-radius: 6px;
+    padding: 10px;
+  }
+
+  .param-knob-box {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .param-header-label {
+    font-size: 0.58rem;
+    font-weight: 800;
+    color: #8e8e96;
+  }
+
+  .stage-power-toggle {
+    background-color: #242429;
+    border: 1px solid #36363d;
+    color: #8e8e96;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .stage-power-toggle.active {
+    background-color: rgba(48, 209, 88, 0.2);
+    border-color: #30d158;
+    color: #30d158;
+  }
+
+  .comp-type-dropdown {
+    background-color: #1c1c20;
+    border: 1px solid #36363d;
+    color: #ffffff;
+    border-radius: 4px;
+    padding: 3px 6px;
+    font-size: 0.72rem;
+    outline: none;
+  }
+
+  .param-title-val {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.65rem;
+    color: #a1a1aa;
+    font-weight: 600;
+  }
+
+  .val-highlight {
+    color: #ffcc00;
+    font-family: monospace;
+    font-weight: 700;
+  }
+
+  .rack-h-slider {
+    width: 100%;
+    accent-color: #007aff;
+    cursor: pointer;
+  }
+
+  /* Kirchhoff EQ Canvas & Node Controls */
+  .kirchhoff-eq-canvas-card {
+    position: relative;
+    background-color: #08080a;
+    border: 1px solid #222228;
+    border-radius: 6px;
+    overflow: hidden;
+  }
+
+  .kirchhoff-eq-svg {
+    width: 100%;
+    height: 200px;
+  }
+
+  .eq-node-handle {
+    cursor: pointer;
+    transition: r 0.12s ease;
+  }
+
+  .eq-node-handle:hover {
+    r: 9;
+  }
+
+  .eq-freq-ruler {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 12px;
+    background-color: #101014;
+    border-top: 1px solid #202026;
+    font-size: 0.62rem;
+    color: #71717a;
+    font-family: monospace;
+  }
+
+  .selected-eq-node-deck {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background-color: #121215;
+    border: 1px solid #26262c;
+    border-radius: 6px;
+    padding: 10px;
+  }
+
+  .eq-node-pills-row {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .eq-node-pill-btn {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background-color: #1b1b1f;
+    border: 1px solid #2f2f36;
+    color: #b0b0b8;
+    border-radius: 12px;
+    padding: 3px 10px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.12s ease;
+  }
+
+  .eq-node-pill-btn:hover {
+    background-color: #282830;
+    color: #ffffff;
+  }
+
+  .eq-node-pill-btn.active {
+    background-color: #2c2c36;
+    border-color: var(--node-color);
+    color: #ffffff;
+    font-weight: 700;
+  }
+
+  .pill-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+
+  .eq-node-controls-grid {
+    display: grid;
+    grid-template-columns: 180px 1fr 1fr 1fr 120px;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .eq-ctrl-group {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .eq-ctrl-label {
+    font-size: 0.62rem;
+    font-weight: 700;
+    color: #8e8e96;
+  }
+
+  .eq-ctrl-select {
+    background-color: #1c1c20;
+    border: 1px solid #383842;
+    color: #ffffff;
+    border-radius: 4px;
+    padding: 4px 6px;
+    font-size: 0.72rem;
+    outline: none;
+  }
+
+  .eq-label-val-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .eq-val-badge {
+    font-size: 0.65rem;
+    font-family: monospace;
+    color: #64d2ff;
+    font-weight: 700;
+  }
+
+  .actions-group {
+    display: flex;
+    flex-direction: row;
+    gap: 6px;
+  }
+
+  .eq-node-power-btn {
+    background-color: #1c1c20;
+    border: 1px solid #383842;
+    color: #8e8e96;
+    border-radius: 4px;
+    padding: 5px 8px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .eq-node-power-btn.active {
+    background-color: rgba(48, 209, 88, 0.2);
+    border-color: #30d158;
+    color: #30d158;
+  }
+
+  .eq-delete-node-btn {
+    background-color: rgba(255, 69, 58, 0.15);
+    border: 1px solid rgba(255, 69, 58, 0.4);
+    color: #ff453a;
+    border-radius: 4px;
+    padding: 5px 8px;
+    font-size: 0.68rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .eq-delete-node-btn:hover {
+    background-color: #ff453a;
+    color: #ffffff;
+  }
+
+  .add-eq-band-btn {
+    background-color: #242429;
+    border: 1px solid #3b99fc;
+    color: #3b99fc;
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.12s ease;
+  }
+
+  .add-eq-band-btn:hover {
+    background-color: #3b99fc;
+    color: #ffffff;
+  }
+
+  /* Modals Base */
   .modal-backdrop {
     position: fixed;
     top: 0;
@@ -6612,12 +8571,12 @@
   }
 
   .inspector-modal {
-    background-color: #1e1e22;
-    border: 1px solid #3e3e46;
+    background-color: #1a1a1d;
+    border: 1px solid #383840;
     border-radius: 10px;
-    width: 480px;
-    max-width: 90vw;
-    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.8);
+    max-width: 92vw;
+    max-height: 90vh;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.85);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -6625,7 +8584,7 @@
   }
 
   @keyframes modalScaleUp {
-    from { opacity: 0; transform: scale(0.94) translateY(8px); }
+    from { opacity: 0; transform: scale(0.95) translateY(8px); }
     to { opacity: 1; transform: scale(1) translateY(0); }
   }
 
@@ -6633,9 +8592,9 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 12px 16px;
-    background-color: #161619;
-    border-bottom: 1px solid #2e2e34;
+    padding: 10px 16px;
+    background-color: #141416;
+    border-bottom: 1px solid #28282e;
   }
 
   .modal-title-row {
@@ -6646,7 +8605,7 @@
 
   .modal-title-row h3 {
     margin: 0;
-    font-size: 0.95rem;
+    font-size: 0.92rem;
     font-weight: 700;
     color: #ffffff;
   }
@@ -6682,125 +8641,20 @@
   }
 
   .modal-body {
-    padding: 16px;
+    padding: 14px 16px;
     display: flex;
     flex-direction: column;
-    gap: 14px;
-  }
-
-  .dsp-graph-placeholder {
-    display: flex;
     gap: 12px;
-    background-color: #111113;
-    border: 1px solid #29292e;
-    border-radius: 6px;
-    padding: 12px;
-  }
-
-  .comp-curve-canvas-box {
-    flex-grow: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .comp-svg-graph, .eq-svg-graph {
-    width: 100%;
-    height: 110px;
-    background-color: #09090b;
-    border-radius: 4px;
-  }
-
-  .graph-legend, .eq-ruler-labels {
-    display: flex;
-    justify-content: space-between;
-    font-size: 0.62rem;
-    color: #71717a;
-    font-family: monospace;
-  }
-
-  .comp-meter-box {
-    width: 90px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: space-between;
-    background-color: #09090b;
-    border-radius: 4px;
-    padding: 8px 4px;
-    flex-shrink: 0;
-  }
-
-  .meter-title {
-    font-size: 0.55rem;
-    font-weight: 800;
-    color: #a1a1aa;
-    text-align: center;
-  }
-
-  .gr-bar-track {
-    width: 12px;
-    height: 70px;
-    background-color: #1e1e24;
-    border-radius: 3px;
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-end;
-    overflow: hidden;
-  }
-
-  .gr-bar-fill {
-    width: 100%;
-    background: linear-gradient(to top, #30d158, #ffcc00, #ff453a);
-    transition: height 0.08s ease-out;
-  }
-
-  .meter-val {
-    font-size: 0.65rem;
-    font-family: monospace;
-    color: #ffcc00;
-    font-weight: 700;
-  }
-
-  .eq-graph-placeholder {
-    flex-direction: column;
-  }
-
-  .advanced-params-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 8px;
-  }
-
-  .param-card {
-    background-color: #161619;
-    border: 1px solid #2a2a30;
-    border-radius: 6px;
-    padding: 8px 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-  }
-
-  .param-name {
-    font-size: 0.65rem;
-    color: #8e8e96;
-    font-weight: 600;
-  }
-
-  .param-detail {
-    font-size: 0.76rem;
-    color: #ffffff;
-    font-weight: 700;
+    overflow-y: auto;
   }
 
   .modal-footer {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 10px 16px;
-    background-color: #161619;
-    border-top: 1px solid #2e2e34;
+    padding: 8px 16px;
+    background-color: #141416;
+    border-top: 1px solid #28282e;
   }
 
   .footer-hint {
@@ -6813,7 +8667,7 @@
     border: none;
     border-radius: 4px;
     color: #ffffff;
-    padding: 6px 14px;
+    padding: 5px 14px;
     font-size: 0.78rem;
     font-weight: 600;
     cursor: pointer;
