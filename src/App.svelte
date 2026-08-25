@@ -204,6 +204,7 @@
     path: string;
   }
   let playlistItems: PlaylistItem[] = [];
+  let selectedPlaylistIndex = -1;
 
   // Project Setup: File Associations (saved in localStorage)
   let pdfChartPath = "";
@@ -1010,16 +1011,100 @@
     };
     window.addEventListener("click", closeMenu);
 
-    // Global keyboard shortcuts: Space = Play/Pause, Left/Right = Prev/Next Marker, Enter = Stop & Return to 0
+    // Global keyboard shortcuts: Space = Play/Pause/Load, Up/Down = Playlist/Browser Nav, Left/Right = Marker Jump, M = Add Marker, Enter = Stop & Return to 0
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
         return;
       }
 
+      // If active type-to-jump buffer is receiving input
+      if (typeToJumpBuffer.length > 0) {
+        if (e.code === "Space") {
+          e.preventDefault();
+          typeToJumpBuffer += " ";
+          clearTimeout(typeToJumpTimeout);
+          typeToJumpTimeout = setTimeout(() => { typeToJumpBuffer = ""; }, 1000);
+          clearTimeout(jumpDebounceTimeout);
+          jumpDebounceTimeout = setTimeout(() => { performTypeToJump(); }, 300);
+          return;
+        }
+      }
+
       if (e.code === "Space") {
         e.preventDefault();
+        
+        // Option 2: If navigating playlist and a different track is highlighted, load and immediately play!
+        if (activeSidebarTab === "playlist" && selectedPlaylistIndex >= 0 && selectedPlaylistIndex < playlistItems.length) {
+          const highlighted = playlistItems[selectedPlaylistIndex];
+          if (highlighted.path !== filePath) {
+            loadAudioPath(highlighted.path, "main", true).then(async () => {
+              await invoke("play");
+              isPlaying = true;
+            });
+            return;
+          }
+        } else if (activeSidebarTab === "browser" && lastSelectedEntry && !lastSelectedEntry.is_dir) {
+          if (lastSelectedEntry.path !== filePath) {
+            loadAudioPath(lastSelectedEntry.path, "main", true).then(async () => {
+              await invoke("play");
+              isPlaying = true;
+            });
+            return;
+          }
+        }
+
+        // If already active track, standard Play/Pause
         handlePlayPause();
+      } else if (e.code === "ArrowUp") {
+        e.preventDefault();
+        if (activeSidebarTab === "playlist" && playlistItems.length > 0) {
+          let currentIdx = selectedPlaylistIndex !== -1 ? selectedPlaylistIndex : playlistItems.findIndex(p => p.path === filePath);
+          if (currentIdx === -1) currentIdx = 0;
+          else currentIdx = Math.max(0, currentIdx - 1);
+          selectedPlaylistIndex = currentIdx;
+          scrollSelectedPlaylistItemIntoView();
+        } else if (activeSidebarTab === "browser" && filteredEntries.length > 0) {
+          const audioEntries = filteredEntries.filter(e => !e.is_dir);
+          if (audioEntries.length > 0) {
+            let currentIdx = audioEntries.findIndex(e => selectedFilePaths.has(e.path));
+            if (currentIdx === -1) currentIdx = 0;
+            else currentIdx = Math.max(0, currentIdx - 1);
+            const targetEntry = audioEntries[currentIdx];
+            selectedFilePaths.clear();
+            selectedFilePaths.add(targetEntry.path);
+            selectedFilePaths = selectedFilePaths;
+            lastSelectedEntry = { name: targetEntry.name, path: targetEntry.path };
+            scrollSelectedBrowserItemIntoView();
+          }
+        }
+      } else if (e.code === "ArrowDown") {
+        e.preventDefault();
+        if (activeSidebarTab === "playlist" && playlistItems.length > 0) {
+          let currentIdx = selectedPlaylistIndex !== -1 ? selectedPlaylistIndex : playlistItems.findIndex(p => p.path === filePath);
+          if (currentIdx === -1) currentIdx = 0;
+          else currentIdx = Math.min(playlistItems.length - 1, currentIdx + 1);
+          selectedPlaylistIndex = currentIdx;
+          scrollSelectedPlaylistItemIntoView();
+        } else if (activeSidebarTab === "browser" && filteredEntries.length > 0) {
+          const audioEntries = filteredEntries.filter(e => !e.is_dir);
+          if (audioEntries.length > 0) {
+            let currentIdx = audioEntries.findIndex(e => selectedFilePaths.has(e.path));
+            if (currentIdx === -1) currentIdx = 0;
+            else currentIdx = Math.min(audioEntries.length - 1, currentIdx + 1);
+            const targetEntry = audioEntries[currentIdx];
+            selectedFilePaths.clear();
+            selectedFilePaths.add(targetEntry.path);
+            selectedFilePaths = selectedFilePaths;
+            lastSelectedEntry = { name: targetEntry.name, path: targetEntry.path };
+            scrollSelectedBrowserItemIntoView();
+          }
+        }
+      } else if (e.code === "KeyM" || e.key === "m" || e.key === "M") {
+        if (!e.metaKey && !e.ctrlKey && !e.altKey && typeToJumpBuffer.length === 0) {
+          e.preventDefault();
+          addMarker();
+        }
       } else if (e.code === "ArrowLeft") {
         e.preventDefault();
         jumpToPrevMarker();
@@ -1138,9 +1223,11 @@
   // Load a file into main or alternate track slots
   async function loadAudioPath(path: string, target: "main" | "alternate", switchActive = true) {
     try {
+      const wasPlaying = isPlaying;
+
       // Save current track profile before switching
-      if (target === "main" && mainTrack && mainTrack.path !== path) {
-        saveCurrentTrackProfile(mainTrack.path);
+      if (filePath) {
+        saveCurrentTrackProfile(filePath);
       }
 
       const metadata: any = await invoke("load_track", { path });
@@ -1171,6 +1258,8 @@
         duration = track.duration;
         sampleRate = track.sampleRate;
         channels = track.channels;
+        currentTime = 0;
+        progress = 0;
         activeTrackMode = target;
         localStorage.setItem("th_last_active_track_mode", target);
 
@@ -1190,6 +1279,12 @@
           await loadTrackProfile(path, true);
         } else {
           await loadTrackProfile(path, false);
+        }
+
+        // Seamless live playback rollover: continue playing if was playing
+        if (wasPlaying) {
+          await invoke("play");
+          isPlaying = true;
         }
 
         // Read audio tags
@@ -1433,7 +1528,18 @@
   function performTypeToJump() {
     if (!typeToJumpBuffer) return;
     
-    // Find first matching directory or file prefix in current filtered list
+    if (activeSidebarTab === "playlist" && playlistItems.length > 0) {
+      const matchIdx = playlistItems.findIndex(entry => 
+        entry.name.toLowerCase().startsWith(typeToJumpBuffer.toLowerCase())
+      );
+      if (matchIdx !== -1) {
+        selectedPlaylistIndex = matchIdx;
+        scrollSelectedPlaylistItemIntoView();
+      }
+      return;
+    }
+
+    // Otherwise File Browser
     const match = filteredEntries.find(entry => 
       entry.name.toLowerCase().startsWith(typeToJumpBuffer.toLowerCase())
     );
@@ -1443,15 +1549,26 @@
       selectedFilePaths.add(match.path);
       selectedFilePaths = selectedFilePaths;
       lastSelectedEntry = { name: match.name, path: match.path };
-
-      // Scroll the newly active browser element into view smoothly
-      setTimeout(() => {
-        const el = document.querySelector(".browser-item.active");
-        if (el) {
-          el.scrollIntoView({ block: "nearest", behavior: "smooth" });
-        }
-      }, 50);
+      scrollSelectedBrowserItemIntoView();
     }
+  }
+
+  function scrollSelectedPlaylistItemIntoView() {
+    setTimeout(() => {
+      const el = document.querySelector(".playlist-item-sidebar.highlighted") || document.querySelector(".playlist-item-sidebar.active");
+      if (el) {
+        el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+    }, 20);
+  }
+
+  function scrollSelectedBrowserItemIntoView() {
+    setTimeout(() => {
+      const el = document.querySelector(".browser-item.active");
+      if (el) {
+        el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+    }, 20);
   }
 
   // Handle Multi-select File Clicks & Background Prefetching
@@ -2753,11 +2870,19 @@
               <div 
                 class="playlist-item-sidebar"
                 class:active={filePath === item.path}
-                on:dblclick={() => loadAudioPath(item.path, "main")}
+                class:highlighted={selectedPlaylistIndex === idx}
+                on:click={() => { selectedPlaylistIndex = idx; }}
+                on:dblclick={() => {
+                  selectedPlaylistIndex = idx;
+                  loadAudioPath(item.path, "main", true).then(async () => {
+                    await invoke("play");
+                    isPlaying = true;
+                  });
+                }}
               >
                 <span class="item-icon">🎵</span>
                 <span class="item-name" title={item.name}>{item.name}</span>
-                <button class="remove-playlist-item-btn" on:click={() => removePlaylistItem(idx)}>×</button>
+                <button class="remove-playlist-item-btn" on:click|stopPropagation={() => removePlaylistItem(idx)}>×</button>
               </div>
             {/each}
           {/if}
@@ -3899,6 +4024,12 @@
 
   .playlist-item-sidebar:hover {
     background-color: #2d2d2e;
+  }
+
+  .playlist-item-sidebar.highlighted {
+    background-color: #243547;
+    outline: 1px solid rgba(59, 153, 252, 0.7);
+    color: #ffffff;
   }
 
   .playlist-item-sidebar.active {
