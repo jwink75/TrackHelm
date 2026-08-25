@@ -1034,19 +1034,11 @@
       if (e.code === "Space") {
         e.preventDefault();
         
-        // Option 2: If navigating playlist and a different track is highlighted, load and immediately play!
+        // Option 2: If actively navigating playlist and a different track is highlighted, load and immediately play!
         if (activeSidebarTab === "playlist" && selectedPlaylistIndex >= 0 && selectedPlaylistIndex < playlistItems.length) {
           const highlighted = playlistItems[selectedPlaylistIndex];
-          if (highlighted.path !== filePath) {
+          if (highlighted && highlighted.path !== filePath) {
             loadAudioPath(highlighted.path, "main", true).then(async () => {
-              await invoke("play");
-              isPlaying = true;
-            });
-            return;
-          }
-        } else if (activeSidebarTab === "browser" && lastSelectedEntry && !lastSelectedEntry.is_dir) {
-          if (lastSelectedEntry.path !== filePath) {
-            loadAudioPath(lastSelectedEntry.path, "main", true).then(async () => {
               await invoke("play");
               isPlaying = true;
             });
@@ -1054,7 +1046,7 @@
           }
         }
 
-        // If already active track, standard Play/Pause
+        // Standard Play/Pause toggle
         handlePlayPause();
       } else if (e.code === "ArrowUp") {
         e.preventDefault();
@@ -1065,16 +1057,15 @@
           selectedPlaylistIndex = currentIdx;
           scrollSelectedPlaylistItemIntoView();
         } else if (activeSidebarTab === "browser" && filteredEntries.length > 0) {
-          const audioEntries = filteredEntries.filter(e => !e.is_dir);
-          if (audioEntries.length > 0) {
-            let currentIdx = audioEntries.findIndex(e => selectedFilePaths.has(e.path));
-            if (currentIdx === -1) currentIdx = 0;
-            else currentIdx = Math.max(0, currentIdx - 1);
-            const targetEntry = audioEntries[currentIdx];
+          let currentIdx = filteredEntries.findIndex(e => selectedFilePaths.has(e.path));
+          if (currentIdx === -1) currentIdx = 0;
+          else currentIdx = Math.max(0, currentIdx - 1);
+          const targetEntry = filteredEntries[currentIdx];
+          if (targetEntry) {
             selectedFilePaths.clear();
             selectedFilePaths.add(targetEntry.path);
             selectedFilePaths = selectedFilePaths;
-            lastSelectedEntry = { name: targetEntry.name, path: targetEntry.path };
+            lastSelectedEntry = targetEntry;
             scrollSelectedBrowserItemIntoView();
           }
         }
@@ -1087,16 +1078,15 @@
           selectedPlaylistIndex = currentIdx;
           scrollSelectedPlaylistItemIntoView();
         } else if (activeSidebarTab === "browser" && filteredEntries.length > 0) {
-          const audioEntries = filteredEntries.filter(e => !e.is_dir);
-          if (audioEntries.length > 0) {
-            let currentIdx = audioEntries.findIndex(e => selectedFilePaths.has(e.path));
-            if (currentIdx === -1) currentIdx = 0;
-            else currentIdx = Math.min(audioEntries.length - 1, currentIdx + 1);
-            const targetEntry = audioEntries[currentIdx];
+          let currentIdx = filteredEntries.findIndex(e => selectedFilePaths.has(e.path));
+          if (currentIdx === -1) currentIdx = 0;
+          else currentIdx = Math.min(filteredEntries.length - 1, currentIdx + 1);
+          const targetEntry = filteredEntries[currentIdx];
+          if (targetEntry) {
             selectedFilePaths.clear();
             selectedFilePaths.add(targetEntry.path);
             selectedFilePaths = selectedFilePaths;
-            lastSelectedEntry = { name: targetEntry.name, path: targetEntry.path };
+            lastSelectedEntry = targetEntry;
             scrollSelectedBrowserItemIntoView();
           }
         }
