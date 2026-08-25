@@ -96,9 +96,17 @@
     name: string;
     time: number;
     color?: string;
+    pdfAnchor?: {
+      page: number;
+      xPct: number;
+      yPct: number;
+    } | null;
   }
   let markers: Marker[] = [];
   let nextMarkerId = 1;
+  let isDraggingMarker = false;
+  let draggingMarkerId: number | null = null;
+  let lastScrolledMarkerId: number | null = null;
 
   const MARKER_COLORS = [
     "#ff9500", // Amber / Orange
@@ -313,6 +321,16 @@
         pageWrapper.className = `pdf-page-card ${isPdfInverted ? 'inverted' : ''}`;
         pageWrapper.dataset.pageNum = pageNum.toString();
 
+        pageWrapper.addEventListener("dragover", (e) => {
+          e.preventDefault();
+          if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+        });
+        pageWrapper.addEventListener("drop", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          handlePdfPageDrop(e, pageNum, pageWrapper);
+        });
+
         const canvas = document.createElement("canvas");
         canvas.className = "pdf-page-canvas";
         canvas.width = Math.floor(viewport.width);
@@ -331,6 +349,8 @@
         };
         await page.render(renderContext).promise;
       }
+
+      renderPdfMarkerBadges();
     } catch (err: any) {
       if (taskId === currentRenderTaskId) {
         console.error("PDF render error:", err);
@@ -341,6 +361,105 @@
         isLoadingPdf = false;
       }
     }
+  }
+
+  function handlePdfPageDrop(e: DragEvent, pageNum: number, pageWrapper: HTMLElement) {
+    const markerIdStr = e.dataTransfer?.getData("text/trackhelm-marker-id");
+    if (!markerIdStr) return;
+    const markerId = parseInt(markerIdStr, 10);
+    const marker = markers.find(m => m.id === markerId);
+    if (!marker) return;
+
+    const rect = pageWrapper.getBoundingClientRect();
+    const xPct = Math.max(0.01, Math.min(0.95, (e.clientX - rect.left) / rect.width));
+    const yPct = Math.max(0.01, Math.min(0.98, (e.clientY - rect.top) / rect.height));
+
+    marker.pdfAnchor = {
+      page: pageNum,
+      xPct,
+      yPct
+    };
+    markers = markers;
+    saveCurrentTrackProfile(filePath);
+    renderPdfMarkerBadges();
+  }
+
+  function removeMarkerPdfAnchor(markerId: number) {
+    const marker = markers.find(m => m.id === markerId);
+    if (marker) {
+      marker.pdfAnchor = null;
+      markers = markers;
+      saveCurrentTrackProfile(filePath);
+      renderPdfMarkerBadges();
+    }
+  }
+
+  function renderPdfMarkerBadges() {
+    if (!pdfContainer) return;
+    const cards = pdfContainer.querySelectorAll(".pdf-page-card");
+    cards.forEach(card => {
+      const pageNum = parseInt((card as HTMLElement).dataset.pageNum || "1", 10);
+      
+      // Remove old badges on this card
+      card.querySelectorAll(".pdf-marker-badge").forEach(b => b.remove());
+
+      const pageMarkers = markers.filter(m => m.pdfAnchor && m.pdfAnchor.page === pageNum);
+      for (const m of pageMarkers) {
+        if (!m.pdfAnchor) continue;
+        const badge = document.createElement("div");
+        badge.className = "pdf-marker-badge";
+        badge.dataset.markerId = m.id.toString();
+        badge.style.left = `${(m.pdfAnchor.xPct * 100).toFixed(2)}%`;
+        badge.style.top = `${(m.pdfAnchor.yPct * 100).toFixed(2)}%`;
+        badge.style.backgroundColor = m.color || "#ff9500";
+        badge.draggable = true;
+        badge.title = `Marker: ${m.name} (${formatTime(m.time)}) • Click to jump • Drag to move (drag off to unpin)`;
+
+        badge.innerHTML = `
+          <span class="pdf-marker-dot"></span>
+          <span class="pdf-marker-title">${m.name}</span>
+          <button class="pdf-marker-unpin" title="Unpin from score">×</button>
+        `;
+
+        // Click to seek
+        badge.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          currentTime = m.time;
+          progress = duration > 0 ? currentTime / duration : 0;
+          await invoke("seek", { seconds: m.time });
+          updateVisiblePeaks();
+          drawMainWaveform();
+          drawOverviewWaveform();
+        });
+
+        // Unpin button
+        const unpinBtn = badge.querySelector(".pdf-marker-unpin");
+        if (unpinBtn) {
+          unpinBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            removeMarkerPdfAnchor(m.id);
+          });
+        }
+
+        // Drag to reposition
+        badge.addEventListener("dragstart", (e) => {
+          e.stopPropagation();
+          if (e.dataTransfer) {
+            e.dataTransfer.setData("text/trackhelm-marker-id", m.id.toString());
+            e.dataTransfer.setData("text/trackhelm-from-pdf", "true");
+            e.dataTransfer.effectAllowed = "move";
+          }
+        });
+
+        badge.addEventListener("dragend", (e) => {
+          if (e.dataTransfer && e.dataTransfer.dropEffect === "none") {
+            removeMarkerPdfAnchor(m.id);
+          }
+        });
+
+        card.appendChild(badge);
+      }
+    });
   }
 
   // Reactive trigger when switching to PDF tab or when pdfChartPath changes
@@ -497,6 +616,33 @@
 
           drawMainWaveform();
           drawOverviewWaveform();
+
+          // Auto-scroll PDF to active anchored marker (12px below top)
+          if (activeCenterTab === "pdf" && pdfContainer && isPlaying) {
+            let currentMarker: Marker | null = null;
+            for (const m of markers) {
+              if (m.time <= currentTime + 0.15) {
+                if (!currentMarker || m.time > currentMarker.time) {
+                  currentMarker = m;
+                }
+              }
+            }
+
+            if (currentMarker && currentMarker.id !== lastScrolledMarkerId && currentMarker.pdfAnchor) {
+              lastScrolledMarkerId = currentMarker.id;
+              const markerPage = currentMarker.pdfAnchor.page;
+              const card = pdfContainer.querySelector(`.pdf-page-card[data-page-num="${markerPage}"]`) as HTMLElement;
+              if (card) {
+                const cardTop = card.offsetTop;
+                const markerYWithinCard = card.clientHeight * currentMarker.pdfAnchor.yPct;
+                const targetScrollTop = Math.max(0, cardTop + markerYWithinCard - 12);
+                pdfContainer.scrollTo({
+                  top: targetScrollTop,
+                  behavior: "smooth"
+                });
+              }
+            }
+          }
         }
       } catch (err) {
         console.error("Failed to query playback status", err);
@@ -651,9 +797,10 @@
     }
   }
 
-  // Toggle active track between Main and Alternate
+  // Toggle active track between Main and Alternate (with Smart Relative Landmark Sync)
   async function toggleActiveTrack(target: "main" | "alternate") {
     const targetTrack = target === "main" ? mainTrack : alternateTrack;
+    const sourceTrack = activeTrackMode === "main" ? mainTrack : alternateTrack;
     if (!targetTrack) {
       if (target === "alternate") {
         await pickAlternateTrack();
@@ -664,7 +811,66 @@
     }
 
     const wasPlaying = isPlaying;
-    const targetTime = currentTime;
+    const sourceTime = currentTime;
+
+    // 1. Calculate smart landmark sync time if both tracks share markers
+    let targetTime = sourceTime;
+    if (sourceTrack && targetTrack && sourceTrack.path !== targetTrack.path) {
+      const sourceMarkers = markers || [];
+      const store = getProfilesStore();
+      const targetProfile = store[targetTrack.path];
+      const targetMarkers: Marker[] = targetProfile && Array.isArray(targetProfile.markers) ? targetProfile.markers : [];
+
+      if (sourceMarkers.length > 0 && targetMarkers.length > 0) {
+        // Find preceding shared landmark
+        let bestPrecedingSource: Marker | null = null;
+        let bestPrecedingTarget: Marker | null = null;
+
+        for (const sm of sourceMarkers) {
+          if (sm.time <= sourceTime) {
+            const tm = targetMarkers.find(m => m.name.trim().toLowerCase() === sm.name.trim().toLowerCase());
+            if (tm) {
+              if (!bestPrecedingSource || sm.time > bestPrecedingSource.time) {
+                bestPrecedingSource = sm;
+                bestPrecedingTarget = tm;
+              }
+            }
+          }
+        }
+
+        if (bestPrecedingSource && bestPrecedingTarget) {
+          const delta = sourceTime - bestPrecedingSource.time;
+          targetTime = bestPrecedingTarget.time + delta;
+        } else {
+          // Check for following shared landmark
+          let bestFollowingSource: Marker | null = null;
+          let bestFollowingTarget: Marker | null = null;
+          for (const sm of sourceMarkers) {
+            if (sm.time > sourceTime) {
+              const tm = targetMarkers.find(m => m.name.trim().toLowerCase() === sm.name.trim().toLowerCase());
+              if (tm) {
+                if (!bestFollowingSource || sm.time < bestFollowingSource.time) {
+                  bestFollowingSource = sm;
+                  bestFollowingTarget = tm;
+                }
+              }
+            }
+          }
+
+          if (bestFollowingSource && bestFollowingTarget) {
+            const delta = sourceTime - bestFollowingSource.time;
+            targetTime = Math.max(0, bestFollowingTarget.time + delta);
+          }
+        }
+      }
+    }
+
+    targetTime = Math.max(0, Math.min(targetTrack.duration, targetTime));
+
+    // Save outgoing profile
+    if (sourceTrack) {
+      saveCurrentTrackProfile(sourceTrack.path);
+    }
 
     activeTrackMode = target;
     filePath = targetTrack.path;
@@ -672,7 +878,16 @@
     duration = targetTrack.duration;
     sampleRate = targetTrack.sampleRate;
     channels = targetTrack.channels;
+    currentTime = targetTime;
+    progress = duration > 0 ? currentTime / duration : 0;
     localStorage.setItem("th_last_active_track_mode", target);
+
+    // Restore target track markers
+    const store = getProfilesStore();
+    const targetProfile = store[targetTrack.path];
+    if (targetProfile && Array.isArray(targetProfile.markers)) {
+      markers = targetProfile.markers;
+    }
 
     // Clear local sample cache so waveform redraws fresh samples
     localSampleCache = { startFrame: -1, endFrame: -1, samples: [] };
@@ -702,6 +917,51 @@
     await updateVisiblePeaks();
     drawMainWaveform();
     drawOverviewWaveform();
+    if (activeCenterTab === "pdf") {
+      renderPdfMarkerBadges();
+    }
+  }
+
+  function handleWaveformMarkerDrop(e: DragEvent) {
+    e.preventDefault();
+    if (!mainCanvas || duration === 0) return;
+    const markerIdStr = e.dataTransfer?.getData("text/trackhelm-marker-id");
+    if (!markerIdStr) return;
+    const markerId = parseInt(markerIdStr, 10);
+
+    const rect = mainCanvas.getBoundingClientRect();
+    const dropX = e.clientX - rect.left;
+    const clickPct = Math.max(0, Math.min(1.0, dropX / rect.width));
+    const windowWidth = 1.0 / zoom;
+    const startProgress = zoom > 1.001 ? Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2)) : 0;
+    const dropTime = (startProgress + clickPct * windowWidth) * duration;
+
+    let existing = markers.find(m => m.id === markerId);
+    if (existing) {
+      existing.time = dropTime;
+    } else {
+      const allProfiles = getProfilesStore();
+      let foundName = `Marker ${nextMarkerId}`;
+      let foundColor = MARKER_COLORS[(markers.length) % MARKER_COLORS.length];
+      for (const p of Object.values(allProfiles)) {
+        const sm = p.markers?.find(m => m.id === markerId);
+        if (sm) {
+          foundName = sm.name;
+          foundColor = sm.color || foundColor;
+          break;
+        }
+      }
+      markers = [...markers, { id: nextMarkerId++, name: foundName, time: dropTime, color: foundColor }];
+    }
+
+    markers.sort((a, b) => a.time - b.time);
+    markers = markers;
+    saveCurrentTrackProfile(filePath);
+    drawMainWaveform();
+    drawOverviewWaveform();
+    if (activeCenterTab === "pdf") {
+      renderPdfMarkerBadges();
+    }
   }
 
   async function pickAlternateTrack() {
@@ -1117,9 +1377,35 @@
 
   let isDraggingOverview = false;
 
-  // Main Waveform: Mouse Drag to Pan, click to seek
+  // Main Waveform: Mouse Drag to Pan, click to seek, and Ruler Marker Dragging
   function handleMainMouseDown(e: MouseEvent) {
     if (duration === 0 || !mainCanvas) return;
+
+    const rect = mainCanvas.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+
+    const windowWidth = 1.0 / zoom;
+    const startProgress = zoom > 1.001 ? Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2)) : 0;
+    const endProgress = startProgress + windowWidth;
+
+    // Check if clicked near a marker flag in the top ruler area (top 20px)
+    if (clickY <= 22) {
+      for (const m of markers) {
+        const markerPct = m.time / duration;
+        if (markerPct >= startProgress && markerPct <= endProgress) {
+          const markerX = ((markerPct - startProgress) / windowWidth) * rect.width;
+          if (clickX >= markerX - 6 && clickX <= markerX + 16) {
+            isDraggingMarker = true;
+            draggingMarkerId = m.id;
+            window.addEventListener("mousemove", handleMainMouseMove);
+            window.addEventListener("mouseup", handleMainMouseUp);
+            return;
+          }
+        }
+      }
+    }
+
     isPanning = true;
     hasDraggedMain = false;
     panStartX = e.clientX;
@@ -1130,6 +1416,25 @@
   }
 
   function handleMainMouseMove(e: MouseEvent) {
+    if (isDraggingMarker && draggingMarkerId != null && mainCanvas) {
+      const rect = mainCanvas.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const clickPct = Math.max(0, Math.min(1.0, clickX / rect.width));
+      const windowWidth = 1.0 / zoom;
+      const startProgress = zoom > 1.001 ? Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2)) : 0;
+      const targetProgress = Math.max(0, Math.min(1.0, startProgress + clickPct * windowWidth));
+      const newTime = targetProgress * duration;
+
+      const m = markers.find(x => x.id === draggingMarkerId);
+      if (m) {
+        m.time = newTime;
+        markers = markers;
+      }
+      drawMainWaveform();
+      drawOverviewWaveform();
+      return;
+    }
+
     if (!isPanning || !mainCanvas) return;
     const deltaX = e.clientX - panStartX;
     if (Math.abs(deltaX) > 3) {
@@ -1156,6 +1461,23 @@
   }
 
   async function handleMainMouseUp(e: MouseEvent) {
+    if (isDraggingMarker) {
+      isDraggingMarker = false;
+      draggingMarkerId = null;
+      window.removeEventListener("mousemove", handleMainMouseMove);
+      window.removeEventListener("mouseup", handleMainMouseUp);
+
+      markers.sort((a, b) => a.time - b.time);
+      markers = markers;
+      saveCurrentTrackProfile(filePath);
+      drawMainWaveform();
+      drawOverviewWaveform();
+      if (activeCenterTab === "pdf") {
+        renderPdfMarkerBadges();
+      }
+      return;
+    }
+
     if (isPanning) {
       isPanning = false;
       window.removeEventListener("mousemove", handleMainMouseMove);
@@ -2221,7 +2543,12 @@
         </div>
 
         <!-- Main Waveform Box (256px height) -->
-        <div class="waveform-block block-main-waveform" title="Right-click for Main / Alternate track options">
+        <div 
+          class="waveform-block block-main-waveform" 
+          title="Right-click for Main / Alternate track options • Drop marker to place"
+          on:dragover={(e) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = "copy"; }}
+          on:drop={handleWaveformMarkerDrop}
+        >
           <!-- svelte-ignore a11y-click-events-have-key-events -->
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
           <canvas 
@@ -2357,7 +2684,17 @@
             <div class="placeholder-text">No markers set. Click "+ Add Marker" during playback.</div>
           {:else}
             {#each markers as marker}
-              <div class="marker-item" style="border-left: 3px solid {marker.color || '#ff9500'};">
+              <div 
+                class="marker-item" 
+                style="border-left: 3px solid {marker.color || '#ff9500'};"
+                draggable={editingMarkerId !== marker.id}
+                on:dragstart={(e) => {
+                  if (e.dataTransfer) {
+                    e.dataTransfer.setData("text/trackhelm-marker-id", marker.id.toString());
+                    e.dataTransfer.effectAllowed = "copyMove";
+                  }
+                }}
+              >
                 <!-- Color Dot Switcher -->
                 <!-- svelte-ignore a11y-click-events-have-key-events -->
                 <!-- svelte-ignore a11y-no-static-element-interactions -->
@@ -2387,10 +2724,14 @@
                     class="marker-name-btn" 
                     on:click={() => seekToMarker(marker.time)}
                     on:dblclick={() => startRenameMarker(marker)}
-                    title="Click to seek • Double-click to rename"
+                    title="Click to seek • Double-click to rename • Drag to waveform or PDF"
                   >
                     {marker.name} <span class="marker-time-tag">({formatTime(marker.time)})</span>
                   </span>
+                {/if}
+
+                {#if marker.pdfAnchor}
+                  <span class="marker-pdf-tag" title="Pinned to Sheet Music (Page {marker.pdfAnchor.page})">📄 p.{marker.pdfAnchor.page}</span>
                 {/if}
 
                 <div class="marker-item-actions">
@@ -3443,6 +3784,27 @@
     border-radius: 4px;
     font-size: 0.75rem;
     gap: 6px;
+    cursor: grab;
+    transition: background-color 0.1s ease;
+  }
+
+  .marker-item:hover {
+    background-color: #383838;
+  }
+
+  .marker-item:active {
+    cursor: grabbing;
+  }
+
+  .marker-pdf-tag {
+    font-size: 0.6rem;
+    background: rgba(59, 153, 252, 0.2);
+    color: #3b99fc;
+    border: 1px solid rgba(59, 153, 252, 0.4);
+    border-radius: 8px;
+    padding: 1px 5px;
+    font-family: monospace;
+    white-space: nowrap;
   }
 
   .marker-color-dot {
@@ -3932,6 +4294,7 @@
   }
 
   :global(.pdf-page-card) {
+    position: relative;
     flex-shrink: 0 !important;
     display: flex;
     flex-direction: column;
@@ -3940,7 +4303,7 @@
     background-color: #ffffff;
     border-radius: 4px;
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-    overflow: hidden;
+    overflow: visible;
     margin: 0 auto;
     box-sizing: border-box;
     transition: filter 0.2s ease, background-color 0.2s ease;
@@ -3951,6 +4314,68 @@
     filter: invert(1) hue-rotate(180deg);
     border: 1px solid #28282c;
     box-shadow: 0 4px 24px rgba(0, 0, 0, 0.85);
+  }
+
+  :global(.pdf-marker-badge) {
+    position: absolute;
+    transform: translate(-10px, -50%);
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 8px;
+    border-radius: 12px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: #ffffff;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+    cursor: grab;
+    z-index: 10;
+    user-select: none;
+    -webkit-user-select: none;
+    border: 1.5px solid rgba(255, 255, 255, 0.35);
+    white-space: nowrap;
+    transition: transform 0.1s ease, box-shadow 0.1s ease;
+  }
+
+  :global(.pdf-marker-badge:hover) {
+    transform: translate(-10px, -50%) scale(1.08);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.85);
+  }
+
+  :global(.pdf-marker-badge:active) {
+    cursor: grabbing;
+  }
+
+  :global(.pdf-marker-dot) {
+    width: 6px;
+    height: 6px;
+    background-color: #ffffff;
+    border-radius: 50%;
+  }
+
+  :global(.pdf-marker-title) {
+    pointer-events: none;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  }
+
+  :global(.pdf-marker-unpin) {
+    background: rgba(0, 0, 0, 0.4);
+    border: none;
+    color: #ffffff;
+    border-radius: 50%;
+    width: 14px;
+    height: 14px;
+    line-height: 13px;
+    font-size: 0.7rem;
+    text-align: center;
+    cursor: pointer;
+    padding: 0;
+    margin-left: 2px;
+    transition: background 0.1s ease;
+  }
+
+  :global(.pdf-marker-unpin:hover) {
+    background: rgba(255, 59, 48, 0.85);
   }
 
   :global(.pdf-page-canvas) {
