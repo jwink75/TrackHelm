@@ -508,8 +508,15 @@
     }
 
     if (pointerDragGhost) {
-      pointerDragGhost.style.left = `${e.clientX + 10}px`;
-      pointerDragGhost.style.top = `${e.clientY + 10}px`;
+      const elem = document.elementFromPoint(e.clientX, e.clientY);
+      const isOverPdf = elem ? !!(elem.closest(".pdf-page-card") || elem.closest(".pdf-scroll-column")) : false;
+      if (isOverPdf) {
+        pointerDragGhost.className = "marker-pointer-drag-ghost on-pdf-preview";
+      } else {
+        pointerDragGhost.className = "marker-pointer-drag-ghost";
+      }
+      pointerDragGhost.style.left = `${e.clientX}px`;
+      pointerDragGhost.style.top = `${e.clientY}px`;
     }
   }
 
@@ -4556,17 +4563,25 @@
     z-index: 99999;
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 4px 10px;
-    border-radius: 14px;
-    font-size: 0.75rem;
+    gap: 5px;
+    padding: 3px 8px;
+    border-radius: 12px;
+    font-size: 0.7rem;
     font-weight: 700;
     color: #ffffff;
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.7);
-    border: 1.5px solid rgba(255, 255, 255, 0.5);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.65);
+    border: 1.5px solid rgba(255, 255, 255, 0.4);
     white-space: nowrap;
-    opacity: 0.95;
-    transform: translate(-10px, -50%);
+    opacity: 0.85;
+    transform: translate(12px, 12px);
+    transition: transform 0.12s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
+  }
+
+  :global(.marker-pointer-drag-ghost.on-pdf-preview) {
+    transform: translate(-10px, -50%) scale(1.08);
+    opacity: 1;
+    box-shadow: 0 4px 18px rgba(0, 0, 0, 0.85);
+    border: 1.5px solid rgba(255, 255, 255, 0.85);
   }
 
   :global(.pdf-marker-dot) {
@@ -4582,23 +4597,33 @@
   }
 
   :global(.pdf-marker-unpin) {
-    background: rgba(0, 0, 0, 0.4);
+    background: rgba(0, 0, 0, 0.45);
     border: none;
     color: #ffffff;
     border-radius: 50%;
-    width: 14px;
-    height: 14px;
-    line-height: 13px;
-    font-size: 0.7rem;
+    width: 0;
+    height: 13px;
+    line-height: 12px;
+    font-size: 0.65rem;
     text-align: center;
     cursor: pointer;
     padding: 0;
-    margin-left: 2px;
-    transition: background 0.1s ease;
+    margin-left: 0;
+    opacity: 0;
+    pointer-events: none;
+    overflow: hidden;
+    transition: opacity 0.15s ease, width 0.15s ease, margin-left 0.15s ease, background 0.1s ease;
+  }
+
+  :global(.pdf-marker-badge:hover .pdf-marker-unpin) {
+    opacity: 1;
+    pointer-events: auto;
+    width: 13px;
+    margin-left: 3px;
   }
 
   :global(.pdf-marker-unpin:hover) {
-    background: rgba(255, 59, 48, 0.85);
+    background: rgba(255, 59, 48, 0.9);
   }
 
   :global(.pdf-page-canvas) {
