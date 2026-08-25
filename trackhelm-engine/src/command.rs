@@ -3,6 +3,7 @@ use std::time::Duration;
 use crate::decoder::DecodedAudio;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EngineRegion {
     pub id: String,
     pub name: String,
@@ -13,6 +14,7 @@ pub struct EngineRegion {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EqBand {
     pub filter_type: crate::dsp::FilterType,
     pub freq: f64,

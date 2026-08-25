@@ -15,6 +15,7 @@ pub enum CompRouting {
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CompStageParams {
     pub enabled: bool,
     pub comp_type: CompType,

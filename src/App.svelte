@@ -623,26 +623,26 @@
       await invoke("set_dual_compressor", {
         stage1: {
           enabled: compStage1.enabled,
-          comp_type: compStage1.compType,
-          threshold_db: compStage1.thresholdDb,
+          compType: compStage1.compType,
+          thresholdDb: compStage1.thresholdDb,
           ratio: compStage1.ratio,
-          knee_db: compStage1.kneeDb,
-          attack_ms: compStage1.attackMs,
-          release_ms: compStage1.releaseMs,
-          makeup_db: compStage1.makeupDb
+          kneeDb: compStage1.kneeDb,
+          attackMs: compStage1.attackMs,
+          releaseMs: compStage1.releaseMs,
+          makeupDb: compStage1.makeupDb
         },
         stage2: {
           enabled: compStage2.enabled,
-          comp_type: compStage2.compType,
-          threshold_db: compStage2.thresholdDb,
+          compType: compStage2.compType,
+          thresholdDb: compStage2.thresholdDb,
           ratio: compStage2.ratio,
-          knee_db: compStage2.kneeDb,
-          attack_ms: compStage2.attackMs,
-          release_ms: compStage2.releaseMs,
-          makeup_db: compStage2.makeupDb
+          kneeDb: compStage2.kneeDb,
+          attackMs: compStage2.attackMs,
+          releaseMs: compStage2.releaseMs,
+          makeupDb: compStage2.makeupDb
         },
         routing: compRouting,
-        parallel_blend: compParallelBlend
+        parallelBlend: compParallelBlend
       });
     }
     saveCurrentTrackProfile(filePath);
@@ -655,10 +655,10 @@
         regions: regions.map(r => ({
           id: r.id,
           name: r.name,
-          start_seconds: r.startTime,
-          end_seconds: r.endTime,
-          is_loop: r.isLoop,
-          is_cut: r.isCut
+          startSeconds: r.startTime,
+          endSeconds: r.endTime,
+          isLoop: r.isLoop,
+          isCut: r.isCut
         }))
       });
       saveCurrentTrackProfile(filePath);
@@ -4909,53 +4909,61 @@
         </div>
 
         <!-- 2. Speed, Pitch, and Fine Tune Knobs (3 knobs on same line) -->
-        <div class="knobs-row active-knobs">
-          <!-- Speed Knob -->
-          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-          <div 
-            class="knob-container" 
-            on:mousedown={(e) => handleKnobMousedown(e, "speed", speed, 0.25, 4.00, 0.05, (v) => speed = v)}
-            on:dblclick={() => resetKnob("speed", 1.0, (v) => speed = v)}
-            title="Speed Tempo • Double-click resets to 100%"
-          >
-            <span class="knob-label">Speed</span>
-            <div class="knob-circle">
-              <div class="knob-zero-tick"></div>
-              <div class="knob-marker" style="transform: rotate({getKnobRotation(speed, 0.25, 4.00)}deg)"></div>
+        <div class="effects-module-row pitch-speed-module-row">
+          <div class="module-tab-col pitch-tab-col">
+            <div class="module-tab-btn pitch-btn" title="Pitch Shifting & Time Stretching">
+              <span>TIME</span>
             </div>
-            <span class="knob-value">{Math.round(speed * 100)}%</span>
+            <div class="module-bypass-placeholder"></div>
           </div>
-
-          <!-- Pitch Shift (Semitones) Knob in the MIDDLE -->
-          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-          <div 
-            class="knob-container" 
-            on:mousedown={(e) => handleKnobMousedown(e, "pitch", pitch, -24, 24, 1, (v) => pitch = v)}
-            on:dblclick={() => resetKnob("pitch", 0, (v) => pitch = v)}
-            title="Pitch Transposition (Semitones) • Double-click resets to 0 st"
-          >
-            <span class="knob-label">Pitch</span>
-            <div class="knob-circle">
-              <div class="knob-zero-tick"></div>
-              <div class="knob-marker" style="transform: rotate({getKnobRotation(pitch, -24, 24)}deg)"></div>
+          <div class="knobs-row active-knobs">
+            <!-- Speed Knob -->
+            <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+            <div 
+              class="knob-container" 
+              on:mousedown={(e) => handleKnobMousedown(e, "speed", speed, 0.25, 4.00, 0.05, (v) => speed = v)}
+              on:dblclick={() => resetKnob("speed", 1.0, (v) => speed = v)}
+              title="Speed Tempo • Double-click resets to 100%"
+            >
+              <span class="knob-label">Speed</span>
+              <div class="knob-circle">
+                <div class="knob-zero-tick"></div>
+                <div class="knob-marker" style="transform: rotate({getKnobRotation(speed, 0.25, 4.00)}deg)"></div>
+              </div>
+              <span class="knob-value">{Math.round(speed * 100)}%</span>
             </div>
-            <span class="knob-value">{pitch > 0 ? "+" : ""}{pitch} st</span>
-          </div>
 
-          <!-- Fine Tune (Cents) Knob on the RIGHT -->
-          <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-          <div 
-            class="knob-container" 
-            on:mousedown={(e) => handleKnobMousedown(e, "pitch_cents", pitchCents, -100, 100, 1, (v) => pitchCents = v)}
-            on:dblclick={() => resetKnob("pitch_cents", 0, (v) => pitchCents = v)}
-            title="Fine Tune (Cents) • Double-click resets to 0 cents"
-          >
-            <span class="knob-label">Fine</span>
-            <div class="knob-circle">
-              <div class="knob-zero-tick"></div>
-              <div class="knob-marker" style="transform: rotate({getKnobRotation(pitchCents, -100, 100)}deg)"></div>
+            <!-- Pitch Shift (Semitones) Knob in the MIDDLE -->
+            <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+            <div 
+              class="knob-container" 
+              on:mousedown={(e) => handleKnobMousedown(e, "pitch", pitch, -24, 24, 1, (v) => pitch = v)}
+              on:dblclick={() => resetKnob("pitch", 0, (v) => pitch = v)}
+              title="Pitch Transposition (Semitones) • Double-click resets to 0 st"
+            >
+              <span class="knob-label">Pitch</span>
+              <div class="knob-circle">
+                <div class="knob-zero-tick"></div>
+                <div class="knob-marker" style="transform: rotate({getKnobRotation(pitch, -24, 24)}deg)"></div>
+              </div>
+              <span class="knob-value">{pitch > 0 ? "+" : ""}{pitch} st</span>
             </div>
-            <span class="knob-value">{pitchCents > 0 ? "+" : ""}{pitchCents} ct</span>
+
+            <!-- Fine Tune (Cents) Knob on the RIGHT -->
+            <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
+            <div 
+              class="knob-container" 
+              on:mousedown={(e) => handleKnobMousedown(e, "pitch_cents", pitchCents, -100, 100, 1, (v) => pitchCents = v)}
+              on:dblclick={() => resetKnob("pitch_cents", 0, (v) => pitchCents = v)}
+              title="Fine Tune (Cents) • Double-click resets to 0 cents"
+            >
+              <span class="knob-label">Fine</span>
+              <div class="knob-circle">
+                <div class="knob-zero-tick"></div>
+                <div class="knob-marker" style="transform: rotate({getKnobRotation(pitchCents, -100, 100)}deg)"></div>
+              </div>
+              <span class="knob-value">{pitchCents > 0 ? "+" : ""}{pitchCents} ct</span>
+            </div>
           </div>
         </div>
 
@@ -7307,11 +7315,16 @@
 
   /* Knobs row */
   .knobs-row {
-    display: flex;
-    justify-content: space-around;
-    padding: 3px 2px;
-    background-color: #1e1e1f;
-    border-bottom: 1px solid #2d2d2d;
+    flex: 1;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    justify-items: center;
+    align-items: center;
+    padding: 6px 2px;
+    background-color: #171719;
+    width: 100%;
+    box-sizing: border-box;
   }
 
   .knob-container {
@@ -7319,26 +7332,27 @@
     flex-direction: column;
     align-items: center;
     cursor: ns-resize;
-    width: 48px;
+    width: 100%;
+    max-width: 70px;
   }
 
   .knob-label {
     font-size: 0.58rem;
     color: #8e8e8e;
-    margin-bottom: 1px;
+    margin-bottom: 2px;
     text-align: center;
     white-space: nowrap;
   }
 
   .knob-circle {
-    width: 19px;
-    height: 19px;
+    width: 20px;
+    height: 20px;
     border-radius: 50%;
-    background-color: #333333;
-    border: 1.5px solid #555555;
+    background-color: #2b2b2e;
+    border: 1.5px solid #4a4a50;
     position: relative;
     box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
-    margin-bottom: 1px;
+    margin-bottom: 2px;
     transition: border-color 0.15s ease;
   }
 
@@ -7359,7 +7373,7 @@
 
   .knob-marker {
     width: 1.5px;
-    height: 6px;
+    height: 7px;
     background-color: #ffffff;
     position: absolute;
     top: 1.5px;
@@ -8089,6 +8103,22 @@
   .module-tab-col .module-tab-btn {
     flex-grow: 1;
     width: 100%;
+  }
+
+  .module-tab-btn.pitch-btn {
+    background-color: #26262a;
+    cursor: default;
+  }
+
+  .module-tab-btn.pitch-btn:hover {
+    background-color: #26262a;
+    filter: none;
+  }
+
+  .module-bypass-placeholder {
+    height: 14px;
+    background-color: #141416;
+    border-top: 1px solid #2d2d2d;
   }
 
   .module-bypass-btn {
