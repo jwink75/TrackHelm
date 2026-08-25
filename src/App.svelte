@@ -488,14 +488,16 @@
       try {
         const status: any = await invoke("get_playback_status");
         isPlaying = status.is_playing;
-        currentTime = status.current_time;
-        duration = status.duration_seconds;
-        progress = status.progress;
-        
-        await updateVisiblePeaks();
+        if (!isPanning && !isDraggingOverview) {
+          currentTime = status.current_time;
+          duration = status.duration_seconds;
+          progress = status.progress;
+          
+          await updateVisiblePeaks();
 
-        drawMainWaveform();
-        drawOverviewWaveform();
+          drawMainWaveform();
+          drawOverviewWaveform();
+        }
       } catch (err) {
         console.error("Failed to query playback status", err);
       }
@@ -1148,6 +1150,8 @@
       currentTime = progress * duration;
 
       updateVisiblePeaks();
+      drawMainWaveform();
+      drawOverviewWaveform();
     }
   }
 
