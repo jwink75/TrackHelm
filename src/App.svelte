@@ -1018,24 +1018,11 @@
         return;
       }
 
-      // If active type-to-jump buffer is receiving input
-      if (typeToJumpBuffer.length > 0) {
-        if (e.code === "Space") {
-          e.preventDefault();
-          typeToJumpBuffer += " ";
-          clearTimeout(typeToJumpTimeout);
-          typeToJumpTimeout = setTimeout(() => { typeToJumpBuffer = ""; }, 1000);
-          clearTimeout(jumpDebounceTimeout);
-          jumpDebounceTimeout = setTimeout(() => { performTypeToJump(); }, 300);
-          return;
-        }
-      }
-
       if (e.code === "Space") {
         e.preventDefault();
         
         // Option 2: If actively navigating playlist and a different track is highlighted, load and immediately play!
-        if (activeSidebarTab === "playlist" && selectedPlaylistIndex >= 0 && selectedPlaylistIndex < playlistItems.length) {
+        if (activeTab === "playlist" && selectedPlaylistIndex >= 0 && selectedPlaylistIndex < playlistItems.length) {
           const highlighted = playlistItems[selectedPlaylistIndex];
           if (highlighted && highlighted.path !== filePath) {
             loadAudioPath(highlighted.path, "main", true).then(async () => {
@@ -1050,13 +1037,13 @@
         handlePlayPause();
       } else if (e.code === "ArrowUp") {
         e.preventDefault();
-        if (activeSidebarTab === "playlist" && playlistItems.length > 0) {
+        if (activeTab === "playlist" && playlistItems.length > 0) {
           let currentIdx = selectedPlaylistIndex !== -1 ? selectedPlaylistIndex : playlistItems.findIndex(p => p.path === filePath);
           if (currentIdx === -1) currentIdx = 0;
           else currentIdx = Math.max(0, currentIdx - 1);
           selectedPlaylistIndex = currentIdx;
           scrollSelectedPlaylistItemIntoView();
-        } else if (activeSidebarTab === "browser" && filteredEntries.length > 0) {
+        } else if (activeTab === "browser" && filteredEntries.length > 0) {
           let currentIdx = filteredEntries.findIndex(e => selectedFilePaths.has(e.path));
           if (currentIdx === -1) currentIdx = 0;
           else currentIdx = Math.max(0, currentIdx - 1);
@@ -1071,13 +1058,13 @@
         }
       } else if (e.code === "ArrowDown") {
         e.preventDefault();
-        if (activeSidebarTab === "playlist" && playlistItems.length > 0) {
+        if (activeTab === "playlist" && playlistItems.length > 0) {
           let currentIdx = selectedPlaylistIndex !== -1 ? selectedPlaylistIndex : playlistItems.findIndex(p => p.path === filePath);
           if (currentIdx === -1) currentIdx = 0;
           else currentIdx = Math.min(playlistItems.length - 1, currentIdx + 1);
           selectedPlaylistIndex = currentIdx;
           scrollSelectedPlaylistItemIntoView();
-        } else if (activeSidebarTab === "browser" && filteredEntries.length > 0) {
+        } else if (activeTab === "browser" && filteredEntries.length > 0) {
           let currentIdx = filteredEntries.findIndex(e => selectedFilePaths.has(e.path));
           if (currentIdx === -1) currentIdx = 0;
           else currentIdx = Math.min(filteredEntries.length - 1, currentIdx + 1);
@@ -1091,7 +1078,7 @@
           }
         }
       } else if (e.code === "KeyM" || e.key === "m" || e.key === "M") {
-        if (!e.metaKey && !e.ctrlKey && !e.altKey && typeToJumpBuffer.length === 0) {
+        if (!e.metaKey && !e.ctrlKey && !e.altKey) {
           e.preventDefault();
           addMarker();
         }
@@ -1103,13 +1090,23 @@
         jumpToNextMarker();
       } else if (e.code === "Enter" || e.code === "NumpadEnter") {
         e.preventDefault();
-        handleStop();
+        if (activeTab === "browser" && lastSelectedEntry) {
+          if (lastSelectedEntry.is_dir) {
+            loadBrowser(lastSelectedEntry.path);
+          } else {
+            loadAudioPath(lastSelectedEntry.path, "main", true).then(async () => {
+              await invoke("play");
+              isPlaying = true;
+            });
+          }
+        } else {
+          handleStop();
+        }
       } else if (e.code === "Escape") {
         e.preventDefault();
         showContextMenu = false;
         colorPaletteMarker = null;
         cancelRenameMarker();
-        typeToJumpBuffer = "";
         handleStop();
       }
     };
@@ -1496,36 +1493,10 @@
     }
   }
 
-  // Type-To-Jump Keyboard Listener
-  function handleBrowserKeydown(e: KeyboardEvent) {
-    // Disable if focused inside an input element (e.g. search box)
-    const activeEl = document.activeElement;
-    if (activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA")) {
-      return;
-    }
-
-    // Capture standard printable characters (length 1) without Cmd/Ctrl modifiers
-    if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
-      e.preventDefault();
-      typeToJumpBuffer += e.key;
-
-      // Clear existing timeouts
-      clearTimeout(typeToJumpTimeout);
-      typeToJumpTimeout = setTimeout(() => {
-        typeToJumpBuffer = "";
-      }, 1000); // Clear buffer after 1s of inactivity
-
-      clearTimeout(jumpDebounceTimeout);
-      jumpDebounceTimeout = setTimeout(() => {
-        performTypeToJump();
-      }, 300); // Debounce actual jump scroll by 300ms to avoid aggressive cursor twitching
-    }
-  }
-
   function performTypeToJump() {
     if (!typeToJumpBuffer) return;
     
-    if (activeSidebarTab === "playlist" && playlistItems.length > 0) {
+    if (activeTab === "playlist" && playlistItems.length > 0) {
       const matchIdx = playlistItems.findIndex(entry => 
         entry.name.toLowerCase().startsWith(typeToJumpBuffer.toLowerCase())
       );
@@ -2787,8 +2758,6 @@
     return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}.${ms.toString().padStart(2, "0")}`;
   }
 </script>
-
-<svelte:window on:keydown={handleBrowserKeydown} />
 
 <main class="app-container">
   <div class="workspace-grid">
