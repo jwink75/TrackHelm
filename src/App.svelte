@@ -3035,11 +3035,12 @@
 
   .overview-watermark-tag {
     position: absolute;
-    top: 5px;
-    left: 8px;
-    font-size: 0.65rem;
+    top: 2px;
+    left: 4px;
+    font-size: 0.6rem;
     font-weight: 800;
-    letter-spacing: 0.08em;
+    letter-spacing: 0.06em;
+    line-height: 1;
     padding: 0;
     background: transparent;
     border: none;
