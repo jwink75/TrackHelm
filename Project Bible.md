@@ -114,6 +114,47 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
 * **Formula:** $\text{Effective Semitones} = \text{Semitones} + \frac{\text{Cents}}{100.0}$.
 * **Persistence:** Both coarse semitone shifts and fine-tune cent adjustments are saved to the persistent `TrackProfile` and updated in real-time on `SignalsmithStretch`.
 
+### 2.17 Native Real-Time DSP Engine: 3-Band Biquad EQ & Feedforward Dynamic Compressor
+* **Decision:** Real-time audio DSP filters compiled directly into `trackhelm-engine` and processed inside the CPAL stream rendering loop.
+* **3-Band Parametric Equalizer (`biquad.rs`):**
+  * Robert Bristow-Johnson (RBJ) Audio EQ Cookbook biquad cascade operating with 64-bit float precision.
+  * **Low Shelf Filter:** $100\text{ Hz}$ center frequency ($\pm 12\text{ dB}$, $Q=0.707$).
+  * **Parametric Bell Filter:** $1000\text{ Hz}$ center frequency ($\pm 12\text{ dB}$, $Q=0.707$).
+  * **High Shelf Filter:** $8000\text{ Hz}$ center frequency ($\pm 12\text{ dB}$, $Q=0.707$).
+  * **Zero-Overhead Bypass:** Stereo audio samples bypass biquad computation entirely when all gains are set to $0\text{ dB}$.
+* **Feedforward Soft-Knee Compressor (`compressor.rs`):**
+  * Soft knee ($3.0\text{ dB}$ transition width) with feedforward detection topology.
+  * Log-domain decibel envelope follower with ballistic smoothing ($30\text{ ms}$ attack time, $300\text{ ms}$ adaptive smooth decay release).
+  * Continuously adjustable ratio ($1.0:1$ up to $4.0:1$) and linear makeup gain ($0\text{ dB}$ to $+24\text{ dB}$).
+  * Unity default state: $0\text{ dB}$ threshold, $1.0:1$ ratio, $0\text{ dB}$ makeup gain (zero coloration).
+
+### 2.18 Timeline Regions, Dynamic Hotkeys, Loop/Vamp & Cut Engine
+* **Decision:** Interactive time region framework layered over the timeline with non-destructive playback engine integration.
+* **Interactive Time Selection & Edge Grab Handles:**
+  * **Shift + Drag** on the waveform creates a highlighted time selection box with live grab pills ($\pm 8\text{px}$ hover detection with `ew-resize` cursor) allowing edge adjustments prior to committing.
+  * **Shift + Click** two markers in the sidebar or along the top ruler forms an active time selection span between them.
+  * Created regions feature draggable left and right boundary handles, updating start and end boundaries in real time with automatic engine synchronization.
+* **Quick Workflow Hotkeys:**
+  * **`R`**: Creates a standard region from the active selection or marker pair.
+  * **`X` (Cut / Skip Mode ✂️)**: Creates a new region or toggles an existing region into Cut mode. In the waveform, cuts appear grayed-out with red diagonal hazard hatching; the native audio engine seamlessly jumps over the cut span during playback.
+  * **`L` (Loop / Vamp Mode 🔁)**: Creates a new region or toggles an existing region into Loop mode. In the waveform, loops appear with green background highlighting and bracket flags; the native audio engine continuously and seamlessly wraps playback back to region start.
+* **Sidebar Management & Renaming:**
+  * Dedicated **REGIONS** section in the right sidebar below markers.
+  * Inline renaming via double-click, dedicated `✏️` button, or right-click context menu (`✏️ Rename Region...`).
+
+### 2.19 Waveform Visual Overlays: Compressor Dotted Threshold & Ghost Dynamics
+* **Dotted Threshold Boundary:**
+  * Lowering the compressor threshold below $0\text{ dB}$ renders upper and lower yellow dotted boundary lines across the waveform with numerical dB readouts.
+* **Dual Ghost + Compressed Waveform Visualization:**
+  * When dynamic compression is active (Threshold $< 0\text{ dB}$, Ratio $> 1.0:1$), the uncompressed track waveform remains visible as a subtle translucent white ghost, while the dynamically compressed waveform is rendered in full vibrant theme color.
+
+### 2.20 Effects Modules UI & Advanced Inspectors
+* **Vertical 90° Module Tab Buttons:**
+  * Rotated blue tab buttons (`COMP` and `EQ`) mounted along the left edge of each rack module row.
+* **Advanced Inspector Modals:**
+  * **Advanced Compressor Inspector:** Features a dynamic compression transfer curve SVG graph, interactive gain reduction meter, and ballistic specifications.
+  * **Advanced Parametric EQ Inspector:** Features a frequency response curve visualizer across $20\text{ Hz} - 20\text{ kHz}$ with interactive node indicators for $100\text{ Hz}$, $1\text{ kHz}$, and $8\text{ kHz}$.
+
 ---
 
 ## 3. Core Requirements (MVP Scope)
@@ -167,12 +208,12 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
 ## 5. Milestone Plan & Progress
 * **Milestone 0:** Architecture Decisions & Workspace Skeleton *(Completed)*
 * **Milestone 1:** Minimal Viable Playback Engine *(Completed — CPAL stream, dual waveform display, deep zoom, overview seek, zero-delay load)*
-* **Milestone 2:** Pitch and Time Shifting *(Completed — Native Signalsmith Stretch real-time integration, speed & pitch dials, bypass optimizations)*
-* **Milestone 3:** Loops, Markers, and Vamp Mode *(Partially Completed — Interactive color-coded markers, inline rename, jump shortcuts; active loop region in progress)*
-* **Milestone 4:** Persistent Projects & Track Profiles *(Completed — Per-track persistent AnyTune-style profiles preserving DSP, markers, charts, and associated tracks)*
-* **Milestone 5:** EQ and Compressor DSP *(In Progress — UI layout & controls ready; wiring biquad filters and dynamic gain reduction)*
-* **Milestone 6:** Nonlinear Timeline (Cuts) and Volume Envelopes
-* **Milestone 7:** Library Management, Associated Media, and Metadata *(Completed — Integrated OS folder browser, playlist management, PDF chart association, alternate audio takes)*
+* **Milestone 2:** Pitch and Time Shifting *(Completed — Native Signalsmith Stretch real-time integration, speed, pitch, and fine-tune dials, bypass optimizations)*
+* **Milestone 3:** Loops, Markers, and Vamp Mode *(Completed — Interactive color-coded markers, Shift+click multi-marker selection, timeline regions, loop/vamp mode with seamless audio engine wrapping, draggable edge handles, hotkeys L, R)*
+* **Milestone 4:** Persistent Projects & Track Profiles *(Completed — Per-track persistent AnyTune-style profiles preserving DSP, markers, regions, PDF charts, metadata, and associated tracks)*
+* **Milestone 5:** EQ and Compressor DSP *(Completed — 3-band RBJ biquad EQ, feedforward soft-knee compressor, vertical 90° module tab buttons, inspector dialogs, dotted threshold lines, ghost compressed waveform visualizer)*
+* **Milestone 6:** Nonlinear Timeline (Cuts) and Volume Envelopes *(Partially Completed — Real-time audio engine cut-skip integration, hazard hatch visualizer, hotkey X, and edge resizing handles complete)*
+* **Milestone 7:** Library Management, Associated Media, and Metadata *(Completed — Integrated OS folder browser, playlist management, PDF chart association, alternate audio takes, Lofty ID3/Vorbis tag editor)*
 * **Milestone 8:** MIDI, OSC, and QLab Integration
 * **Milestone 9:** Export Engine
 * **Milestone 10:** Practice Mode / Rehearsal Sequences
