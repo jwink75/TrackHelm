@@ -3108,20 +3108,7 @@
                 class="marker-item" 
                 style="border-left: 3px solid {marker.color || '#ff9500'};"
                 on:mousedown={(e) => handleMarkerItemMouseDown(e, marker)}
-                draggable={editingMarkerId !== marker.id}
-                on:dragstart={(e) => {
-                  currentlyDraggedMarkerId = marker.id;
-                  isDraggingBadgeFromPdf = false;
-                  if (e.dataTransfer) {
-                    e.dataTransfer.setData("text/plain", marker.id.toString());
-                    e.dataTransfer.setData("text/trackhelm-marker-id", marker.id.toString());
-                    e.dataTransfer.effectAllowed = "copyMove";
-                  }
-                }}
-                on:dragend={() => {
-                  currentlyDraggedMarkerId = null;
-                  isDraggingBadgeFromPdf = false;
-                }}
+                title="Click to seek • Double-click to rename • Drag to waveform or sheet music"
               >
                 <!-- Color Dot Palette Opener -->
                 <!-- svelte-ignore a11y-click-events-have-key-events -->
@@ -4850,9 +4837,12 @@
 
   :global(.pdf-page-card.inverted) {
     background-color: #000000 !important;
-    filter: invert(1) hue-rotate(180deg);
     border: 1px solid #28282c;
     box-shadow: 0 4px 24px rgba(0, 0, 0, 0.85);
+  }
+
+  :global(.pdf-page-card.inverted .pdf-page-canvas) {
+    filter: invert(1) hue-rotate(180deg);
   }
 
   :global(.pdf-marker-badge) {
