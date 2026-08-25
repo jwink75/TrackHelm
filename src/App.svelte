@@ -258,7 +258,7 @@
       pdfTotalPages = doc.numPages;
       pdfContainer.innerHTML = "";
 
-      const containerWidth = pdfContainer.clientWidth || 800;
+      const containerWidth = Math.max(300, (pdfContainer.clientWidth || 800) - 32);
       lastRenderedWidth = containerWidth;
       const dpr = window.devicePixelRatio || 1;
 
@@ -267,23 +267,21 @@
         const page = await doc.getPage(pageNum);
         const unscaledViewport = page.getViewport({ scale: 1.0 });
         
-        // Auto-scale to full container width minus padding (e.g. 24px)
-        const targetWidth = Math.max(300, containerWidth - 28);
-        const scale = targetWidth / unscaledViewport.width;
-        const viewport = page.getViewport({ scale });
+        // Auto-scale to full container width
+        const baseScale = containerWidth / unscaledViewport.width;
+        const viewport = page.getViewport({ scale: baseScale * dpr });
 
         const pageWrapper = document.createElement("div");
         pageWrapper.className = "pdf-page-card";
 
         const canvas = document.createElement("canvas");
         canvas.className = "pdf-page-canvas";
-        canvas.width = Math.floor(viewport.width * dpr);
-        canvas.height = Math.floor(viewport.height * dpr);
-        canvas.style.width = `${Math.floor(viewport.width)}px`;
-        canvas.style.height = `${Math.floor(viewport.height)}px`;
+        canvas.width = Math.floor(viewport.width);
+        canvas.height = Math.floor(viewport.height);
+        canvas.style.width = `${Math.floor(viewport.width / dpr)}px`;
+        canvas.style.height = `${Math.floor(viewport.height / dpr)}px`;
 
         const ctx = canvas.getContext("2d")!;
-        ctx.scale(dpr, dpr);
 
         pageWrapper.appendChild(canvas);
         pdfContainer.appendChild(pageWrapper);
@@ -3833,30 +3831,34 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 12px;
+    gap: 16px;
     overflow-y: auto;
     overflow-x: hidden;
-    padding: 8px 6px 16px 6px;
+    padding: 12px 16px 24px 16px;
     min-height: 0;
+    width: 100%;
+    box-sizing: border-box;
     background-color: #121214;
     border-radius: 4px;
   }
 
   :global(.pdf-page-card) {
+    flex-shrink: 0 !important;
     display: flex;
     flex-direction: column;
     align-items: center;
+    justify-content: center;
     background-color: #ffffff;
-    border-radius: 3px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+    border-radius: 4px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
     overflow: hidden;
-    max-width: 100%;
+    margin: 0 auto;
+    box-sizing: border-box;
   }
 
   :global(.pdf-page-canvas) {
     display: block;
-    max-width: 100%;
-    height: auto;
+    box-sizing: border-box;
   }
 
   .no-pdf-placeholder {
