@@ -1174,6 +1174,16 @@
           e.preventDefault();
           createRegionFromSelectionOrMarkers();
         }
+      } else if (e.code === "KeyX" || e.key === "x" || e.key === "X") {
+        if (!e.metaKey && !e.ctrlKey && !e.altKey) {
+          e.preventDefault();
+          handleCutHotkey();
+        }
+      } else if (e.code === "KeyL" || e.key === "l" || e.key === "L") {
+        if (!e.metaKey && !e.ctrlKey && !e.altKey) {
+          e.preventDefault();
+          handleLoopHotkey();
+        }
       } else if (e.code === "ArrowLeft") {
         e.preventDefault();
         jumpToPrevMarker();
@@ -2034,6 +2044,13 @@
 
     // Normal click/pan: clear time selection if clicking plain waveform
     timeSelection = null;
+    
+    // Select region if clicked inside its span
+    const clickPct = Math.max(0, Math.min(1.0, clickX / rect.width));
+    const clickTime = (startProgress + clickPct * windowWidth) * duration;
+    const clickedRegion = regions.find(r => clickTime >= r.startTime && clickTime <= r.endTime);
+    selectedRegionId = clickedRegion ? clickedRegion.id : null;
+
     isPanning = true;
     hasDraggedMain = false;
     panStartX = e.clientX;
@@ -2167,7 +2184,7 @@
   }
 
   // Region Creation & Operations
-  function createRegionFromSelectionOrMarkers() {
+  function createRegionFromSelectionOrMarkers(initialLoop = false, initialCut = false): Region | null {
     let start = 0;
     let end = 0;
     let name = `Region ${nextRegionId}`;
@@ -2198,9 +2215,9 @@
         name,
         startTime: start,
         endTime: end,
-        isLoop: false,
-        isCut: false,
-        color: "#30d158"
+        isLoop: initialLoop,
+        isCut: initialCut,
+        color: initialCut ? "#ff453a" : initialLoop ? "#30d158" : "#0a84ff"
       };
       regions = [...regions, newRegion];
       selectedRegionId = newRegion.id;
@@ -2208,7 +2225,31 @@
       selectedMarkerIds.clear();
       selectedMarkerIds = selectedMarkerIds;
       syncRegionsToEngine();
+      return newRegion;
     }
+    return null;
+  }
+
+  function handleCutHotkey() {
+    if (selectedRegionId) {
+      const reg = regions.find(r => r.id === selectedRegionId);
+      if (reg) {
+        toggleRegionCut(reg);
+        return;
+      }
+    }
+    createRegionFromSelectionOrMarkers(false, true);
+  }
+
+  function handleLoopHotkey() {
+    if (selectedRegionId) {
+      const reg = regions.find(r => r.id === selectedRegionId);
+      if (reg) {
+        toggleRegionLoop(reg);
+        return;
+      }
+    }
+    createRegionFromSelectionOrMarkers(true, false);
   }
 
   function toggleRegionLoop(region: Region) {
