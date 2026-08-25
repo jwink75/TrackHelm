@@ -3479,7 +3479,7 @@
           ctx.beginPath();
           ctx.rect(renderX1, rulerHeight, regWidth, height - rulerHeight);
           ctx.clip();
-          ctx.strokeStyle = "rgba(255, 69, 58, 0.2)";
+          ctx.strokeStyle = "rgba(255, 69, 58, 0.25)";
           ctx.lineWidth = 2;
           for (let hx = renderX1 - height; hx < renderX2 + height; hx += 16) {
             ctx.beginPath();
@@ -3488,6 +3488,16 @@
             ctx.stroke();
           }
           ctx.restore();
+
+          // Solid vertical boundary lines
+          ctx.strokeStyle = "#ff453a";
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(renderX1, rulerHeight);
+          ctx.lineTo(renderX1, height);
+          ctx.moveTo(renderX2, rulerHeight);
+          ctx.lineTo(renderX2, height);
+          ctx.stroke();
 
           // Cut Header Badge
           ctx.fillStyle = "#ff453a";
@@ -3835,6 +3845,43 @@
                 // Top flag cap
                 bCtx.fillStyle = color;
                 bCtx.fillRect(markerX - 1.5, 0, 3, 4);
+              }
+            }
+          }
+
+          // Draw Regions on Overview Waveform
+          if (track.duration > 0 && regions.length > 0) {
+            for (const reg of regions) {
+              const regStartPct = reg.startTime / track.duration;
+              const regEndPct = reg.endTime / track.duration;
+              const rx1 = Math.round(regStartPct * width);
+              const rx2 = Math.round(regEndPct * width);
+              const rw = Math.max(1, rx2 - rx1);
+
+              if (reg.isCut) {
+                // Cut region background & solid vertical lines on overview
+                bCtx.fillStyle = "rgba(255, 69, 58, 0.22)";
+                bCtx.fillRect(rx1, 0, rw, height);
+                bCtx.strokeStyle = "#ff453a";
+                bCtx.lineWidth = 1.5;
+                bCtx.beginPath();
+                bCtx.moveTo(rx1, 0);
+                bCtx.lineTo(rx1, height);
+                bCtx.moveTo(rx2, 0);
+                bCtx.lineTo(rx2, height);
+                bCtx.stroke();
+              } else if (reg.isLoop) {
+                // Loop region background & solid vertical lines on overview
+                bCtx.fillStyle = "rgba(48, 209, 88, 0.18)";
+                bCtx.fillRect(rx1, 0, rw, height);
+                bCtx.strokeStyle = "#30d158";
+                bCtx.lineWidth = 1.5;
+                bCtx.beginPath();
+                bCtx.moveTo(rx1, 0);
+                bCtx.lineTo(rx1, height);
+                bCtx.moveTo(rx2, 0);
+                bCtx.lineTo(rx2, height);
+                bCtx.stroke();
               }
             }
           }
