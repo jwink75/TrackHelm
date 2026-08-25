@@ -19,6 +19,18 @@ struct TrackMetadata {
 struct CachedTrack {
     audio: Arc<DecodedAudio>,
     metadata: TrackMetadata,
+    modified_time: std::time::SystemTime,
+    file_size: u64,
+}
+
+fn get_file_mtime_and_size(path: &str) -> (std::time::SystemTime, u64) {
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        let size = meta.len();
+        (mtime, size)
+    } else {
+        (std::time::SystemTime::UNIX_EPOCH, 0)
+    }
 }
 
 struct AppState {
@@ -311,10 +323,13 @@ fn get_raw_samples(
 
 #[tauri::command]
 async fn preload_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata, String> {
+    let (current_mtime, current_size) = get_file_mtime_and_size(&path);
     {
         let cache = state.track_cache.lock().unwrap();
         if let Some(cached) = cache.get(&path) {
-            return Ok(cached.metadata.clone());
+            if cached.modified_time == current_mtime && cached.file_size == current_size {
+                return Ok(cached.metadata.clone());
+            }
         }
     }
     let p = path.clone();
@@ -339,6 +354,8 @@ async fn preload_track(state: State<'_, AppState>, path: String) -> Result<Track
             let cached = Arc::new(CachedTrack {
                 audio: audio_arc,
                 metadata: metadata.clone(),
+                modified_time: current_mtime,
+                file_size: current_size,
             });
             cache.insert(path, cached);
             Ok(metadata)
@@ -350,10 +367,34 @@ async fn preload_track(state: State<'_, AppState>, path: String) -> Result<Track
 
 #[tauri::command]
 fn load_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata, String> {
+    let (current_mtime, current_size) = get_file_mtime_and_size(&path);
     let cached_track = {
         let mut cache = state.track_cache.lock().unwrap();
         if let Some(cached) = cache.get(&path) {
-            cached.clone()
+            if cached.modified_time == current_mtime && cached.file_size == current_size {
+                cached.clone()
+            } else {
+                // File modified externally -> re-decode fresh
+                let audio = decode_file(&path)?;
+                let arc = Arc::new(audio);
+                let overview_peaks = compute_peaks(&arc, 1000);
+                let pyramid_peaks = compute_pyramid_peaks(&arc, 32768);
+                let metadata = TrackMetadata {
+                    duration_seconds: arc.duration_seconds,
+                    sample_rate: arc.sample_rate,
+                    channels: arc.channels,
+                    overview_peaks,
+                    pyramid_peaks,
+                };
+                let cached = Arc::new(CachedTrack {
+                    audio: arc,
+                    metadata,
+                    modified_time: current_mtime,
+                    file_size: current_size,
+                });
+                cache.insert(path.clone(), cached.clone());
+                cached
+            }
         } else {
             let audio = decode_file(&path)?;
             let arc = Arc::new(audio);
@@ -369,6 +410,8 @@ fn load_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata,
             let cached = Arc::new(CachedTrack {
                 audio: arc,
                 metadata,
+                modified_time: current_mtime,
+                file_size: current_size,
             });
             cache.insert(path.clone(), cached.clone());
             cached
