@@ -2,11 +2,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use crate::decoder::DecodedAudio;
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub const MAX_EQ_BANDS: usize = 16;
+pub const MAX_ENGINE_REGIONS: usize = 32;
+
+#[derive(Copy, Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EngineRegion {
-    pub id: String,
-    pub name: String,
     #[serde(alias = "start_seconds")]
     pub start_seconds: f64,
     #[serde(alias = "end_seconds")]
@@ -17,7 +18,7 @@ pub struct EngineRegion {
     pub is_cut: bool,
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Copy, Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EqBand {
     #[serde(alias = "filter_type")]
@@ -27,6 +28,18 @@ pub struct EqBand {
     pub gain_db: f64,
     pub q: f64,
     pub enabled: bool,
+}
+
+impl Default for EqBand {
+    fn default() -> Self {
+        Self {
+            filter_type: crate::dsp::FilterType::Peaking,
+            freq: 1000.0,
+            gain_db: 0.0,
+            q: 0.707,
+            enabled: false,
+        }
+    }
 }
 
 pub enum Command {
@@ -39,7 +52,7 @@ pub enum Command {
     SetVolume(f32), // 0.0 to 1.0+
     LoadAudio(Arc<DecodedAudio>),
     SetEq { bass_db: f32, mid_db: f32, treble_db: f32 },
-    SetEqBands(Vec<EqBand>),
+    SetEqBands([EqBand; MAX_EQ_BANDS], usize),
     SetCompressor { threshold_db: f32, ratio: f32, makeup_db: f32, attack_ms: f32, release_ms: f32 },
     SetDualCompressor {
         stage1: crate::dsp::CompStageParams,
@@ -47,7 +60,7 @@ pub enum Command {
         routing: crate::dsp::CompRouting,
         parallel_blend: f32,
     },
-    SetRegions(Vec<EngineRegion>),
+    SetRegions([EngineRegion; MAX_ENGINE_REGIONS], usize),
 }
 
 pub struct CommandBus {

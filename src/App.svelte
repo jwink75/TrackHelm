@@ -680,8 +680,6 @@
     try {
       await invoke("set_regions", {
         regions: regions.map(r => ({
-          id: r.id,
-          name: r.name,
           startSeconds: r.startTime,
           endSeconds: r.endTime,
           isLoop: r.isLoop,
@@ -689,6 +687,7 @@
         }))
       });
       saveCurrentTrackProfile(filePath);
+      invalidateWaveformCaches();
       drawMainWaveform();
     } catch (e) {
       console.error("Failed to sync regions to audio engine:", e);
@@ -1479,10 +1478,21 @@
     await syncRegionsToEngine();
   }
 
-  // Canvas elements
+  // Canvas elements & Offscreen static render caches
   let mainCanvas: HTMLCanvasElement;
   let overviewCanvas: HTMLCanvasElement;
   let centerContentElement: HTMLDivElement;
+
+  let mainStaticCanvas: HTMLCanvasElement | null = null;
+  let isMainStaticDirty = true;
+  let overviewBaseCanvas: HTMLCanvasElement | null = null;
+  let isOverviewBaseDirty = true;
+
+  function invalidateWaveformCaches() {
+    isMainStaticDirty = true;
+    isOverviewBaseDirty = true;
+    isWaveformDirty = true;
+  }
   
   let statusInterval: any;
   let resizeObserver: ResizeObserver;
@@ -1635,6 +1645,7 @@
     // Resize observer for canvases
     if (centerContentElement) {
       resizeObserver = new ResizeObserver(() => {
+        invalidateWaveformCaches();
         drawMainWaveform();
         drawOverviewWaveform();
       });
@@ -2082,6 +2093,7 @@
     });
 
     lastScrolledMarkerId = null;
+    invalidateWaveformCaches();
     await updateVisiblePeaks();
     drawMainWaveform();
     drawOverviewWaveform();
@@ -2391,6 +2403,7 @@
   function setZoom(newZoom: number) {
     zoom = Math.max(1.0, Math.min(maxZoom, newZoom));
     zoomSliderVal = zoomToSliderVal(zoom);
+    invalidateWaveformCaches();
   }
 
   // Dynamic Peak Slice & Waveform updater (Fast Synchronous Slicing with Background Sample Cache)
@@ -3080,13 +3093,17 @@
     };
     markers = [...markers, newMarker].sort((a, b) => a.time - b.time);
     saveCurrentTrackProfile(filePath);
+    invalidateWaveformCaches();
     drawMainWaveform();
+    drawOverviewWaveform();
   }
 
   function deleteMarker(id: number) {
     markers = markers.filter(m => m.id !== id);
     saveCurrentTrackProfile(filePath);
+    invalidateWaveformCaches();
     drawMainWaveform();
+    drawOverviewWaveform();
   }
 
   function openColorPalette(e: MouseEvent, marker: Marker) {
@@ -3128,6 +3145,7 @@
     }
 
     saveCurrentTrackProfile(filePath);
+    invalidateWaveformCaches();
     drawMainWaveform();
     drawOverviewWaveform();
     if (activeCenterTab === "pdf") {
@@ -3761,66 +3779,93 @@
     const width = rect.width;
     const height = rect.height;
 
+    if (!overviewBaseCanvas) {
+      overviewBaseCanvas = document.createElement("canvas");
+    }
+    const canvasWidth = Math.floor(rect.width * dpr);
+    const canvasHeight = Math.floor(rect.height * dpr);
+    if (overviewBaseCanvas.width !== canvasWidth || overviewBaseCanvas.height !== canvasHeight) {
+      overviewBaseCanvas.width = canvasWidth;
+      overviewBaseCanvas.height = canvasHeight;
+      isOverviewBaseDirty = true;
+    }
+
+    if (isOverviewBaseDirty) {
+      const bCtx = overviewBaseCanvas.getContext("2d");
+      if (bCtx) {
+        bCtx.clearRect(0, 0, canvasWidth, canvasHeight);
+        bCtx.save();
+        bCtx.scale(dpr, dpr);
+
+        const isActive = activeTrackMode === mode;
+        bCtx.fillStyle = isActive ? "#262626" : "#1a1a1a";
+        bCtx.fillRect(0, 0, width, height);
+
+        if (!track) {
+          bCtx.fillStyle = "#666666";
+          bCtx.font = "10px sans-serif";
+          bCtx.fillText(`Empty [Double click file in browser to load as ${mode.toUpperCase()}]`, 12, height / 2 + 3);
+        } else {
+          const peaks = track.overviewPeaks || [];
+          const barWidth = width / peaks.length;
+          const halfHeight = height / 2;
+          bCtx.fillStyle = isActive ? "#a8c3d8" : "#556673";
+          for (let i = 0; i < peaks.length; i += 2) {
+            const val = peaks[i];
+            const barHeight = val * (height * 0.7);
+            const x = i * barWidth;
+            const y = halfHeight - barHeight / 2;
+            bCtx.fillRect(x, y, Math.max(1, barWidth * 2 - 0.5), barHeight);
+          }
+
+          // Draw Markers on Overview Waveform
+          if (track.duration > 0 && markers.length > 0) {
+            for (const marker of markers) {
+              const markerPct = marker.time / track.duration;
+              if (markerPct >= 0 && markerPct <= 1.0) {
+                const markerX = Math.round(markerPct * width);
+                const color = marker.color || "#ff9500";
+                bCtx.strokeStyle = color;
+                bCtx.lineWidth = 1.5;
+                bCtx.beginPath();
+                bCtx.moveTo(markerX + 0.5, 0);
+                bCtx.lineTo(markerX + 0.5, height);
+                bCtx.stroke();
+
+                // Top flag cap
+                bCtx.fillStyle = color;
+                bCtx.fillRect(markerX - 1.5, 0, 3, 4);
+              }
+            }
+          }
+        }
+        bCtx.restore();
+        isOverviewBaseDirty = false;
+      }
+    }
+
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.save();
     ctx.scale(dpr, dpr);
 
+    // Blit cached background peaks and static markers (0.005ms GPU texture blit)
+    ctx.drawImage(overviewBaseCanvas, 0, 0, width, height);
+
+    // Draw dynamic interactive layer (zoom window viewport and moving playhead)
     const isActive = activeTrackMode === mode;
-    ctx.fillStyle = isActive ? "#262626" : "#1a1a1a";
-    ctx.fillRect(0, 0, width, height);
-
-    if (!track) {
-      ctx.fillStyle = "#666666";
-      ctx.font = "10px sans-serif";
-      ctx.fillText(`Empty [Double click file in browser to load as ${mode.toUpperCase()}]`, 12, height / 2 + 3);
-      ctx.restore();
-      return;
-    }
-
-    const peaks = track.overviewPeaks || [];
-    const barWidth = width / peaks.length;
-    const halfHeight = height / 2;
-    ctx.fillStyle = isActive ? "#a8c3d8" : "#556673";
-    for (let i = 0; i < peaks.length; i += 2) {
-      const val = peaks[i];
-      const barHeight = val * (height * 0.7);
-      const x = i * barWidth;
-      const y = halfHeight - barHeight / 2;
-      ctx.fillRect(x, y, Math.max(1, barWidth * 2 - 0.5), barHeight);
-    }
-
-    // Draw Markers on Overview Waveform
-    if (track && track.duration > 0 && markers.length > 0) {
-      for (const marker of markers) {
-        const markerPct = marker.time / track.duration;
-        if (markerPct >= 0 && markerPct <= 1.0) {
-          const markerX = Math.round(markerPct * width);
-          const color = marker.color || "#ff9500";
-          ctx.strokeStyle = color;
-          ctx.lineWidth = 1.5;
-          ctx.beginPath();
-          ctx.moveTo(markerX + 0.5, 0);
-          ctx.lineTo(markerX + 0.5, height);
-          ctx.stroke();
-
-          // Top flag cap
-          ctx.fillStyle = color;
-          ctx.fillRect(markerX - 1.5, 0, 3, 4);
-        }
-      }
-    }
-
-    if (isActive) {
+    if (isActive && track) {
       const windowWidth = 1.0 / zoom;
       const startProgress = Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2));
       const endProgress = startProgress + windowWidth;
 
-      ctx.fillStyle = "rgba(59, 153, 252, 0.18)"; 
-      ctx.fillRect(startProgress * width, 0, (endProgress - startProgress) * width, height);
-      
-      ctx.strokeStyle = "#3b99fc";
-      ctx.lineWidth = 1;
-      ctx.strokeRect(startProgress * width, 0, (endProgress - startProgress) * width, height);
+      if (zoom > 1.001) {
+        ctx.fillStyle = "rgba(59, 153, 252, 0.18)"; 
+        ctx.fillRect(startProgress * width, 0, (endProgress - startProgress) * width, height);
+        
+        ctx.strokeStyle = "#3b99fc";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(startProgress * width, 0, (endProgress - startProgress) * width, height);
+      }
 
       const playheadX = progress * width;
       ctx.strokeStyle = "#3b99fc";

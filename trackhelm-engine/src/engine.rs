@@ -75,7 +75,8 @@ impl AudioEngine {
             let mut is_playing = false;
             let mut current_speed: f32 = 1.0;
             let mut current_pitch: f32 = 0.0;
-            let mut stretch: Option<signalsmith_stretch_rs::SignalsmithStretch> = None;
+            let stretch = signalsmith_stretch_rs::SignalsmithStretch::new(MAX_CHANNELS, config.sample_rate().0 as f32);
+            stretch.set_transpose_semitones(current_pitch);
             let mut stretch_channels: usize = 2;
 
             // Pre-allocated scratch buffers (zero heap allocations in audio loop)
@@ -84,11 +85,12 @@ impl AudioEngine {
 
             let mut current_sample_rate = config.sample_rate().0 as f64;
             // Pre-allocate biquad filter pool (up to 16 cascade bands)
-            let mut biquads_pool: Vec<crate::dsp::Biquad> = (0..16).map(|_| crate::dsp::Biquad::new(output_channels)).collect();
+            let mut biquads_pool: Vec<crate::dsp::Biquad> = (0..crate::command::MAX_EQ_BANDS).map(|_| crate::dsp::Biquad::new(output_channels)).collect();
             let mut active_biquad_count = 0;
             let mut eq_active = false;
             let mut dual_compressor = crate::dsp::DualCompressor::new(current_sample_rate);
-            let mut active_regions: Vec<crate::command::EngineRegion> = Vec::new();
+            let mut active_regions: [crate::command::EngineRegion; crate::command::MAX_ENGINE_REGIONS] = [crate::command::EngineRegion::default(); crate::command::MAX_ENGINE_REGIONS];
+            let mut active_region_count: usize = 0;
 
             let shared_is_playing = shared_state.is_playing.clone();
             let shared_current_frame = shared_state.current_frame.clone();
@@ -108,12 +110,12 @@ impl AudioEngine {
                             let vol_raw = shared_volume_raw.load(Ordering::SeqCst);
                             let volume = vol_raw as f32 / 1000.0;
 
-                            // 1. Process pending commands with parameter coalescing
+                            // 1. Process pending commands with stack-allocated parameter coalescing
                             let mut pending_pitch: Option<f32> = None;
                             let mut pending_tempo: Option<f32> = None;
-                            let mut pending_eq_bands: Option<Vec<crate::command::EqBand>> = None;
+                            let mut pending_eq_bands: Option<([crate::command::EqBand; crate::command::MAX_EQ_BANDS], usize)> = None;
                             let mut pending_dual_comp: Option<(crate::dsp::CompStageParams, crate::dsp::CompStageParams, crate::dsp::CompRouting, f32)> = None;
-                            let mut pending_regions: Option<Vec<crate::command::EngineRegion>> = None;
+                            let mut pending_regions: Option<([crate::command::EngineRegion; crate::command::MAX_ENGINE_REGIONS], usize)> = None;
 
                             while let Ok(cmd) = command_receiver.try_recv() {
                                 match cmd {
@@ -130,9 +132,7 @@ impl AudioEngine {
                                         playback_frame = 0;
                                         shared_is_playing.store(false, Ordering::SeqCst);
                                         shared_current_frame.store(0, Ordering::SeqCst);
-                                        if let Some(ref mut s) = stretch {
-                                            s.reset();
-                                        }
+                                        stretch.reset();
                                         for b in &mut biquads_pool {
                                             b.reset();
                                         }
@@ -145,9 +145,7 @@ impl AudioEngine {
                                             let total = audio.channel_samples[0].len();
                                             playback_frame = std::cmp::min(target_frame, total);
                                             shared_current_frame.store(playback_frame, Ordering::SeqCst);
-                                            if let Some(ref mut s) = stretch {
-                                                s.reset();
-                                            }
+                                            stretch.reset();
                                         }
                                     }
                                     Command::SetVolume(vol) => {
@@ -160,38 +158,42 @@ impl AudioEngine {
                                         pending_tempo = Some(speed);
                                     }
                                     Command::SetEq { bass_db, mid_db, treble_db } => {
-                                        let mut bands = Vec::new();
+                                        let mut bands = [crate::command::EqBand::default(); crate::command::MAX_EQ_BANDS];
+                                        let mut count = 0;
                                         if bass_db.abs() > 0.001 {
-                                            bands.push(crate::command::EqBand {
+                                            bands[count] = crate::command::EqBand {
                                                 filter_type: crate::dsp::FilterType::LowShelf,
                                                 freq: 100.0,
                                                 gain_db: bass_db as f64,
                                                 q: 0.707,
                                                 enabled: true,
-                                            });
+                                            };
+                                            count += 1;
                                         }
                                         if mid_db.abs() > 0.001 {
-                                            bands.push(crate::command::EqBand {
+                                            bands[count] = crate::command::EqBand {
                                                 filter_type: crate::dsp::FilterType::Peaking,
                                                 freq: 1000.0,
                                                 gain_db: mid_db as f64,
                                                 q: 0.707,
                                                 enabled: true,
-                                            });
+                                            };
+                                            count += 1;
                                         }
                                         if treble_db.abs() > 0.001 {
-                                            bands.push(crate::command::EqBand {
+                                            bands[count] = crate::command::EqBand {
                                                 filter_type: crate::dsp::FilterType::HighShelf,
                                                 freq: 8000.0,
                                                 gain_db: treble_db as f64,
                                                 q: 0.707,
                                                 enabled: true,
-                                            });
+                                            };
+                                            count += 1;
                                         }
-                                        pending_eq_bands = Some(bands);
+                                        pending_eq_bands = Some((bands, count));
                                     }
-                                    Command::SetEqBands(bands) => {
-                                        pending_eq_bands = Some(bands);
+                                    Command::SetEqBands(bands, count) => {
+                                        pending_eq_bands = Some((bands, count));
                                     }
                                     Command::SetCompressor { threshold_db, ratio, makeup_db, attack_ms, release_ms } => {
                                         let stage1 = crate::dsp::CompStageParams {
@@ -213,8 +215,8 @@ impl AudioEngine {
                                     Command::SetDualCompressor { stage1, stage2, routing, parallel_blend } => {
                                         pending_dual_comp = Some((stage1, stage2, routing, parallel_blend));
                                     }
-                                    Command::SetRegions(regs) => {
-                                        pending_regions = Some(regs);
+                                    Command::SetRegions(regs, count) => {
+                                        pending_regions = Some((regs, count));
                                     }
                                     Command::LoadAudio(audio) => {
                                         let total = audio.channel_samples[0].len();
@@ -226,9 +228,8 @@ impl AudioEngine {
                                         
                                         let ch = audio.channels.max(1).min(MAX_CHANNELS);
                                         stretch_channels = ch;
-                                        let s = signalsmith_stretch_rs::SignalsmithStretch::new(ch, rate as f32);
-                                        s.set_transpose_semitones(current_pitch);
-                                        stretch = Some(s);
+                                        stretch.reset();
+                                        stretch.set_transpose_semitones(current_pitch);
 
                                         for b in &mut biquads_pool {
                                             b.reset();
@@ -241,23 +242,26 @@ impl AudioEngine {
                                 }
                             }
 
-                            // Apply coalesced parameter updates exactly once per buffer block
+                            // Apply coalesced parameter updates exactly once per buffer block (zero heap allocations)
                             if let Some(pitch) = pending_pitch {
                                 current_pitch = pitch;
-                                if let Some(ref s) = stretch {
-                                    s.set_transpose_semitones(current_pitch);
-                                }
+                                stretch.set_transpose_semitones(current_pitch);
                             }
                             if let Some(speed) = pending_tempo {
                                 current_speed = speed.clamp(0.25, 4.0);
                             }
-                            if let Some(bands) = pending_eq_bands {
-                                let active_bands: Vec<&crate::command::EqBand> = bands.iter().filter(|b| b.enabled && (b.gain_db.abs() > 0.01 || matches!(b.filter_type, crate::dsp::FilterType::LowPass | crate::dsp::FilterType::HighPass | crate::dsp::FilterType::Notch))).collect();
-                                active_biquad_count = std::cmp::min(active_bands.len(), biquads_pool.len());
-                                eq_active = active_biquad_count > 0;
-                                for (i, band) in active_bands.iter().take(active_biquad_count).enumerate() {
-                                    biquads_pool[i].set_params(band.filter_type, current_sample_rate, band.freq, band.gain_db, band.q);
+                            if let Some((bands, count)) = pending_eq_bands {
+                                let mut biquad_idx = 0;
+                                for band in bands.iter().take(count) {
+                                    if band.enabled && (band.gain_db.abs() > 0.01 || matches!(band.filter_type, crate::dsp::FilterType::LowPass | crate::dsp::FilterType::HighPass | crate::dsp::FilterType::Notch)) {
+                                        if biquad_idx < biquads_pool.len() {
+                                            biquads_pool[biquad_idx].set_params(band.filter_type, current_sample_rate, band.freq, band.gain_db, band.q);
+                                            biquad_idx += 1;
+                                        }
+                                    }
                                 }
+                                active_biquad_count = biquad_idx;
+                                eq_active = active_biquad_count > 0;
                             }
                             if let Some((stage1, stage2, routing, parallel_blend)) = pending_dual_comp {
                                 dual_compressor.stage1.set_params(current_sample_rate, stage1);
@@ -265,8 +269,9 @@ impl AudioEngine {
                                 dual_compressor.routing = routing;
                                 dual_compressor.parallel_blend = parallel_blend;
                             }
-                            if let Some(regs) = pending_regions {
+                            if let Some((regs, count)) = pending_regions {
                                 active_regions = regs;
+                                active_region_count = count;
                             }
 
                             // 2. Render samples
@@ -283,20 +288,16 @@ impl AudioEngine {
 
                                 // Region handling: Check for Cut skip and Loop wrap
                                 let current_sec = playback_frame as f64 / frame_rate;
-                                for reg in &active_regions {
+                                for reg in &active_regions[..active_region_count] {
                                     if reg.is_cut && current_sec >= reg.start_seconds && current_sec < reg.end_seconds {
                                         playback_frame = (reg.end_seconds * frame_rate) as usize;
                                         shared_current_frame.store(playback_frame, Ordering::SeqCst);
-                                        if let Some(ref mut s) = stretch {
-                                            s.reset();
-                                        }
+                                        stretch.reset();
                                         break;
                                     } else if reg.is_loop && current_sec >= reg.end_seconds {
                                         playback_frame = (reg.start_seconds * frame_rate) as usize;
                                         shared_current_frame.store(playback_frame, Ordering::SeqCst);
-                                        if let Some(ref mut s) = stretch {
-                                            s.reset();
-                                        }
+                                        stretch.reset();
                                         break;
                                     }
                                 }
@@ -327,7 +328,7 @@ impl AudioEngine {
                                                 shared_is_playing.store(false, Ordering::SeqCst);
                                             }
                                         }
-                                    } else if let Some(ref stretch_inst) = stretch {
+                                    } else {
                                         // Stretch processing using pre-allocated scratch buffers
                                         let num_in_frames = ((num_out_frames as f32) * current_speed).round() as usize;
                                         let safe_in_frames = std::cmp::min(num_in_frames, MAX_BUFFER_FRAMES);
@@ -362,7 +363,7 @@ impl AudioEngine {
                                             }
                                         });
 
-                                        stretch_inst.process(&in_slices[..stretch_channels], &mut out_slices[..stretch_channels]);
+                                        stretch.process(&in_slices[..stretch_channels], &mut out_slices[..stretch_channels]);
 
                                         for frame_idx in 0..num_out_frames {
                                             for out_c in 0..output_channels {

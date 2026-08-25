@@ -523,7 +523,12 @@ fn set_eq(state: State<'_, AppState>, bass_db: f32, mid_db: f32, treble_db: f32)
 
 #[tauri::command]
 fn set_eq_bands(state: State<'_, AppState>, bands: Vec<trackhelm_engine::command::EqBand>) -> Result<(), String> {
-    state.command_bus.send(Command::SetEqBands(bands))
+    let mut fixed_bands = [trackhelm_engine::command::EqBand::default(); trackhelm_engine::command::MAX_EQ_BANDS];
+    let count = std::cmp::min(bands.len(), trackhelm_engine::command::MAX_EQ_BANDS);
+    for (i, band) in bands.iter().take(count).enumerate() {
+        fixed_bands[i] = *band;
+    }
+    state.command_bus.send(Command::SetEqBands(fixed_bands, count))
 }
 
 #[tauri::command]
@@ -562,7 +567,12 @@ fn set_dual_compressor(
 
 #[tauri::command]
 fn set_regions(state: State<'_, AppState>, regions: Vec<trackhelm_engine::command::EngineRegion>) -> Result<(), String> {
-    state.command_bus.send(Command::SetRegions(regions))
+    let mut fixed_regions = [trackhelm_engine::command::EngineRegion::default(); trackhelm_engine::command::MAX_ENGINE_REGIONS];
+    let count = std::cmp::min(regions.len(), trackhelm_engine::command::MAX_ENGINE_REGIONS);
+    for (i, reg) in regions.iter().take(count).enumerate() {
+        fixed_regions[i] = *reg;
+    }
+    state.command_bus.send(Command::SetRegions(fixed_regions, count))
 }
 
 #[tauri::command]
