@@ -106,6 +106,8 @@
   let nextMarkerId = 1;
   let isDraggingMarker = false;
   let draggingMarkerId: number | null = null;
+  let currentlyDraggedMarkerId: number | null = null;
+  let isDraggingBadgeFromPdf = false;
   let lastScrolledMarkerId: number | null = null;
 
   const MARKER_COLORS = [
@@ -364,9 +366,12 @@
   }
 
   function handlePdfPageDrop(e: DragEvent, pageNum: number, pageWrapper: HTMLElement) {
-    const markerIdStr = e.dataTransfer?.getData("text/trackhelm-marker-id");
-    if (!markerIdStr) return;
-    const markerId = parseInt(markerIdStr, 10);
+    e.preventDefault();
+    e.stopPropagation();
+
+    const markerIdStr = e.dataTransfer?.getData("text/trackhelm-marker-id") || e.dataTransfer?.getData("text/plain");
+    const markerId = currentlyDraggedMarkerId || (markerIdStr ? parseInt(markerIdStr, 10) : null);
+    if (!markerId) return;
     const marker = markers.find(m => m.id === markerId);
     if (!marker) return;
 
@@ -379,6 +384,59 @@
       xPct,
       yPct
     };
+
+    currentlyDraggedMarkerId = null;
+    isDraggingBadgeFromPdf = false;
+
+    markers = markers;
+    saveCurrentTrackProfile(filePath);
+    renderPdfMarkerBadges();
+  }
+
+  function handlePdfContainerDrop(e: DragEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const markerIdStr = e.dataTransfer?.getData("text/trackhelm-marker-id") || e.dataTransfer?.getData("text/plain");
+    const markerId = currentlyDraggedMarkerId || (markerIdStr ? parseInt(markerIdStr, 10) : null);
+    if (!markerId) return;
+
+    const marker = markers.find(m => m.id === markerId);
+    if (!marker || !pdfContainer) return;
+
+    const cards = pdfContainer.querySelectorAll(".pdf-page-card");
+    let droppedOnCard = false;
+
+    for (let i = 0; i < cards.length; i++) {
+      const card = cards[i] as HTMLElement;
+      const rect = card.getBoundingClientRect();
+      if (
+        e.clientX >= rect.left &&
+        e.clientX <= rect.right &&
+        e.clientY >= rect.top &&
+        e.clientY <= rect.bottom
+      ) {
+        const pageNum = parseInt(card.dataset.pageNum || "1", 10);
+        const xPct = Math.max(0.01, Math.min(0.95, (e.clientX - rect.left) / rect.width));
+        const yPct = Math.max(0.01, Math.min(0.98, (e.clientY - rect.top) / rect.height));
+
+        marker.pdfAnchor = {
+          page: pageNum,
+          xPct,
+          yPct
+        };
+        droppedOnCard = true;
+        break;
+      }
+    }
+
+    if (!droppedOnCard && isDraggingBadgeFromPdf) {
+      marker.pdfAnchor = null;
+    }
+
+    currentlyDraggedMarkerId = null;
+    isDraggingBadgeFromPdf = false;
+
     markers = markers;
     saveCurrentTrackProfile(filePath);
     renderPdfMarkerBadges();
@@ -444,9 +502,11 @@
         // Drag to reposition
         badge.addEventListener("dragstart", (e) => {
           e.stopPropagation();
+          currentlyDraggedMarkerId = m.id;
+          isDraggingBadgeFromPdf = true;
           if (e.dataTransfer) {
+            e.dataTransfer.setData("text/plain", m.id.toString());
             e.dataTransfer.setData("text/trackhelm-marker-id", m.id.toString());
-            e.dataTransfer.setData("text/trackhelm-from-pdf", "true");
             e.dataTransfer.effectAllowed = "move";
           }
         });
@@ -455,6 +515,8 @@
           if (e.dataTransfer && e.dataTransfer.dropEffect === "none") {
             removeMarkerPdfAnchor(m.id);
           }
+          currentlyDraggedMarkerId = null;
+          isDraggingBadgeFromPdf = false;
         });
 
         card.appendChild(badge);
@@ -2505,7 +2567,13 @@
                   {/if}
 
                   <!-- Single scrollable column of auto-scaled PDF page canvases -->
-                  <div class="pdf-scroll-column" bind:this={pdfContainer} on:scroll={handlePdfScroll}></div>
+                  <div 
+                    class="pdf-scroll-column" 
+                    bind:this={pdfContainer} 
+                    on:scroll={handlePdfScroll}
+                    on:dragover={(e) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = "copy"; }}
+                    on:drop={handlePdfContainerDrop}
+                  ></div>
                 </div>
               {:else}
                 <div class="no-pdf-placeholder">
@@ -2689,10 +2757,17 @@
                 style="border-left: 3px solid {marker.color || '#ff9500'};"
                 draggable={editingMarkerId !== marker.id}
                 on:dragstart={(e) => {
+                  currentlyDraggedMarkerId = marker.id;
+                  isDraggingBadgeFromPdf = false;
                   if (e.dataTransfer) {
+                    e.dataTransfer.setData("text/plain", marker.id.toString());
                     e.dataTransfer.setData("text/trackhelm-marker-id", marker.id.toString());
                     e.dataTransfer.effectAllowed = "copyMove";
                   }
+                }}
+                on:dragend={() => {
+                  currentlyDraggedMarkerId = null;
+                  isDraggingBadgeFromPdf = false;
                 }}
               >
                 <!-- Color Dot Switcher -->
