@@ -7,17 +7,23 @@ use crate::decoder::DecodedAudio;
 pub struct EngineRegion {
     pub id: String,
     pub name: String,
+    #[serde(alias = "start_seconds")]
     pub start_seconds: f64,
+    #[serde(alias = "end_seconds")]
     pub end_seconds: f64,
+    #[serde(alias = "is_loop")]
     pub is_loop: bool,
+    #[serde(alias = "is_cut")]
     pub is_cut: bool,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EqBand {
+    #[serde(alias = "filter_type")]
     pub filter_type: crate::dsp::FilterType,
     pub freq: f64,
+    #[serde(alias = "gain_db")]
     pub gain_db: f64,
     pub q: f64,
     pub enabled: bool,

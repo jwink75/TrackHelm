@@ -593,9 +593,9 @@
     } else if (eqNodes && eqNodes.length > 0) {
       await invoke("set_eq_bands", {
         bands: eqNodes.map(n => ({
-          filter_type: n.filterType,
+          filterType: n.filterType,
           freq: n.freq,
-          gain_db: n.enabled ? n.gainDb : 0.0,
+          gainDb: n.enabled ? n.gainDb : 0.0,
           q: n.q,
           enabled: n.enabled
         }))

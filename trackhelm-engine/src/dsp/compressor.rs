@@ -18,12 +18,18 @@ pub enum CompRouting {
 #[serde(rename_all = "camelCase")]
 pub struct CompStageParams {
     pub enabled: bool,
+    #[serde(alias = "comp_type")]
     pub comp_type: CompType,
+    #[serde(alias = "threshold_db")]
     pub threshold_db: f32,
     pub ratio: f32,
+    #[serde(alias = "knee_db")]
     pub knee_db: f32,
+    #[serde(alias = "attack_ms")]
     pub attack_ms: f32,
+    #[serde(alias = "release_ms")]
     pub release_ms: f32,
+    #[serde(alias = "makeup_db")]
     pub makeup_db: f32,
 }
 
