@@ -2426,10 +2426,12 @@
   }
 
   function saveRenameRegion(region: Region) {
-    if (editingRegionName.trim()) {
+    if (editingRegionName && editingRegionName.trim()) {
       region.name = editingRegionName.trim();
       regions = [...regions];
       syncRegionsToEngine();
+      saveCurrentTrackProfile(filePath);
+      drawMainWaveform();
     }
     editingRegionId = null;
   }
@@ -2980,15 +2982,10 @@
       const topThreshY = halfHeight - threshLinear * maxAmplitude;
       const botThreshY = halfHeight + threshLinear * maxAmplitude;
 
-      // Soft yellow translucent overlay above top threshold and below bottom threshold
-      ctx.fillStyle = "rgba(255, 214, 10, 0.08)";
-      ctx.fillRect(0, rulerHeight, width, Math.max(0, topThreshY - rulerHeight));
-      ctx.fillRect(0, botThreshY, width, height - botThreshY);
-
-      // Yellow dashed threshold boundary lines
-      ctx.strokeStyle = "rgba(255, 214, 10, 0.65)";
+      // Dotted threshold boundary lines only (no solid/translucent color fill)
+      ctx.strokeStyle = "rgba(255, 214, 10, 0.75)";
       ctx.lineWidth = 1;
-      ctx.setLineDash([4, 4]);
+      ctx.setLineDash([3, 3]);
       
       ctx.beginPath();
       ctx.moveTo(0, topThreshY);
@@ -4143,13 +4140,20 @@
                         autofocus
                       />
                     {:else}
-                      <span class="region-name" on:dblclick={() => startRenameRegion(region)}>{region.name}</span>
+                      <span class="region-name" on:dblclick={() => startRenameRegion(region)} title="Double-click to rename">{region.name}</span>
                     {/if}
                     <span class="region-span">{formatTime(region.startTime)} – {formatTime(region.endTime)}</span>
                   </div>
                 </div>
 
                 <div class="region-item-toggles">
+                  <button 
+                    class="marker-action-btn" 
+                    title="Rename region" 
+                    on:click|stopPropagation={() => startRenameRegion(region)}
+                  >
+                    ✏️
+                  </button>
                   <button 
                     class="region-toggle-btn" 
                     class:active={region.isLoop} 
