@@ -261,10 +261,28 @@
           "markdownDescription": "Enables the seek command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_compressor command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-compressor",
+          "markdownDescription": "Enables the set_compressor command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_eq command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-eq",
+          "markdownDescription": "Enables the set_eq command without any pre-configured scope."
+        },
+        {
           "description": "Enables the set_pitch command without any pre-configured scope.",
           "type": "string",
           "const": "allow-set-pitch",
           "markdownDescription": "Enables the set_pitch command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_regions command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-regions",
+          "markdownDescription": "Enables the set_regions command without any pre-configured scope."
         },
         {
           "description": "Enables the set_speed command without any pre-configured scope.",
@@ -369,10 +387,28 @@
           "markdownDescription": "Denies the seek command without any pre-configured scope."
         },
         {
+          "description": "Denies the set_compressor command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-compressor",
+          "markdownDescription": "Denies the set_compressor command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_eq command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-eq",
+          "markdownDescription": "Denies the set_eq command without any pre-configured scope."
+        },
+        {
           "description": "Denies the set_pitch command without any pre-configured scope.",
           "type": "string",
           "const": "deny-set-pitch",
           "markdownDescription": "Denies the set_pitch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_regions command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-regions",
+          "markdownDescription": "Denies the set_regions command without any pre-configured scope."
         },
         {
           "description": "Denies the set_speed command without any pre-configured scope.",
