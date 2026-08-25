@@ -1674,19 +1674,6 @@
 <svelte:window on:keydown={handleBrowserKeydown} />
 
 <main class="app-container">
-  <!-- Top bar -->
-  <header class="app-header">
-    <div class="header-left">
-      <span class="logo">TrackHelm</span>
-      <span class="file-path">{filePath || "No File Loaded"}</span>
-    </div>
-    <div class="header-right">
-      <span class="status-indicator" class:playing={isPlaying}>
-        {isPlaying ? "PLAYING" : "STANDBY"}
-      </span>
-    </div>
-  </header>
-
   <div class="workspace-grid">
     
     <!-- LEFT SIDEBAR: Switchable Browser & Playlist -->
@@ -1803,18 +1790,15 @@
     <!-- CENTER AREA: Resizable Waveforms & Fixed Bottom controls -->
     <section class="center-content" bind:this={centerContentElement}>
       
-      <!-- Current File info header -->
+      <!-- Current File info header (Single compact row) -->
       <div class="track-header">
         <div class="track-title-info">
-          <h2>
-            <span class="track-badge" class:main-badge={activeTrackMode === "main"}>
-              {activeTrackMode.toUpperCase()}
-            </span>
+          <span class="track-badge" class:main-badge={activeTrackMode === "main"}>
+            {activeTrackMode.toUpperCase()}
+          </span>
+          <span class="track-title-text" title={filePath}>
             {fileName || "Drag & Drop Audio file to begin"}
-          </h2>
-          {#if fileName}
-            <span class="track-spec">{channels} Channels • {sampleRate / 1000} kHz</span>
-          {/if}
+          </span>
         </div>
         <div class="time-readout">
           <span class="time-large">{formatTime(currentTime)}</span>
@@ -1831,28 +1815,29 @@
             class:active={activeCenterTab === "notes"} 
             on:click={() => activeCenterTab = "notes"}
           >
-            📝 NOTES
+            NOTES
           </button>
           <button 
             class="deck-tab-btn" 
             class:active={activeCenterTab === "lyrics"} 
             on:click={() => activeCenterTab = "lyrics"}
           >
-            🎤 LYRICS
+            LYRICS
           </button>
           <button 
             class="deck-tab-btn" 
             class:active={activeCenterTab === "metadata"} 
             on:click={() => activeCenterTab = "metadata"}
           >
-            ℹ️ METADATA
+            METADATA
           </button>
           <button 
-            class="deck-tab-btn" 
+            class="deck-tab-btn pdf-tab-btn" 
             class:active={activeCenterTab === "pdf"} 
             on:click={() => activeCenterTab = "pdf"}
+            title={pdfChartPath || "Sheet Music / Lead Sheet"}
           >
-            📄 SHEET MUSIC (PDF)
+            {pdfChartName || "SHEET MUSIC (PDF)"}
           </button>
         </div>
 
@@ -2043,27 +2028,23 @@
             <div class="tab-pane pdf-pane">
               {#if pdfChartPath}
                 <div class="pdf-viewer-container">
-                  <div class="pdf-toolbar">
-                    <div class="pdf-toolbar-left">
-                      <span class="pdf-title">📄 {pdfChartName}</span>
-                      {#if pdfTotalPages > 0}
-                        <span class="pdf-page-count">{pdfTotalPages} {pdfTotalPages === 1 ? 'Page' : 'Pages'}</span>
-                      {/if}
-                    </div>
-                    <div class="pdf-toolbar-actions">
-                      <button class="link-pdf-small-btn" on:click={associatePdfChart} title="Change PDF file">
-                        Change File
-                      </button>
-                      <button class="popout-pdf-btn" on:click={openPdfInExternalViewer} title="Open in macOS Preview / external viewer">
-                        ⤢ Open in Floating Window
-                      </button>
-                    </div>
+                  <!-- Sleek floating overlay in corner -->
+                  <div class="pdf-floating-controls">
+                    {#if pdfTotalPages > 0}
+                      <span class="pdf-page-pill">{pdfTotalPages} {pdfTotalPages === 1 ? 'Page' : 'Pages'}</span>
+                    {/if}
+                    <button class="pdf-mini-btn" on:click={associatePdfChart} title="Change PDF file">
+                      Change
+                    </button>
+                    <button class="pdf-mini-btn popout" on:click={openPdfInExternalViewer} title="Open in Floating Window">
+                      ⤢ Float
+                    </button>
                   </div>
 
                   {#if isLoadingPdf}
                     <div class="pdf-loading-overlay">
                       <span class="pdf-loading-spinner">⏳</span>
-                      <span>Rendering sheet music PDF...</span>
+                      <span>Rendering sheet music...</span>
                     </div>
                   {/if}
 
@@ -2094,15 +2075,10 @@
       <!-- Waveforms (Overview Alt 64px, Overview Main 64px, Main Waveform 256px) -->
       <div class="waveforms-flexbox">
         <!-- Overview Waveform (Alternate File) -->
-        <div class="waveform-block block-alt-overview">
-          <div class="waveform-label-row">
-            <span class="waveform-label">WAVEFORM OVERVIEW (ALTERNATE FILE)</span>
-            {#if alternateTrack}
-              <span class="overview-desc-tag" class:active={activeTrackMode === "alternate"}>
-                Double-click to activate
-              </span>
-            {/if}
-          </div>
+        <div class="waveform-block block-alt-overview" title="Double-click to activate">
+          <span class="overview-watermark-tag alt-tag">
+            ALTERNATE
+          </span>
           <!-- svelte-ignore a11y-click-events-have-key-events -->
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
           <canvas 
@@ -2114,15 +2090,10 @@
         </div>
 
         <!-- Overview Waveform (Main File) -->
-        <div class="waveform-block block-main-overview">
-          <div class="waveform-label-row">
-            <span class="waveform-label">WAVEFORM OVERVIEW (MAIN FILE)</span>
-            {#if mainTrack}
-              <span class="overview-desc-tag" class:active={activeTrackMode === "main"}>
-                Double-click to activate
-              </span>
-            {/if}
-          </div>
+        <div class="waveform-block block-main-overview" title="Double-click to activate">
+          <span class="overview-watermark-tag main-tag">
+            MAIN
+          </span>
           <!-- svelte-ignore a11y-click-events-have-key-events -->
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
           <canvas 
@@ -2135,7 +2106,6 @@
 
         <!-- Main Waveform Box (256px height) -->
         <div class="waveform-block block-main-waveform">
-          <div class="waveform-label">MAIN WAVEFORM DISPLAY (ZOOMED & SCROLLING)</div>
           <!-- svelte-ignore a11y-click-events-have-key-events -->
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
           <canvas 
@@ -2150,8 +2120,7 @@
       <!-- Bottom controls bar (Transport & Loop controls) -->
       <div class="controls-row">
         <!-- Transport controls -->
-        <div class="control-group">
-          <div class="group-label">PLAYBACK</div>
+        <div class="control-group transport-group">
           <div class="btn-row">
             <button class="control-btn" on:click={handleRewind} title="Rewind to start">⏮</button>
             <button class="control-btn" on:click={jumpToPrevMarker} title="Previous Marker">⏪</button>
@@ -2164,8 +2133,7 @@
         </div>
 
         <!-- Looping, markers, and Zoom controls -->
-        <div class="control-group">
-          <div class="group-label">MARKERS / LOOPING / ZOOM (Dbl-click slider resets)</div>
+        <div class="control-group loop-group">
           <div class="loop-zoom-grid">
             <div class="btn-row">
               <button class="control-btn accent-btn" on:click={addMarker}>+ Add Marker</button>
@@ -2572,65 +2540,13 @@
     background-color: #181818;
   }
 
-  /* Header Bar styling */
-  .app-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    background-color: #2d2d2d; /* Dorico dark grey toolbar */
-    border-bottom: 1px solid #3c3c3c;
-    padding: 8px 16px;
-    height: 40px;
-    box-sizing: border-box;
-  }
-
-  .header-left {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-  }
-
-  .logo {
-    font-weight: 700;
-    font-size: 1.1rem;
-    letter-spacing: -0.02em;
-    color: #3b99fc; /* Dorico active light blue */
-  }
-
-  .file-path {
-    font-family: monospace;
-    font-size: 0.75rem;
-    color: #8e8e8e;
-    max-width: 400px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .status-indicator {
-    font-size: 0.7rem;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    padding: 3px 8px;
-    border-radius: 3px;
-    background-color: #222222;
-    color: #8e8e8e;
-    border: 1px solid #3c3c3c;
-  }
-
-  .status-indicator.playing {
-    background-color: rgba(59, 153, 252, 0.15);
-    color: #3b99fc;
-    border-color: rgba(59, 153, 252, 0.4);
-  }
-
-  /* Grid layout spanning 3-column workspaces */
+  /* Grid layout spanning 3-column workspaces (Full 100vh Height) */
   .workspace-grid {
     display: grid;
     grid-template-columns: 240px 1fr 280px;
     flex-grow: 1;
     overflow: hidden;
-    height: calc(100vh - 40px);
+    height: 100vh;
   }
 
   /* Shared Panels Styling */
@@ -2885,7 +2801,7 @@
     padding: 10px 16px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
     overflow: hidden;
     height: 100%;
     box-sizing: border-box;
@@ -2895,19 +2811,17 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    border-bottom: 1px solid #2d2d2d;
-    padding-bottom: 6px;
+    border-bottom: 1px solid #28282a;
+    padding-bottom: 4px;
     flex-shrink: 0;
   }
 
-  h2 {
-    margin: 0;
-    font-size: 1.25rem;
-    font-weight: 600;
-    color: #ffffff;
+  .track-title-info {
     display: flex;
     align-items: center;
     gap: 8px;
+    min-width: 0;
+    overflow: hidden;
   }
 
   .track-badge {
@@ -2918,6 +2832,7 @@
     border-radius: 3px;
     background-color: #ff9500;
     color: #000000;
+    flex-shrink: 0;
   }
 
   .track-badge.main-badge {
@@ -2925,34 +2840,40 @@
     color: #ffffff;
   }
 
-  .track-spec {
-    font-size: 0.75rem;
-    color: #8e8e8e;
+  .track-title-text {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #ffffff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .time-readout {
     display: flex;
     align-items: baseline;
-    gap: 8px;
+    gap: 6px;
     font-family: Menlo, Monaco, Consolas, monospace;
     background-color: #141414;
-    padding: 6px 12px;
-    border-radius: 6px;
+    padding: 2px 8px;
+    border-radius: 4px;
     border: 1px solid #2d2d2d;
+    flex-shrink: 0;
   }
 
   .time-large {
-    font-size: 1.6rem;
+    font-size: 1.1rem;
     font-weight: 700;
     color: #ffffff;
   }
 
   .time-sep {
-    color: #444444;
+    color: #555555;
+    font-size: 0.85rem;
   }
 
   .time-total {
-    font-size: 1.0rem;
+    font-size: 0.85rem;
     color: #8e8e8e;
   }
 
@@ -2966,6 +2887,7 @@
   }
 
   .waveform-block {
+    position: relative;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -2974,6 +2896,31 @@
   .block-alt-overview, .block-main-overview {
     flex-shrink: 0;
     height: 64px;
+  }
+
+  .overview-watermark-tag {
+    position: absolute;
+    top: 4px;
+    left: 6px;
+    font-size: 0.6rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    padding: 1px 5px;
+    border-radius: 3px;
+    pointer-events: none;
+    z-index: 2;
+  }
+
+  .overview-watermark-tag.alt-tag {
+    background-color: rgba(255, 149, 0, 0.25);
+    color: #ff9500;
+    border: 1px solid rgba(255, 149, 0, 0.4);
+  }
+
+  .overview-watermark-tag.main-tag {
+    background-color: rgba(59, 153, 252, 0.25);
+    color: #3b99fc;
+    border: 1px solid rgba(59, 153, 252, 0.4);
   }
 
   .block-main-waveform {
@@ -2986,36 +2933,10 @@
     border-radius: 4px;
   }
 
-  .waveform-label-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    margin-bottom: 2px;
-  }
-
-  .waveform-label {
-    font-size: 0.65rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    color: #8e8e8e;
-  }
-
-  .overview-desc-tag {
-    font-size: 0.6rem;
-    color: #717171;
-    font-style: italic;
-  }
-
-  .overview-desc-tag.active {
-    color: #3b99fc;
-    font-weight: bold;
-    font-style: normal;
-  }
-
   .overview-canvas {
     display: block;
     width: 100%;
-    height: 45px;
+    height: 64px;
     cursor: pointer;
     border: 1px solid #3c3c3c;
     border-radius: 4px;
@@ -3031,40 +2952,39 @@
   /* Controls row */
   .controls-row {
     display: flex;
-    gap: 16px;
+    gap: 10px;
     flex-shrink: 0;
-    margin-top: 5px;
+    margin-top: 2px;
   }
 
   .control-group {
-    background-color: #252526;
-    border: 1px solid #3c3c3c;
-    border-radius: 6px;
-    padding: 10px 16px;
-    flex-grow: 1;
+    background-color: #222223;
+    border: 1px solid #363638;
+    border-radius: 4px;
+    padding: 4px 10px;
   }
 
-  .group-label {
-    font-size: 0.65rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    color: #8e8e8e;
-    margin-bottom: 8px;
+  .transport-group {
+    flex: 0 0 auto;
+  }
+
+  .loop-group {
+    flex: 1;
   }
 
   .btn-row {
     display: flex;
-    gap: 8px;
+    gap: 6px;
   }
 
   .control-btn {
-    background-color: #333333;
+    background-color: #303032;
     color: #d1d1d1;
-    border: 1px solid #444444;
-    padding: 8px 16px;
+    border: 1px solid #424245;
+    padding: 5px 12px;
     border-radius: 4px;
     cursor: pointer;
-    font-size: 0.9rem;
+    font-size: 0.8rem;
     font-weight: 600;
     transition: all 0.15s ease;
   }
@@ -3079,8 +2999,7 @@
     background-color: #3b99fc;
     color: #ffffff;
     border-color: #258bf5;
-    flex-grow: 1;
-    font-size: 0.95rem;
+    font-size: 0.82rem;
   }
 
   .play-btn:hover {
@@ -3455,14 +3374,14 @@
     min-height: 0;
     background-color: #161617;
     border: 1px solid #2d2d2d;
-    border-radius: 6px;
+    border-radius: 4px;
     overflow: hidden;
   }
 
   .deck-tabs-header {
     display: flex;
-    background-color: #1f1f21;
-    border-bottom: 1px solid #2d2d2d;
+    background-color: #1a1a1c;
+    border-bottom: 1px solid #262628;
     flex-shrink: 0;
   }
 
@@ -3470,18 +3389,22 @@
     background: transparent;
     border: none;
     color: #8e8e8e;
-    font-size: 0.7rem;
+    font-size: 0.68rem;
     font-weight: 700;
-    letter-spacing: 0.05em;
-    padding: 6px 14px;
+    letter-spacing: 0.06em;
+    padding: 3px 12px;
     cursor: pointer;
     border-bottom: 2px solid transparent;
     transition: all 0.15s ease;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 280px;
   }
 
   .deck-tab-btn:hover {
     color: #d1d1d1;
-    background-color: #252528;
+    background-color: #222225;
   }
 
   .deck-tab-btn.active {
@@ -3490,13 +3413,20 @@
     border-bottom: 2px solid #3b99fc;
   }
 
+  .deck-tab-btn.pdf-tab-btn {
+    color: #a8d1ff;
+  }
+
+  .deck-tab-btn.pdf-tab-btn.active {
+    color: #ffffff;
+  }
+
   .deck-tab-content {
     flex-grow: 1;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
-    padding: 8px 12px;
     min-height: 0;
+    overflow: hidden;
   }
 
   .tab-pane {
@@ -3505,26 +3435,33 @@
     flex-direction: column;
     height: 100%;
     min-height: 0;
+    box-sizing: border-box;
+  }
+
+  .notes-pane, .lyrics-pane {
+    padding: 6px;
   }
 
   .rehearsal-textarea {
-    width: 100%;
     flex-grow: 1;
-    box-sizing: border-box;
-    background-color: #111112;
-    border: 1px solid #2a2a2c;
+    width: 100%;
+    height: 100%;
+    background-color: #0f0f10;
+    border: 1px solid #262628;
     border-radius: 4px;
     color: #e0e0e0;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-family: inherit;
     font-size: 0.85rem;
     line-height: 1.5;
     padding: 8px 12px;
+    box-sizing: border-box;
     resize: none;
     outline: none;
   }
 
   .rehearsal-textarea:focus {
     border-color: #3b99fc;
+    background-color: #121214;
   }
 
   .lyrics-textarea {
@@ -3706,79 +3643,62 @@
   }
 
   .pdf-viewer-container {
+    position: relative;
     display: flex;
     flex-direction: column;
     height: 100%;
+    min-height: 0;
+  }
+
+  .pdf-floating-controls {
+    position: absolute;
+    top: 8px;
+    right: 14px;
+    z-index: 10;
+    display: flex;
+    align-items: center;
     gap: 6px;
+    background-color: rgba(22, 22, 25, 0.85);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    padding: 2px 8px;
+    border-radius: 16px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
   }
 
-  .pdf-toolbar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    background-color: #202023;
-    padding: 6px 12px;
-    border-radius: 4px;
-    border: 1px solid #303034;
-    flex-shrink: 0;
-  }
-
-  .pdf-toolbar-left {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-
-  .pdf-title {
-    font-size: 0.78rem;
-    font-weight: 600;
-    color: #ffffff;
-  }
-
-  .pdf-page-count {
-    font-size: 0.68rem;
-    background-color: #2b2b30;
+  .pdf-page-pill {
+    font-size: 0.65rem;
+    font-weight: 700;
     color: #a0a0a8;
-    padding: 2px 6px;
-    border-radius: 10px;
     font-family: monospace;
+    padding-right: 4px;
   }
 
-  .pdf-toolbar-actions {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .link-pdf-small-btn {
-    background-color: #2b2b30;
+  .pdf-mini-btn {
+    background: #2a2a2e;
     color: #d1d1d1;
-    border: 1px solid #3c3c42;
-    border-radius: 4px;
-    padding: 3px 8px;
-    font-size: 0.7rem;
+    border: 1px solid #444448;
+    border-radius: 10px;
+    padding: 1px 7px;
+    font-size: 0.65rem;
     cursor: pointer;
     transition: all 0.15s ease;
   }
 
-  .link-pdf-small-btn:hover {
+  .pdf-mini-btn:hover {
     background-color: #383840;
     color: #ffffff;
   }
 
-  .popout-pdf-btn {
+  .pdf-mini-btn.popout {
     background-color: #3b99fc;
+    border-color: #3b99fc;
     color: #ffffff;
-    border: none;
-    border-radius: 4px;
-    padding: 3px 8px;
-    font-size: 0.72rem;
     font-weight: 600;
-    cursor: pointer;
-    transition: background-color 0.15s ease;
   }
 
-  .popout-pdf-btn:hover {
+  .pdf-mini-btn.popout:hover {
     background-color: #5faeff;
   }
 
