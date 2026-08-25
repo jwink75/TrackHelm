@@ -239,9 +239,25 @@
   let isLoadingPdf = false;
   let pdfTotalPages = 0;
   let pdfCurrentPage = 1;
+  let isPdfInverted = false;
   let pdfRenderError = "";
   let currentRenderTaskId = 0;
   let lastRenderedWidth = 0;
+
+  function togglePdfInvert() {
+    isPdfInverted = !isPdfInverted;
+    localStorage.setItem("th_pdf_inverted", isPdfInverted ? "1" : "0");
+    if (pdfContainer) {
+      const cards = pdfContainer.querySelectorAll(".pdf-page-card");
+      cards.forEach(c => {
+        if (isPdfInverted) {
+          c.classList.add("inverted");
+        } else {
+          c.classList.remove("inverted");
+        }
+      });
+    }
+  }
 
   function handlePdfScroll() {
     if (!pdfContainer) return;
@@ -294,7 +310,7 @@
         const viewport = page.getViewport({ scale: baseScale * dpr });
 
         const pageWrapper = document.createElement("div");
-        pageWrapper.className = "pdf-page-card";
+        pageWrapper.className = `pdf-page-card ${isPdfInverted ? 'inverted' : ''}`;
         pageWrapper.dataset.pageNum = pageNum.toString();
 
         const canvas = document.createElement("canvas");
@@ -440,6 +456,9 @@
       pdfChartPath = savedPdf;
       pdfChartName = pdfChartPath.split("/").pop() || pdfChartPath;
     }
+
+    const savedInvert = localStorage.getItem("th_pdf_inverted");
+    if (savedInvert === "1") isPdfInverted = true;
 
     const savedVersions = localStorage.getItem("th_associated_versions");
     if (savedVersions) associatedVersions = JSON.parse(savedVersions);
@@ -606,8 +625,10 @@
           setZoom(1.0);
         }
 
-        // Restore saved Track Profile (Knobs, Markers, PDF, Associated Versions)
-        await loadTrackProfile(path);
+        // Restore saved Track Profile only for main song
+        if (target === "main") {
+          await loadTrackProfile(path);
+        }
 
         // Read audio tags
         invoke("read_audio_metadata", { path }).then((res: any) => {
@@ -659,7 +680,7 @@
 
     // Restore playhead position
     if (targetTime > 0 && targetTime < targetTrack.duration) {
-      await invoke("seek", { position: targetTime });
+      await invoke("seek", { seconds: targetTime });
     }
 
     if (wasPlaying) {
@@ -2115,6 +2136,14 @@
                     {#if pdfTotalPages > 0}
                       <span class="pdf-page-pill">{pdfCurrentPage}/{pdfTotalPages}</span>
                     {/if}
+                    <button 
+                      class="pdf-mini-btn" 
+                      class:active-toggle={isPdfInverted}
+                      on:click={togglePdfInvert} 
+                      title="Toggle Inverted / Negative Dark Mode (White notes on Black paper)"
+                    >
+                      {isPdfInverted ? "☀️ Normal" : "🌙 Invert"}
+                    </button>
                     <button class="pdf-mini-btn" on:click={associatePdfChart} title="Change PDF file">
                       Change
                     </button>
@@ -3806,6 +3835,17 @@
     color: #ffffff;
   }
 
+  .pdf-mini-btn.active-toggle {
+    background-color: #ff9500;
+    border-color: #ff9500;
+    color: #000000;
+    font-weight: 700;
+  }
+
+  .pdf-mini-btn.active-toggle:hover {
+    background-color: #ffaa33;
+  }
+
   .pdf-mini-btn.popout {
     background-color: #3b99fc;
     border-color: #3b99fc;
@@ -3889,6 +3929,14 @@
     overflow: hidden;
     margin: 0 auto;
     box-sizing: border-box;
+    transition: filter 0.2s ease, background-color 0.2s ease;
+  }
+
+  :global(.pdf-page-card.inverted) {
+    background-color: #000000 !important;
+    filter: invert(1) hue-rotate(180deg);
+    border: 1px solid #28282c;
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.85);
   }
 
   :global(.pdf-page-canvas) {
