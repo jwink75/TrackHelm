@@ -605,6 +605,27 @@
       return;
     }
     if (editingMarkerId === marker.id) return;
+
+    if (e.shiftKey) {
+      if (selectedMarkerIds.has(marker.id)) {
+        selectedMarkerIds.delete(marker.id);
+      } else {
+        if (selectedMarkerIds.size >= 2) selectedMarkerIds.clear();
+        selectedMarkerIds.add(marker.id);
+      }
+      selectedMarkerIds = selectedMarkerIds;
+      if (selectedMarkerIds.size === 2) {
+        const arr = markers.filter(x => selectedMarkerIds.has(x.id)).sort((a, b) => a.time - b.time);
+        if (arr.length === 2) {
+          timeSelection = { start: arr[0].time, end: arr[1].time };
+        }
+      } else {
+        timeSelection = null;
+      }
+      drawMainWaveform();
+      return;
+    }
+
     startMarkerPointerDrag(e, marker, false, false);
   }
 
@@ -1988,6 +2009,54 @@
   let hasDraggedMain = false;
 
   let isDraggingOverview = false;
+  let isDraggingSelectionEdge: "start" | "end" | null = null;
+  let isDraggingRegionEdge: { id: string, edge: "start" | "end" } | null = null;
+
+  function getHoveredEdge(clickX: number, width: number, startProgress: number, windowWidth: number): { type: "selection" | "region", edge: "start" | "end", regionId?: string } | null {
+    const edgeThresholdPx = 8;
+
+    // 1. Check timeSelection edges
+    if (timeSelection && duration > 0) {
+      const selStartX = ((timeSelection.start / duration - startProgress) / windowWidth) * width;
+      const selEndX = ((timeSelection.end / duration - startProgress) / windowWidth) * width;
+      if (Math.abs(clickX - selStartX) <= edgeThresholdPx) {
+        return { type: "selection", edge: "start" };
+      }
+      if (Math.abs(clickX - selEndX) <= edgeThresholdPx) {
+        return { type: "selection", edge: "end" };
+      }
+    }
+
+    // 2. Check regions edges (reverse order so top/selected regions get priority)
+    for (let i = regions.length - 1; i >= 0; i--) {
+      const reg = regions[i];
+      const regStartX = ((reg.startTime / duration - startProgress) / windowWidth) * width;
+      const regEndX = ((reg.endTime / duration - startProgress) / windowWidth) * width;
+      if (Math.abs(clickX - regStartX) <= edgeThresholdPx) {
+        return { type: "region", edge: "start", regionId: reg.id };
+      }
+      if (Math.abs(clickX - regEndX) <= edgeThresholdPx) {
+        return { type: "region", edge: "end", regionId: reg.id };
+      }
+    }
+
+    return null;
+  }
+
+  function handleMainCanvasHover(e: MouseEvent) {
+    if (!mainCanvas || isPanning || isShiftSelecting || isDraggingMarker || isDraggingSelectionEdge || isDraggingRegionEdge) return;
+    const rect = mainCanvas.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const windowWidth = 1.0 / zoom;
+    const startProgress = zoom > 1.001 ? Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2)) : 0;
+
+    const hovered = getHoveredEdge(clickX, rect.width, startProgress, windowWidth);
+    if (hovered) {
+      mainCanvas.style.cursor = "ew-resize";
+    } else {
+      mainCanvas.style.cursor = "default";
+    }
+  }
 
   // Main Waveform: Mouse Drag to Pan, click to seek, Shift-drag region select, and Ruler Marker Dragging
   function handleMainMouseDown(e: MouseEvent) {
@@ -2019,6 +2088,8 @@
               if (selectedMarkerIds.size === 2) {
                 const arr = markers.filter(x => selectedMarkerIds.has(x.id)).sort((a, b) => a.time - b.time);
                 timeSelection = { start: arr[0].time, end: arr[1].time };
+              } else {
+                timeSelection = null;
               }
               drawMainWaveform();
               return;
@@ -2027,6 +2098,23 @@
             return;
           }
         }
+      }
+    }
+
+    // Check if clicked near an edge of timeSelection or a Region to resize
+    const edgeHit = getHoveredEdge(clickX, rect.width, startProgress, windowWidth);
+    if (edgeHit) {
+      if (edgeHit.type === "selection") {
+        isDraggingSelectionEdge = edgeHit.edge;
+        window.addEventListener("mousemove", handleMainMouseMove);
+        window.addEventListener("mouseup", handleMainMouseUp);
+        return;
+      } else if (edgeHit.type === "region" && edgeHit.regionId) {
+        isDraggingRegionEdge = { id: edgeHit.regionId, edge: edgeHit.edge };
+        selectedRegionId = edgeHit.regionId;
+        window.addEventListener("mousemove", handleMainMouseMove);
+        window.addEventListener("mouseup", handleMainMouseUp);
+        return;
       }
     }
 
@@ -2077,6 +2165,44 @@
       }
       drawMainWaveform();
       drawOverviewWaveform();
+      return;
+    }
+
+    if (isDraggingSelectionEdge && mainCanvas && timeSelection) {
+      const rect = mainCanvas.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const clickPct = Math.max(0, Math.min(1.0, clickX / rect.width));
+      const windowWidth = 1.0 / zoom;
+      const startProgress = zoom > 1.001 ? Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2)) : 0;
+      const currentDragTime = Math.max(0, Math.min(duration, (startProgress + clickPct * windowWidth) * duration));
+
+      if (isDraggingSelectionEdge === "start") {
+        timeSelection.start = Math.max(0, Math.min(timeSelection.end - 0.02, currentDragTime));
+      } else {
+        timeSelection.end = Math.min(duration, Math.max(timeSelection.start + 0.02, currentDragTime));
+      }
+      drawMainWaveform();
+      return;
+    }
+
+    if (isDraggingRegionEdge && mainCanvas) {
+      const rect = mainCanvas.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const clickPct = Math.max(0, Math.min(1.0, clickX / rect.width));
+      const windowWidth = 1.0 / zoom;
+      const startProgress = zoom > 1.001 ? Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2)) : 0;
+      const currentDragTime = Math.max(0, Math.min(duration, (startProgress + clickPct * windowWidth) * duration));
+
+      const reg = regions.find(r => r.id === isDraggingRegionEdge!.id);
+      if (reg) {
+        if (isDraggingRegionEdge.edge === "start") {
+          reg.startTime = Math.max(0, Math.min(reg.endTime - 0.02, currentDragTime));
+        } else {
+          reg.endTime = Math.min(duration, Math.max(reg.startTime + 0.02, currentDragTime));
+        }
+        regions = [...regions];
+      }
+      drawMainWaveform();
       return;
     }
 
@@ -2135,6 +2261,24 @@
       if (activeCenterTab === "pdf") {
         renderPdfMarkerBadges();
       }
+      return;
+    }
+
+    if (isDraggingSelectionEdge) {
+      isDraggingSelectionEdge = null;
+      window.removeEventListener("mousemove", handleMainMouseMove);
+      window.removeEventListener("mouseup", handleMainMouseUp);
+      drawMainWaveform();
+      return;
+    }
+
+    if (isDraggingRegionEdge) {
+      isDraggingRegionEdge = null;
+      window.removeEventListener("mousemove", handleMainMouseMove);
+      window.removeEventListener("mouseup", handleMainMouseUp);
+      syncRegionsToEngine();
+      saveCurrentTrackProfile(filePath);
+      drawMainWaveform();
       return;
     }
 
@@ -2728,6 +2872,23 @@
         ctx.strokeStyle = "#0a84ff";
         ctx.lineWidth = 1.5;
         ctx.strokeRect(x1, rulerHeight, x2 - x1, height - rulerHeight);
+
+        // Selection Edge Draggable Grab Handles
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(x1 - 2, height / 2 - 12, 4, 24);
+        ctx.fillStyle = "#0a84ff";
+        ctx.fillRect(x1 - 1, height / 2 - 8, 2, 16);
+
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(x2 - 2, height / 2 - 12, 4, 24);
+        ctx.fillStyle = "#0a84ff";
+        ctx.fillRect(x2 - 1, height / 2 - 8, 2, 16);
+
+        // Top Selection Duration Badge
+        const selSec = (timeSelection.end - timeSelection.start).toFixed(2);
+        ctx.fillStyle = "#0a84ff";
+        ctx.font = "bold 9px monospace";
+        ctx.fillText(`⟷ ${selSec}s`, x1 + 6, rulerHeight + 12);
       }
     }
 
@@ -2741,6 +2902,7 @@
         const renderX1 = Math.max(0, x1);
         const renderX2 = Math.min(width, x2);
         const regWidth = renderX2 - renderX1;
+        const handleColor = reg.isCut ? "#ff453a" : reg.isLoop ? "#30d158" : "#0a84ff";
 
         if (reg.isCut) {
           // Grayed out cut region with red-tinted diagonal hazard hatch
@@ -2795,6 +2957,17 @@
           ctx.font = "9px sans-serif";
           ctx.fillText(`REGION: ${reg.name}`, renderX1 + 6, rulerHeight + 13);
         }
+
+        // Draggable Edge Grab Handles for Region Left & Right Edges
+        ctx.fillStyle = handleColor;
+        ctx.fillRect(renderX1 - 2, height / 2 - 10, 4, 20);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(renderX1 - 1, height / 2 - 6, 2, 12);
+
+        ctx.fillStyle = handleColor;
+        ctx.fillRect(renderX2 - 2, height / 2 - 10, 4, 20);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(renderX2 - 1, height / 2 - 6, 2, 12);
       }
     }
 
@@ -2931,9 +3104,23 @@
       if (markerPct >= startProgress && markerPct <= endProgress) {
         const markerX = ((markerPct - startProgress) / windowWidth) * width;
         const color = marker.color || "#ff9500";
+        const isMarkerSelected = selectedMarkerIds.has(marker.id);
+
+        if (isMarkerSelected) {
+          // Luminous selection aura for selected markers
+          ctx.strokeStyle = "#ffffff";
+          ctx.lineWidth = 4;
+          ctx.beginPath();
+          ctx.moveTo(markerX, rulerHeight);
+          ctx.lineTo(markerX, height);
+          ctx.stroke();
+
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(markerX - 2, 0, 12, rulerHeight);
+        }
 
         // Vertical Marker Line
-        ctx.strokeStyle = color; 
+        ctx.strokeStyle = isMarkerSelected ? "#ffffff" : color; 
         ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.moveTo(markerX, rulerHeight);
@@ -2951,7 +3138,7 @@
         ctx.fill();
 
         // Label Badge
-        ctx.fillStyle = color;
+        ctx.fillStyle = isMarkerSelected ? "#ffffff" : color;
         ctx.font = "bold 9px sans-serif";
         ctx.fillText(marker.name, markerX + 4, rulerHeight + 12);
       }
@@ -3649,6 +3836,7 @@
           <canvas 
             bind:this={mainCanvas} 
             on:mousedown={handleMainMouseDown}
+            on:mousemove={handleMainCanvasHover}
             on:wheel|passive={handleMainWheel}
             on:contextmenu={handleWaveformContextMenu}
             class="main-canvas"
@@ -3794,9 +3982,10 @@
             {#each markers as marker}
               <div 
                 class="marker-item" 
+                class:selected-marker-item={selectedMarkerIds.has(marker.id)}
                 style="border-left: 3px solid {marker.color || '#ff9500'};"
                 on:mousedown={(e) => handleMarkerItemMouseDown(e, marker)}
-                title="Click to seek • Double-click to rename • Drag to waveform or sheet music"
+                title="Click to seek • Shift-click to select pair • Double-click to rename • Drag to waveform or sheet music"
               >
                 <!-- Color Dot Palette Opener -->
                 <!-- svelte-ignore a11y-click-events-have-key-events -->
@@ -3825,9 +4014,15 @@
                   <!-- svelte-ignore a11y-no-static-element-interactions -->
                   <span 
                     class="marker-name-btn" 
-                    on:click={() => seekToMarker(marker.time)}
+                    on:click={(e) => {
+                      if (e.shiftKey) {
+                        handleMarkerItemMouseDown(e, marker);
+                      } else {
+                        seekToMarker(marker.time);
+                      }
+                    }}
                     on:dblclick={() => startRenameMarker(marker)}
-                    title="Click to seek • Double-click to rename • Drag to waveform or PDF"
+                    title="Click to seek • Shift-click to select pair • Double-click to rename • Drag to waveform or PDF"
                   >
                     {marker.name} <span class="marker-time-tag">({formatTime(marker.time)})</span>
                   </span>
@@ -5244,6 +5439,12 @@
 
   .marker-item:hover {
     background-color: #383838;
+  }
+
+  .marker-item.selected-marker-item {
+    background-color: #1e3550;
+    border-color: #3b99fc;
+    box-shadow: inset 0 0 0 1px #3b99fc;
   }
 
   .marker-item:active {
