@@ -237,15 +237,36 @@
   let pdfContainer: HTMLDivElement;
   let isLoadingPdf = false;
   let pdfTotalPages = 0;
+  let pdfCurrentPage = 1;
   let pdfRenderError = "";
   let currentRenderTaskId = 0;
   let lastRenderedWidth = 0;
+
+  function handlePdfScroll() {
+    if (!pdfContainer) return;
+    const cards = pdfContainer.querySelectorAll(".pdf-page-card");
+    const containerTop = pdfContainer.getBoundingClientRect().top;
+    const containerMid = containerTop + (pdfContainer.clientHeight * 0.35);
+
+    for (let i = 0; i < cards.length; i++) {
+      const card = cards[i] as HTMLElement;
+      const rect = card.getBoundingClientRect();
+      if (rect.top <= containerMid && rect.bottom >= containerMid) {
+        const p = parseInt(card.dataset.pageNum || "1", 10);
+        if (p !== pdfCurrentPage) {
+          pdfCurrentPage = p;
+        }
+        break;
+      }
+    }
+  }
 
   async function renderPdfPages() {
     if (!pdfChartPath || !pdfContainer) return;
     const taskId = ++currentRenderTaskId;
     isLoadingPdf = true;
     pdfRenderError = "";
+    pdfCurrentPage = 1;
 
     try {
       const bytes: number[] = await invoke("read_file_bytes", { path: pdfChartPath });
@@ -273,6 +294,7 @@
 
         const pageWrapper = document.createElement("div");
         pageWrapper.className = "pdf-page-card";
+        pageWrapper.dataset.pageNum = pageNum.toString();
 
         const canvas = document.createElement("canvas");
         canvas.className = "pdf-page-canvas";
@@ -2031,7 +2053,7 @@
                   <!-- Sleek floating overlay in corner -->
                   <div class="pdf-floating-controls">
                     {#if pdfTotalPages > 0}
-                      <span class="pdf-page-pill">{pdfTotalPages} {pdfTotalPages === 1 ? 'Page' : 'Pages'}</span>
+                      <span class="pdf-page-pill">{pdfCurrentPage}/{pdfTotalPages}</span>
                     {/if}
                     <button class="pdf-mini-btn" on:click={associatePdfChart} title="Change PDF file">
                       Change
@@ -2056,7 +2078,7 @@
                   {/if}
 
                   <!-- Single scrollable column of auto-scaled PDF page canvases -->
-                  <div class="pdf-scroll-column" bind:this={pdfContainer}></div>
+                  <div class="pdf-scroll-column" bind:this={pdfContainer} on:scroll={handlePdfScroll}></div>
                 </div>
               {:else}
                 <div class="no-pdf-placeholder">
