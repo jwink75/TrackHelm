@@ -1807,6 +1807,11 @@
         handlePlayPause();
       } else if (e.code === "ArrowUp") {
         e.preventDefault();
+        if (e.altKey && activeTab === "playlist" && selectedPlaylistIndex >= 0) {
+          movePlaylistItem(selectedPlaylistIndex, selectedPlaylistIndex - 1);
+          scrollSelectedPlaylistItemIntoView();
+          return;
+        }
         if (activeTab === "playlist" && playlistItems.length > 0) {
           let currentIdx = selectedPlaylistIndex !== -1 ? selectedPlaylistIndex : playlistItems.findIndex(p => p.path === filePath);
           if (currentIdx === -1) currentIdx = 0;
@@ -1828,6 +1833,11 @@
         }
       } else if (e.code === "ArrowDown") {
         e.preventDefault();
+        if (e.altKey && activeTab === "playlist" && selectedPlaylistIndex >= 0) {
+          movePlaylistItem(selectedPlaylistIndex, selectedPlaylistIndex + 1);
+          scrollSelectedPlaylistItemIntoView();
+          return;
+        }
         if (activeTab === "playlist" && playlistItems.length > 0) {
           let currentIdx = selectedPlaylistIndex !== -1 ? selectedPlaylistIndex : playlistItems.findIndex(p => p.path === filePath);
           if (currentIdx === -1) currentIdx = 0;
@@ -2399,13 +2409,63 @@
     });
   }
 
+  let draggedPlaylistIndex: number | null = null;
+  let dragOverPlaylistIndex: number | null = null;
+
+  function handlePlaylistDragStart(e: DragEvent, idx: number) {
+    draggedPlaylistIndex = idx;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", `${idx}`);
+    }
+  }
+
+  function handlePlaylistDragOver(e: DragEvent, idx: number) {
+    e.preventDefault();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = "move";
+    }
+    dragOverPlaylistIndex = idx;
+  }
+
+  function handlePlaylistDrop(e: DragEvent, targetIdx: number) {
+    e.preventDefault();
+    if (draggedPlaylistIndex !== null && draggedPlaylistIndex !== targetIdx) {
+      movePlaylistItem(draggedPlaylistIndex, targetIdx);
+    }
+    draggedPlaylistIndex = null;
+    dragOverPlaylistIndex = null;
+  }
+
+  function handlePlaylistDragEnd() {
+    draggedPlaylistIndex = null;
+    dragOverPlaylistIndex = null;
+  }
+
+  function movePlaylistItem(fromIdx: number, toIdx: number) {
+    if (fromIdx < 0 || fromIdx >= playlistItems.length || toIdx < 0 || toIdx >= playlistItems.length) return;
+    const item = playlistItems[fromIdx];
+    const updated = [...playlistItems];
+    updated.splice(fromIdx, 1);
+    updated.splice(toIdx, 0, item);
+    playlistItems = updated;
+    selectedPlaylistIndex = toIdx;
+    localStorage.setItem("th_playlist", JSON.stringify(playlistItems));
+  }
+
   function removePlaylistItem(idx: number) {
     playlistItems = playlistItems.filter((_, i) => i !== idx);
+    if (selectedPlaylistIndex === idx) {
+      selectedPlaylistIndex = -1;
+    } else if (selectedPlaylistIndex > idx) {
+      selectedPlaylistIndex -= 1;
+    }
     localStorage.setItem("th_playlist", JSON.stringify(playlistItems));
   }
 
   function clearPlaylist() {
     playlistItems = [];
+    selectedPlaylistIndex = -1;
     localStorage.setItem("th_playlist", JSON.stringify(playlistItems));
   }
 
@@ -4667,6 +4727,14 @@
                 class="playlist-item-sidebar"
                 class:active={filePath === item.path}
                 class:highlighted={selectedPlaylistIndex === idx}
+                class:dragging={draggedPlaylistIndex === idx}
+                class:drag-over={dragOverPlaylistIndex === idx}
+                draggable="true"
+                on:dragstart={(e) => handlePlaylistDragStart(e, idx)}
+                on:dragover={(e) => handlePlaylistDragOver(e, idx)}
+                on:dragleave={() => { if (dragOverPlaylistIndex === idx) dragOverPlaylistIndex = null; }}
+                on:drop={(e) => handlePlaylistDrop(e, idx)}
+                on:dragend={handlePlaylistDragEnd}
                 on:click={() => { selectedPlaylistIndex = idx; }}
                 on:dblclick={() => {
                   selectedPlaylistIndex = idx;
@@ -4676,9 +4744,14 @@
                   });
                 }}
               >
+                <span class="playlist-drag-handle" title="Drag to reorder">⋮⋮</span>
                 <span class="item-icon">🎵</span>
                 <span class="item-name" title={item.name}>{item.name}</span>
-                <button class="remove-playlist-item-btn" on:click|stopPropagation={() => removePlaylistItem(idx)}>×</button>
+                <div class="playlist-item-actions">
+                  <button class="reorder-item-btn" disabled={idx === 0} on:click|stopPropagation={() => movePlaylistItem(idx, idx - 1)} title="Move Up (Option+Up)">▲</button>
+                  <button class="reorder-item-btn" disabled={idx === playlistItems.length - 1} on:click|stopPropagation={() => movePlaylistItem(idx, idx + 1)} title="Move Down (Option+Down)">▼</button>
+                  <button class="remove-playlist-item-btn" on:click|stopPropagation={() => removePlaylistItem(idx)} title="Remove track">×</button>
+                </div>
               </div>
             {/each}
           {/if}
@@ -6962,14 +7035,77 @@
     border-left: 3px solid #3b99fc;
   }
 
+  .playlist-item-sidebar.dragging {
+    opacity: 0.4;
+    background-color: #17181c;
+  }
+
+  .playlist-item-sidebar.drag-over {
+    border-top: 2px solid #3b99fc;
+    background-color: rgba(59, 153, 252, 0.15);
+  }
+
+  .playlist-drag-handle {
+    color: #555760;
+    font-size: 0.75rem;
+    cursor: grab;
+    user-select: none;
+    letter-spacing: -2px;
+    margin-right: 2px;
+    opacity: 0.6;
+    transition: opacity 0.12s ease;
+  }
+
+  .playlist-item-sidebar:hover .playlist-drag-handle {
+    opacity: 1;
+    color: #8e94a5;
+  }
+
+  .playlist-item-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: auto;
+    opacity: 0.4;
+    transition: opacity 0.15s ease;
+  }
+
+  .playlist-item-sidebar:hover .playlist-item-actions,
+  .playlist-item-sidebar.highlighted .playlist-item-actions {
+    opacity: 1;
+  }
+
+  .reorder-item-btn {
+    background: transparent;
+    border: none;
+    color: #8e94a5;
+    cursor: pointer;
+    font-size: 0.58rem;
+    padding: 2px 4px;
+    border-radius: 2px;
+    line-height: 1;
+    transition: all 0.12s ease;
+  }
+
+  .reorder-item-btn:hover:not(:disabled) {
+    background-color: #383b47;
+    color: #ffffff;
+  }
+
+  .reorder-item-btn:disabled {
+    opacity: 0.2;
+    cursor: default;
+  }
+
   .remove-playlist-item-btn {
     background: transparent;
     border: none;
     color: #717171;
     cursor: pointer;
-    margin-left: auto;
-    font-size: 1rem;
+    font-size: 0.9rem;
     font-weight: bold;
+    padding: 0 4px;
+    line-height: 1;
   }
 
   .remove-playlist-item-btn:hover {
