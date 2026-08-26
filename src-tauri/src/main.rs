@@ -96,6 +96,12 @@ struct PlaybackStatus {
     current_time: f64,
     duration_seconds: f64,
     progress: f32,
+    in_peak_l: f32,
+    in_peak_r: f32,
+    out_peak_l: f32,
+    out_peak_r: f32,
+    gr_stage1: f32,
+    gr_stage2: f32,
 }
 
 #[derive(serde::Serialize)]
@@ -614,11 +620,24 @@ fn get_playback_status(state: State<'_, AppState>) -> PlaybackStatus {
         0.0
     };
 
+    let in_peak_l = state.shared_engine_state.in_peak_db_l.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0;
+    let in_peak_r = state.shared_engine_state.in_peak_db_r.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0;
+    let out_peak_l = state.shared_engine_state.out_peak_db_l.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0;
+    let out_peak_r = state.shared_engine_state.out_peak_db_r.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0;
+    let gr_stage1 = state.shared_engine_state.gr_stage1_db.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0;
+    let gr_stage2 = state.shared_engine_state.gr_stage2_db.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0;
+
     PlaybackStatus {
         is_playing,
         current_time,
         duration_seconds,
         progress,
+        in_peak_l,
+        in_peak_r,
+        out_peak_l,
+        out_peak_r,
+        gr_stage1,
+        gr_stage2,
     }
 }
 

@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, AtomicI32, Ordering};
 use std::sync::Arc;
 use crate::command::{Command, CommandBus};
 use crate::decoder::DecodedAudio;
@@ -10,6 +10,12 @@ pub struct SharedEngineState {
     pub total_frames: Arc<AtomicUsize>,
     pub sample_rate: Arc<AtomicUsize>,
     pub volume_raw: Arc<AtomicUsize>, // Volume scaled by 1000 (e.g. 1.0 -> 1000)
+    pub in_peak_db_l: Arc<AtomicI32>,  // (db * 100.0) as i32, default -6000 (-60.0 dB)
+    pub in_peak_db_r: Arc<AtomicI32>,
+    pub out_peak_db_l: Arc<AtomicI32>,
+    pub out_peak_db_r: Arc<AtomicI32>,
+    pub gr_stage1_db: Arc<AtomicI32>,  // (abs_gr_db * 100.0) as i32, default 0
+    pub gr_stage2_db: Arc<AtomicI32>,
 }
 
 pub struct AudioEngine {
@@ -28,6 +34,12 @@ impl AudioEngine {
             total_frames: Arc::new(AtomicUsize::new(0)),
             sample_rate: Arc::new(AtomicUsize::new(44100)),
             volume_raw: Arc::new(AtomicUsize::new(1000)), // default 1.0 volume
+            in_peak_db_l: Arc::new(AtomicI32::new(-6000)),
+            in_peak_db_r: Arc::new(AtomicI32::new(-6000)),
+            out_peak_db_l: Arc::new(AtomicI32::new(-6000)),
+            out_peak_db_r: Arc::new(AtomicI32::new(-6000)),
+            gr_stage1_db: Arc::new(AtomicI32::new(0)),
+            gr_stage2_db: Arc::new(AtomicI32::new(0)),
         });
 
         let engine = AudioEngine {
@@ -97,6 +109,12 @@ impl AudioEngine {
             let shared_total_frames = shared_state.total_frames.clone();
             let shared_sample_rate = shared_state.sample_rate.clone();
             let shared_volume_raw = shared_state.volume_raw.clone();
+            let shared_in_peak_l = shared_state.in_peak_db_l.clone();
+            let shared_in_peak_r = shared_state.in_peak_db_r.clone();
+            let shared_out_peak_l = shared_state.out_peak_db_l.clone();
+            let shared_out_peak_r = shared_state.out_peak_db_r.clone();
+            let shared_gr_stage1 = shared_state.gr_stage1_db.clone();
+            let shared_gr_stage2 = shared_state.gr_stage2_db.clone();
 
             let err_fn = |err| log::error!("An error occurred on the audio stream: {}", err);
 
@@ -379,6 +397,20 @@ impl AudioEngine {
                                         }
                                     }
 
+                                    // Measure input levels (before EQ & compressor)
+                                    let mut max_in_l: f32 = 0.0;
+                                    let mut max_in_r: f32 = 0.0;
+                                    for frame_idx in 0..num_out_frames {
+                                        let l_idx = frame_idx * output_channels;
+                                        let r_idx = if output_channels > 1 { l_idx + 1 } else { l_idx };
+                                        max_in_l = max_in_l.max(data[l_idx].abs());
+                                        max_in_r = max_in_r.max(data[r_idx].abs());
+                                    }
+                                    let in_l_db = if max_in_l > 1e-5 { (20.0 * max_in_l.log10()).clamp(-60.0, 6.0) } else { -60.0 };
+                                    let in_r_db = if max_in_r > 1e-5 { (20.0 * max_in_r.log10()).clamp(-60.0, 6.0) } else { -60.0 };
+                                    shared_in_peak_l.store((in_l_db * 100.0) as i32, Ordering::Relaxed);
+                                    shared_in_peak_r.store((in_r_db * 100.0) as i32, Ordering::Relaxed);
+
                                     // 3. Apply High-Quality Biquad EQ Filters (in-place)
                                     if eq_active && active_biquad_count > 0 {
                                         for frame_idx in 0..num_out_frames {
@@ -405,7 +437,33 @@ impl AudioEngine {
                                             }
                                         }
                                     }
+
+                                    // Measure gain reduction and output levels
+                                    let gr1 = dual_compressor.stage1.last_gr_db.abs();
+                                    let gr2 = dual_compressor.stage2.last_gr_db.abs();
+                                    shared_gr_stage1.store((gr1 * 100.0) as i32, Ordering::Relaxed);
+                                    shared_gr_stage2.store((gr2 * 100.0) as i32, Ordering::Relaxed);
+
+                                    let mut max_out_l: f32 = 0.0;
+                                    let mut max_out_r: f32 = 0.0;
+                                    for frame_idx in 0..num_out_frames {
+                                        let l_idx = frame_idx * output_channels;
+                                        let r_idx = if output_channels > 1 { l_idx + 1 } else { l_idx };
+                                        max_out_l = max_out_l.max(data[l_idx].abs());
+                                        max_out_r = max_out_r.max(data[r_idx].abs());
+                                    }
+                                    let out_l_db = if max_out_l > 1e-5 { (20.0 * max_out_l.log10()).clamp(-60.0, 6.0) } else { -60.0 };
+                                    let out_r_db = if max_out_r > 1e-5 { (20.0 * max_out_r.log10()).clamp(-60.0, 6.0) } else { -60.0 };
+                                    shared_out_peak_l.store((out_l_db * 100.0) as i32, Ordering::Relaxed);
+                                    shared_out_peak_r.store((out_r_db * 100.0) as i32, Ordering::Relaxed);
                                 }
+                            } else {
+                                shared_in_peak_l.store(-6000, Ordering::Relaxed);
+                                shared_in_peak_r.store(-6000, Ordering::Relaxed);
+                                shared_out_peak_l.store(-6000, Ordering::Relaxed);
+                                shared_out_peak_r.store(-6000, Ordering::Relaxed);
+                                shared_gr_stage1.store(0, Ordering::Relaxed);
+                                shared_gr_stage2.store(0, Ordering::Relaxed);
                             }
 
                             shared_current_frame.store(playback_frame, Ordering::SeqCst);

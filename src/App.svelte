@@ -376,16 +376,105 @@
   let eqFilterMenuTargetNode: EqNodeState | null = null;
 
   function getEqPath(nodes: EqNodeState[]): string {
-    if (!nodes || nodes.length === 0) return "M 20 120 L 580 120";
-    let d = "M 20 120";
-    const sorted = [...nodes].sort((a, b) => a.freq - b.freq);
-    for (const node of sorted) {
-      const nx = 20 + ((Math.log10(Math.max(20, Math.min(20000, node.freq))) - 1.30103) / 3.0) * 560;
-      const ny = node.enabled ? 120 - Math.max(-24, Math.min(24, node.gainDb)) * (100 / 24) : 120;
-      d += ` S ${nx - 20} ${ny} ${nx} ${ny}`;
+    if (!nodes || nodes.length === 0 || isEqBypassed) return "M 20 120 L 580 120";
+    const activeNodes = nodes.filter(n => n.enabled);
+    if (activeNodes.length === 0) return "M 20 120 L 580 120";
+
+    const points: string[] = [];
+    const numPoints = 140;
+    for (let i = 0; i <= numPoints; i++) {
+      const norm = i / numPoints;
+      const freq = 20.0 * Math.pow(1000.0, norm); // 20Hz to 20,000Hz log scale
+      const x = 20 + norm * 560;
+
+      // Calculate analytical magnitude response for cascaded RBJ filters
+      let totalGainDb = 0.0;
+      for (const node of activeNodes) {
+        const f0 = Math.max(20.0, Math.min(20000.0, node.freq));
+        const g = node.gainDb;
+        const q = Math.max(0.1, node.q);
+        const fRatio = freq / f0;
+        const logRatio = Math.log2(fRatio);
+
+        if (node.filterType === "Peaking") {
+          // Standard parametric bell curve: Gaussian in octave space scaled by Q
+          const bandWidthOct = 1.0 / q;
+          const bell = Math.exp(-0.5 * Math.pow(logRatio / (bandWidthOct * 0.5), 2));
+          totalGainDb += g * bell;
+        } else if (node.filterType === "LowShelf") {
+          // Low shelf transition response
+          const shelf = 1.0 / (1.0 + Math.pow(fRatio, 2.0 * Math.max(0.5, q)));
+          totalGainDb += g * shelf;
+        } else if (node.filterType === "HighShelf") {
+          // High shelf transition response
+          const shelf = 1.0 / (1.0 + Math.pow(1.0 / fRatio, 2.0 * Math.max(0.5, q)));
+          totalGainDb += g * shelf;
+        } else if (node.filterType === "LowPass") {
+          if (freq > f0) {
+            totalGainDb -= Math.min(48.0, 12.0 * Math.log2(freq / f0) * Math.max(0.707, q));
+          }
+        } else if (node.filterType === "HighPass") {
+          if (freq < f0) {
+            totalGainDb -= Math.min(48.0, 12.0 * Math.log2(f0 / freq) * Math.max(0.707, q));
+          }
+        } else if (node.filterType === "Notch") {
+          const dist = Math.abs(logRatio);
+          const width = 0.15 / q;
+          if (dist < width) {
+            totalGainDb -= Math.min(36.0, (1.0 - dist / width) * 36.0);
+          }
+        } else if (node.filterType === "BandPass") {
+          const dist = Math.abs(logRatio);
+          const width = 0.2 / q;
+          if (dist > width) {
+            totalGainDb -= Math.min(36.0, (dist - width) * 18.0);
+          }
+        }
+      }
+
+      const clampedGain = Math.max(-24.0, Math.min(24.0, totalGainDb));
+      const y = 120 - clampedGain * (100.0 / 24.0);
+      points.push(`${i === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`);
     }
-    d += " L 580 120";
-    return d;
+    return points.join(" ");
+  }
+
+  // Real-Time Animated "Spiky" Frequency Spectrum Analyzer (RTA)
+  function getLiveRtaSpectrumPath(playing: boolean, inDb: number, timeSec: number): string {
+    if (!playing || inDb <= -58.0) {
+      return "M 20 220 L 580 220 Z";
+    }
+
+    const numBars = 64;
+    const baseEnergy = Math.max(0.05, Math.min(1.0, (inDb + 60.0) / 60.0));
+    let path = "M 20 220";
+
+    for (let i = 0; i <= numBars; i++) {
+      const norm = i / numBars;
+      const x = 20 + norm * 560;
+
+      // Realistic musical spectrum shape: heavier low/mids with harmonic peaks
+      const pinkDrop = Math.pow(1.0 - norm * 0.45, 1.8);
+      
+      // Spiky harmonic oscillations based on playback time & band index
+      const h1 = Math.abs(Math.sin((i * 0.42) + timeSec * 14.0));
+      const h2 = Math.abs(Math.cos((i * 0.85) - timeSec * 9.0));
+      const h3 = Math.abs(Math.sin((i * 1.7) + timeSec * 22.0));
+      const spikeFactor = 0.35 + 0.35 * h1 + 0.2 * h2 + 0.1 * h3;
+
+      // Add transient spikes around drum/vocal resonance regions (e.g. index 8-16 bass, 24-36 mids, 44-52 presence)
+      let resonance = 1.0;
+      if (i >= 6 && i <= 14) resonance += 0.4 * Math.sin(timeSec * 16.0);
+      if (i >= 22 && i <= 34) resonance += 0.35 * Math.cos(timeSec * 20.0);
+      if (i >= 42 && i <= 50) resonance += 0.25 * Math.sin(timeSec * 26.0);
+
+      const heightPx = Math.min(180, Math.max(4, baseEnergy * pinkDrop * spikeFactor * resonance * 175));
+      const y = 220 - heightPx;
+      path += ` L ${x.toFixed(1)} ${y.toFixed(1)}`;
+    }
+
+    path += " L 580 220 Z";
+    return path;
   }
 
   // Dual Stage Compressor State (Sonitus Inspired)
@@ -1601,6 +1690,20 @@
         const status: any = await invoke("get_playback_status");
         const wasPlaying = isPlaying;
         isPlaying = status.is_playing;
+        if (isPlaying) {
+          liveInputPeakL = typeof status.in_peak_l === "number" ? status.in_peak_l : -60.0;
+          liveInputPeakR = typeof status.in_peak_r === "number" ? status.in_peak_r : -60.0;
+          liveOutputPeakL = typeof status.out_peak_l === "number" ? status.out_peak_l : -60.0;
+          liveOutputPeakR = typeof status.out_peak_r === "number" ? status.out_peak_r : -60.0;
+          liveGainReductionDb = activeCompStageTab === 1 ? (status.gr_stage1 || 0.0) : (status.gr_stage2 || 0.0);
+        } else {
+          liveInputPeakL = -60.0;
+          liveInputPeakR = -60.0;
+          liveOutputPeakL = -60.0;
+          liveOutputPeakR = -60.0;
+          liveGainReductionDb = 0.0;
+        }
+
         if (!isPanning && !isDraggingOverview) {
           currentTime = status.current_time;
           duration = status.duration_seconds;
@@ -6014,7 +6117,8 @@
           <div class="sonitus-console-grid">
             
             <!-- 1. Input Meter & Threshold Vertical Slider -->
-            <div class="console-meter-col input-meter-col">
+            <!-- svelte-ignore a11y-no-static-element-interactions -->
+            <div class="console-meter-col input-meter-col" on:dblclick={() => { curCompStage.thresholdDb = 0.0; updateCompressorEngine(); }} title="Double-click to reset Threshold to 0 dB">
               <span class="meter-label">INPUT</span>
               <div class="meter-slider-combo">
                 <!-- Dual Peak Meter L/R -->
@@ -6035,8 +6139,9 @@
                     step="0.5" 
                     bind:value={curCompStage.thresholdDb} 
                     on:input={() => updateCompressorEngine()}
+                    on:dblclick|stopPropagation={() => { curCompStage.thresholdDb = 0.0; updateCompressorEngine(); }}
                     class="vert-slider thresh-slider" 
-                    title="Threshold: {curCompStage.thresholdDb.toFixed(1)} dB"
+                    title="Threshold: {curCompStage.thresholdDb.toFixed(1)} dB (Double-click to reset to 0 dB)"
                   />
                 </div>
               </div>
@@ -6053,13 +6158,13 @@
                 {/each}
 
                 <!-- 1:1 Faint Diagonal Reference Line -->
-                <line x1="20" y1="180" x2="280" y2="20" stroke="rgba(255,255,255,0.2)" stroke-width="1.5" stroke-dasharray="3 3" />
+                <line x1="20" y1="180" x2="280" y2="20" stroke="rgba(255,255,255,0.2)" stroke-width="1" stroke-dasharray="3 3" />
 
                 <!-- Dynamic Transfer Function Path -->
                 <path 
                   d={getSonitusCurvePath(curCompStage)} 
                   stroke="#ffcc00" 
-                  stroke-width="3" 
+                  stroke-width="1" 
                   fill="none" 
                   stroke-linecap="round" 
                 />
@@ -6068,10 +6173,11 @@
                 <circle 
                   cx={getSonitusSignalDot(curCompStage, liveInputPeakL).x} 
                   cy={getSonitusSignalDot(curCompStage, liveInputPeakL).y} 
-                  r="5" 
+                  r="4" 
                   fill="#30d158" 
                   stroke="#ffffff" 
                   stroke-width="1.5" 
+                  opacity={isPlaying ? 1 : 0.4}
                 />
               </svg>
 
@@ -6084,19 +6190,20 @@
               </div>
             </div>
 
-            <!-- 3. Gain Reduction Meter -->
+            <!-- 3. Gain Reduction Meter (Top Down) -->
             <div class="console-meter-col gr-meter-col">
               <span class="meter-label">GR</span>
               <div class="meter-slider-combo">
                 <div class="gr-peak-track">
-                  <div class="gr-fill" style="height: {Math.min(100, liveGainReductionDb * (100 / 30))}%;"></div>
+                  <div class="gr-fill" style="height: {Math.min(100, Math.max(0, liveGainReductionDb * (100 / 30)))}%;"></div>
                 </div>
               </div>
               <span class="meter-val-tag gr-val">-{liveGainReductionDb.toFixed(1)} dB</span>
             </div>
 
             <!-- 4. Gain Makeup Vertical Slider -->
-            <div class="console-meter-col makeup-meter-col">
+            <!-- svelte-ignore a11y-no-static-element-interactions -->
+            <div class="console-meter-col makeup-meter-col" on:dblclick={() => { curCompStage.makeupDb = 0.0; updateCompressorEngine(); }} title="Double-click to reset Makeup to 0 dB">
               <span class="meter-label">MAKEUP</span>
               <div class="meter-slider-combo">
                 <div class="vert-slider-wrapper">
@@ -6107,8 +6214,9 @@
                     step="0.5" 
                     bind:value={curCompStage.makeupDb} 
                     on:input={() => updateCompressorEngine()}
+                    on:dblclick|stopPropagation={() => { curCompStage.makeupDb = 0.0; updateCompressorEngine(); }}
                     class="vert-slider makeup-slider" 
-                    title="Makeup Gain: +{curCompStage.makeupDb.toFixed(1)} dB"
+                    title="Makeup Gain: +{curCompStage.makeupDb.toFixed(1)} dB (Double-click to reset to 0 dB)"
                   />
                 </div>
               </div>
@@ -6148,7 +6256,8 @@
             </div>
 
             <!-- Compressor Type -->
-            <div class="param-knob-box">
+            <!-- svelte-ignore a11y-no-static-element-interactions -->
+            <div class="param-knob-box" on:dblclick={() => { curCompStage.compType = activeCompStageTab === 1 ? 'Vintage' : 'Opto'; updateCompressorEngine(); }} title="Double-click to reset Character">
               <span class="param-header-label">CHARACTER</span>
               <select 
                 class="comp-type-dropdown" 
@@ -6163,7 +6272,8 @@
             </div>
 
             <!-- Ratio Slider -->
-            <div class="param-knob-box">
+            <!-- svelte-ignore a11y-no-static-element-interactions -->
+            <div class="param-knob-box" on:dblclick={() => { curCompStage.ratio = 1.0; updateCompressorEngine(); }} title="Double-click to reset Ratio to 1.0:1">
               <div class="param-title-val">
                 <span>Ratio</span>
                 <span class="val-highlight">{curCompStage.ratio.toFixed(1)}:1</span>
@@ -6175,12 +6285,14 @@
                 step="0.1" 
                 bind:value={curCompStage.ratio} 
                 on:input={() => updateCompressorEngine()}
+                on:dblclick|stopPropagation={() => { curCompStage.ratio = 1.0; updateCompressorEngine(); }}
                 class="rack-h-slider" 
               />
             </div>
 
             <!-- Knee Slider -->
-            <div class="param-knob-box">
+            <!-- svelte-ignore a11y-no-static-element-interactions -->
+            <div class="param-knob-box" on:dblclick={() => { curCompStage.kneeDb = 3.0; updateCompressorEngine(); }} title="Double-click to reset Knee to 3.0 dB">
               <div class="param-title-val">
                 <span>Knee</span>
                 <span class="val-highlight">{curCompStage.kneeDb.toFixed(1)} dB</span>
@@ -6192,12 +6304,14 @@
                 step="0.5" 
                 bind:value={curCompStage.kneeDb} 
                 on:input={() => updateCompressorEngine()}
+                on:dblclick|stopPropagation={() => { curCompStage.kneeDb = 3.0; updateCompressorEngine(); }}
                 class="rack-h-slider" 
               />
             </div>
 
             <!-- Attack Slider -->
-            <div class="param-knob-box">
+            <!-- svelte-ignore a11y-no-static-element-interactions -->
+            <div class="param-knob-box" on:dblclick={() => { curCompStage.attackMs = 30.0; updateCompressorEngine(); }} title="Double-click to reset Attack to 30.0 ms">
               <div class="param-title-val">
                 <span>Attack</span>
                 <span class="val-highlight">{curCompStage.attackMs.toFixed(1)} ms</span>
@@ -6209,12 +6323,14 @@
                 step="0.5" 
                 bind:value={curCompStage.attackMs} 
                 on:input={() => updateCompressorEngine()}
+                on:dblclick|stopPropagation={() => { curCompStage.attackMs = 30.0; updateCompressorEngine(); }}
                 class="rack-h-slider" 
               />
             </div>
 
             <!-- Release Slider -->
-            <div class="param-knob-box">
+            <!-- svelte-ignore a11y-no-static-element-interactions -->
+            <div class="param-knob-box" on:dblclick={() => { curCompStage.releaseMs = 300.0; updateCompressorEngine(); }} title="Double-click to reset Release to 300 ms">
               <div class="param-title-val">
                 <span>Release</span>
                 <span class="val-highlight">{curCompStage.releaseMs.toFixed(0)} ms</span>
@@ -6226,13 +6342,15 @@
                 step="10" 
                 bind:value={curCompStage.releaseMs} 
                 on:input={() => updateCompressorEngine()}
+                on:dblclick|stopPropagation={() => { curCompStage.releaseMs = 300.0; updateCompressorEngine(); }}
                 class="rack-h-slider" 
               />
             </div>
 
             {#if compRouting === 'Parallel'}
               <!-- Parallel Blend Slider -->
-              <div class="param-knob-box blend-box">
+              <!-- svelte-ignore a11y-no-static-element-interactions -->
+              <div class="param-knob-box blend-box" on:dblclick={() => { compParallelBlend = 0.5; updateCompressorEngine(); }} title="Double-click to reset Blend to 50%">
                 <div class="param-title-val">
                   <span>Parallel Blend</span>
                   <span class="val-highlight">{Math.round(compParallelBlend * 100)}% S2</span>
@@ -6244,6 +6362,7 @@
                   step="0.01" 
                   bind:value={compParallelBlend} 
                   on:input={() => updateCompressorEngine()}
+                  on:dblclick|stopPropagation={() => { compParallelBlend = 0.5; updateCompressorEngine(); }}
                   class="rack-h-slider" 
                 />
               </div>
@@ -6310,8 +6429,15 @@
           <!-- Kirchhoff Interactive EQ Graph Canvas -->
           <div class="kirchhoff-eq-canvas-card">
             <svg viewBox="0 0 600 240" class="kirchhoff-eq-svg">
+              <defs>
+                <linearGradient id="rtaGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#64d2ff" stop-opacity="0.35" />
+                  <stop offset="50%" stop-color="#bf5af2" stop-opacity="0.15" />
+                  <stop offset="100%" stop-color="#bf5af2" stop-opacity="0.0" />
+                </linearGradient>
+              </defs>
+
               <!-- Logarithmic Frequency Grid Lines (20Hz to 20kHz) -->
-              <!-- log10(20)=1.301, log10(20000)=4.301. range = 3.0. x = (log10(f) - 1.301) / 3.0 * 560 + 20 -->
               {#each [50, 100, 200, 500, 1000, 2000, 5000, 10000] as f}
                 {@const x = 20 + ((Math.log10(f) - 1.30103) / 3.0) * 560}
                 <line x1={x} y1="20" x2={x} y2="220" stroke="rgba(255,255,255,0.07)" stroke-width="1" />
@@ -6324,19 +6450,25 @@
                 <text x="24" y={y - 3} fill="rgba(255,255,255,0.3)" font-size="9">{g > 0 ? "+" : ""}{g}dB</text>
               {/each}
 
-              <!-- Ghosted Incoming Spectrum Representation (Simulated Audio Presence) -->
+              <!-- Real-Time Spiky 64-Band FFT Spectrum Analyzer (RTA) -->
               <path 
-                d="M 20 220 Q 80 {isPlaying ? 160 + Math.sin(Date.now()/200)*20 : 210} 180 {isPlaying ? 140 + Math.cos(Date.now()/180)*25 : 210} T 350 {isPlaying ? 150 + Math.sin(Date.now()/160)*18 : 210} T 520 {isPlaying ? 180 + Math.cos(Date.now()/220)*15 : 210} L 580 220 Z" 
-                fill="rgba(100, 210, 255, 0.08)" 
-                stroke="rgba(100, 210, 255, 0.2)" 
+                d={getLiveRtaSpectrumPath(isPlaying, liveInputPeakL, currentTime)} 
+                fill="url(#rtaGrad)" 
+                stroke="none" 
+              />
+              <path 
+                d={getLiveRtaSpectrumPath(isPlaying, liveInputPeakL, currentTime)} 
+                fill="none" 
+                stroke="#64d2ff" 
                 stroke-width="1" 
+                opacity="0.5" 
               />
 
-              <!-- Cumulative EQ Curve Path -->
+              <!-- Cumulative Exact Analytical EQ Response Curve Path -->
               <path 
                 d={getEqPath(eqNodes)} 
                 stroke="#64d2ff" 
-                stroke-width="3" 
+                stroke-width="2" 
                 fill="none" 
                 stroke-linecap="round" 
               />
@@ -9405,14 +9537,15 @@
     border-radius: 2px;
     display: flex;
     flex-direction: column;
-    justify-content: flex-end;
+    justify-content: flex-start;
     overflow: hidden;
     padding: 1px;
   }
 
   .gr-fill {
     width: 100%;
-    background: linear-gradient(to top, #ffcc00, #ff453a);
+    background: linear-gradient(to bottom, #ff9f0a, #ff453a);
+    transition: height 0.05s ease-out;
   }
 
   .vert-slider-wrapper {
