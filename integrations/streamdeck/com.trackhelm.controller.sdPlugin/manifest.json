@@ -1,4 +1,27 @@
 {
+  "SDKVersion": 2,
+  "Author": "TrackHelm",
+  "Name": "TrackHelm",
+  "Description": "Two-way show control for TrackHelm rehearsal workstation",
+  "Icon": "images/plugin_icon",
+  "URL": "https://github.com/jwink75/TrackHelm",
+  "Version": "1.0.0",
+  "Category": "TrackHelm",
+  "CategoryIcon": "images/category",
+  "CodePath": "index.html",
+  "Software": {
+    "MinimumVersion": "4.1"
+  },
+  "OS": [
+    {
+      "Platform": "mac",
+      "MinimumVersion": "10.11"
+    },
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10"
+    }
+  ],
   "Actions": [
     {
       "Icon": "images/playpause",
@@ -8,13 +31,13 @@
           "Image": "images/playpause",
           "TitleAlignment": "middle",
           "FontSize": "11",
-          "FontColor": "#30d158"
+          "TitleColor": "#30d158"
         },
         {
           "Image": "images/playpause_active",
           "TitleAlignment": "middle",
           "FontSize": "11",
-          "FontColor": "#30d158"
+          "TitleColor": "#30d158"
         }
       ],
       "SupportedInMultiActions": true,
@@ -28,7 +51,8 @@
         {
           "Image": "images/rewind",
           "TitleAlignment": "middle",
-          "FontSize": "11"
+          "FontSize": "11",
+          "TitleColor": "#ffffff"
         }
       ],
       "SupportedInMultiActions": true,
@@ -42,7 +66,8 @@
         {
           "Image": "images/nexttrack",
           "TitleAlignment": "middle",
-          "FontSize": "11"
+          "FontSize": "11",
+          "TitleColor": "#ffffff"
         }
       ],
       "SupportedInMultiActions": true,
@@ -56,7 +81,8 @@
         {
           "Image": "images/prevtrack",
           "TitleAlignment": "middle",
-          "FontSize": "11"
+          "FontSize": "11",
+          "TitleColor": "#ffffff"
         }
       ],
       "SupportedInMultiActions": true,
@@ -70,7 +96,8 @@
         {
           "Image": "images/nextmarker",
           "TitleAlignment": "middle",
-          "FontSize": "11"
+          "FontSize": "11",
+          "TitleColor": "#ffffff"
         }
       ],
       "SupportedInMultiActions": true,
@@ -84,7 +111,8 @@
         {
           "Image": "images/prevmarker",
           "TitleAlignment": "middle",
-          "FontSize": "11"
+          "FontSize": "11",
+          "TitleColor": "#ffffff"
         }
       ],
       "SupportedInMultiActions": true,
@@ -98,7 +126,8 @@
         {
           "Image": "images/addmarker",
           "TitleAlignment": "middle",
-          "FontSize": "11"
+          "FontSize": "11",
+          "TitleColor": "#ffffff"
         }
       ],
       "SupportedInMultiActions": true,
@@ -112,7 +141,8 @@
         {
           "Image": "images/pitchup",
           "TitleAlignment": "bottom",
-          "FontSize": "10"
+          "FontSize": "10",
+          "TitleColor": "#ffffff"
         }
       ],
       "SupportedInMultiActions": true,
@@ -126,7 +156,8 @@
         {
           "Image": "images/pitchdown",
           "TitleAlignment": "bottom",
-          "FontSize": "10"
+          "FontSize": "10",
+          "TitleColor": "#ffffff"
         }
       ],
       "SupportedInMultiActions": true,
@@ -140,7 +171,8 @@
         {
           "Image": "images/volup",
           "TitleAlignment": "bottom",
-          "FontSize": "10"
+          "FontSize": "10",
+          "TitleColor": "#ffffff"
         }
       ],
       "SupportedInMultiActions": true,
@@ -154,7 +186,8 @@
         {
           "Image": "images/voldown",
           "TitleAlignment": "bottom",
-          "FontSize": "10"
+          "FontSize": "10",
+          "TitleColor": "#ffffff"
         }
       ],
       "SupportedInMultiActions": true,
@@ -168,7 +201,8 @@
         {
           "Image": "images/speedup",
           "TitleAlignment": "bottom",
-          "FontSize": "10"
+          "FontSize": "10",
+          "TitleColor": "#ffffff"
         }
       ],
       "SupportedInMultiActions": true,
@@ -182,7 +216,8 @@
         {
           "Image": "images/speeddown",
           "TitleAlignment": "bottom",
-          "FontSize": "10"
+          "FontSize": "10",
+          "TitleColor": "#ffffff"
         }
       ],
       "SupportedInMultiActions": true,
@@ -197,7 +232,7 @@
           "Image": "images/songinfo",
           "TitleAlignment": "middle",
           "FontSize": "10",
-          "FontColor": "#ffffff"
+          "TitleColor": "#ffffff"
         }
       ],
       "SupportedInMultiActions": false,
@@ -212,7 +247,7 @@
           "Image": "images/markerinfo",
           "TitleAlignment": "middle",
           "FontSize": "10",
-          "FontColor": "#ffcc00"
+          "TitleColor": "#ffcc00"
         }
       ],
       "SupportedInMultiActions": false,
@@ -226,7 +261,8 @@
         {
           "Image": "images/loop",
           "TitleAlignment": "middle",
-          "FontSize": "11"
+          "FontSize": "11",
+          "TitleColor": "#ffffff"
         }
       ],
       "SupportedInMultiActions": true,
@@ -240,33 +276,13 @@
         {
           "Image": "images/cut",
           "TitleAlignment": "middle",
-          "FontSize": "11"
+          "FontSize": "11",
+          "TitleColor": "#ffffff"
         }
       ],
       "SupportedInMultiActions": true,
       "Tooltip": "Toggle Cut / Skip mode on active region",
       "UUID": "com.trackhelm.controller.cut"
     }
-  ],
-  "Author": "TrackHelm",
-  "Category": "TrackHelm",
-  "CategoryIcon": "images/category",
-  "CodePath": "index.html",
-  "Description": "Two-way hardware show control for TrackHelm rehearsal workstation",
-  "Icon": "images/plugin_icon",
-  "Name": "TrackHelm",
-  "Software": {
-    "MinimumVersion": "6.0"
-  },
-  "OS": [
-    {
-      "Platform": "mac",
-      "MinimumVersion": "11.0"
-    },
-    {
-      "Platform": "windows",
-      "MinimumVersion": "10.0"
-    }
-  ],
-  "Version": "1.0.0"
+  ]
 }
