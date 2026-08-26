@@ -1018,6 +1018,23 @@ fn connect_midi_device(device_name: String, app: tauri::AppHandle, state: State<
 }
 
 fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
+    let app_menu = Submenu::with_items(
+        app,
+        "TrackHelm",
+        true,
+        &[
+            &PredefinedMenuItem::about(app, None, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::services(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, None)?,
+            &PredefinedMenuItem::hide_others(app, None)?,
+            &PredefinedMenuItem::show_all(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::quit(app, Some("CmdOrCtrl+Q"))?,
+        ],
+    )?;
+
     let file_menu = Submenu::with_items(
         app,
         "File",
@@ -1032,6 +1049,7 @@ fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
             &MenuItem::with_id(app, "export_audio", "Export Audio File...", true, Some("CmdOrCtrl+Shift+E"))?,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::close_window(app, None)?,
+            &PredefinedMenuItem::quit(app, Some("CmdOrCtrl+Q"))?,
         ],
     )?;
 
@@ -1085,6 +1103,7 @@ fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
     )?;
 
     Menu::with_items(app, &[
+        &app_menu,
         &file_menu,
         &edit_menu,
         &playback_menu,
