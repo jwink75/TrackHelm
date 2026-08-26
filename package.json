@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:streamdeck": "bash integrations/streamdeck/package_plugin.sh",
     "preview": "vite preview",
     "tauri": "tauri"
   },

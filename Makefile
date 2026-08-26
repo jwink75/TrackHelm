@@ -17,6 +17,9 @@ app:
 	@echo "You can now drag this app bundle to your macOS Dock."
 	@echo "=============================================="
 
+streamdeck:
+	bash integrations/streamdeck/package_plugin.sh
+
 clean:
 	cargo clean
-	rm -rf dist build
+	rm -rf dist build dist-streamdeck

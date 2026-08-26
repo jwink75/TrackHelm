@@ -1,0 +1,272 @@
+{
+  "Actions": [
+    {
+      "Icon": "images/playpause",
+      "Name": "Play / Pause",
+      "States": [
+        {
+          "Image": "images/playpause",
+          "TitleAlignment": "middle",
+          "FontSize": "11",
+          "FontColor": "#30d158"
+        },
+        {
+          "Image": "images/playpause_active",
+          "TitleAlignment": "middle",
+          "FontSize": "11",
+          "FontColor": "#30d158"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Toggle playback in TrackHelm",
+      "UUID": "com.trackhelm.controller.playpause"
+    },
+    {
+      "Icon": "images/rewind",
+      "Name": "Rewind / Play Highlighted",
+      "States": [
+        {
+          "Image": "images/rewind",
+          "TitleAlignment": "middle",
+          "FontSize": "11"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Stop & Return to 0 (or load and play highlighted track)",
+      "UUID": "com.trackhelm.controller.rewind"
+    },
+    {
+      "Icon": "images/nexttrack",
+      "Name": "Next Track",
+      "States": [
+        {
+          "Image": "images/nexttrack",
+          "TitleAlignment": "middle",
+          "FontSize": "11"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Load and play next track in playlist",
+      "UUID": "com.trackhelm.controller.nexttrack"
+    },
+    {
+      "Icon": "images/prevtrack",
+      "Name": "Previous Track",
+      "States": [
+        {
+          "Image": "images/prevtrack",
+          "TitleAlignment": "middle",
+          "FontSize": "11"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Load and play previous track in playlist",
+      "UUID": "com.trackhelm.controller.prevtrack"
+    },
+    {
+      "Icon": "images/nextmarker",
+      "Name": "Next Landmark",
+      "States": [
+        {
+          "Image": "images/nextmarker",
+          "TitleAlignment": "middle",
+          "FontSize": "11"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Jump to next marker / landmark",
+      "UUID": "com.trackhelm.controller.nextmarker"
+    },
+    {
+      "Icon": "images/prevmarker",
+      "Name": "Previous Landmark",
+      "States": [
+        {
+          "Image": "images/prevmarker",
+          "TitleAlignment": "middle",
+          "FontSize": "11"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Jump to previous marker / landmark",
+      "UUID": "com.trackhelm.controller.prevmarker"
+    },
+    {
+      "Icon": "images/addmarker",
+      "Name": "Add Landmark",
+      "States": [
+        {
+          "Image": "images/addmarker",
+          "TitleAlignment": "middle",
+          "FontSize": "11"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Drop marker at current playhead",
+      "UUID": "com.trackhelm.controller.addmarker"
+    },
+    {
+      "Icon": "images/pitchup",
+      "Name": "Pitch Up (+1 st)",
+      "States": [
+        {
+          "Image": "images/pitchup",
+          "TitleAlignment": "bottom",
+          "FontSize": "10"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Transpose pitch up by 1 semitone",
+      "UUID": "com.trackhelm.controller.pitchup"
+    },
+    {
+      "Icon": "images/pitchdown",
+      "Name": "Pitch Down (-1 st)",
+      "States": [
+        {
+          "Image": "images/pitchdown",
+          "TitleAlignment": "bottom",
+          "FontSize": "10"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Transpose pitch down by 1 semitone",
+      "UUID": "com.trackhelm.controller.pitchdown"
+    },
+    {
+      "Icon": "images/volup",
+      "Name": "Volume Up (+1 dB)",
+      "States": [
+        {
+          "Image": "images/volup",
+          "TitleAlignment": "bottom",
+          "FontSize": "10"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Increase volume by 1 dB",
+      "UUID": "com.trackhelm.controller.volup"
+    },
+    {
+      "Icon": "images/voldown",
+      "Name": "Volume Down (-1 dB)",
+      "States": [
+        {
+          "Image": "images/voldown",
+          "TitleAlignment": "bottom",
+          "FontSize": "10"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Decrease volume by 1 dB",
+      "UUID": "com.trackhelm.controller.voldown"
+    },
+    {
+      "Icon": "images/speedup",
+      "Name": "Speed Up (+5%)",
+      "States": [
+        {
+          "Image": "images/speedup",
+          "TitleAlignment": "bottom",
+          "FontSize": "10"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Increase playback tempo by 5%",
+      "UUID": "com.trackhelm.controller.speedup"
+    },
+    {
+      "Icon": "images/speeddown",
+      "Name": "Speed Down (-5%)",
+      "States": [
+        {
+          "Image": "images/speeddown",
+          "TitleAlignment": "bottom",
+          "FontSize": "10"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Decrease playback tempo by 5%",
+      "UUID": "com.trackhelm.controller.speeddown"
+    },
+    {
+      "Icon": "images/songinfo",
+      "Name": "Song Info Display",
+      "States": [
+        {
+          "Image": "images/songinfo",
+          "TitleAlignment": "middle",
+          "FontSize": "10",
+          "FontColor": "#ffffff"
+        }
+      ],
+      "SupportedInMultiActions": false,
+      "Tooltip": "Live display showing song name and elapsed time",
+      "UUID": "com.trackhelm.controller.songinfo"
+    },
+    {
+      "Icon": "images/markerinfo",
+      "Name": "Current Landmark Display",
+      "States": [
+        {
+          "Image": "images/markerinfo",
+          "TitleAlignment": "middle",
+          "FontSize": "10",
+          "FontColor": "#ffcc00"
+        }
+      ],
+      "SupportedInMultiActions": false,
+      "Tooltip": "Live display showing currently active rehearsal landmark",
+      "UUID": "com.trackhelm.controller.markerinfo"
+    },
+    {
+      "Icon": "images/loop",
+      "Name": "Toggle Loop Region",
+      "States": [
+        {
+          "Image": "images/loop",
+          "TitleAlignment": "middle",
+          "FontSize": "11"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Toggle Loop / Vamp mode on active region",
+      "UUID": "com.trackhelm.controller.loop"
+    },
+    {
+      "Icon": "images/cut",
+      "Name": "Toggle Cut Region",
+      "States": [
+        {
+          "Image": "images/cut",
+          "TitleAlignment": "middle",
+          "FontSize": "11"
+        }
+      ],
+      "SupportedInMultiActions": true,
+      "Tooltip": "Toggle Cut / Skip mode on active region",
+      "UUID": "com.trackhelm.controller.cut"
+    }
+  ],
+  "Author": "TrackHelm",
+  "Category": "TrackHelm",
+  "CategoryIcon": "images/category",
+  "CodePath": "index.html",
+  "Description": "Two-way hardware show control for TrackHelm rehearsal workstation",
+  "Icon": "images/plugin_icon",
+  "Name": "TrackHelm",
+  "Software": {
+    "MinimumVersion": "6.0"
+  },
+  "OS": [
+    {
+      "Platform": "mac",
+      "MinimumVersion": "11.0"
+    },
+    {
+      "Platform": "windows",
+      "MinimumVersion": "10.0"
+    }
+  ],
+  "Version": "1.0.0"
+}
