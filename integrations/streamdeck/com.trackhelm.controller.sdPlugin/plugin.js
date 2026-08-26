@@ -163,7 +163,7 @@ function updateButtonDisplay(context, action) {
     case "com.trackhelm.controller.playpause":
       const stateIdx = latestState.isPlaying ? 1 : 0;
       setElgatoState(context, stateIdx);
-      setElgatoTitle(context, latestState.isPlaying ? `▶\n${latestState.formattedTime}` : `⏸\n${latestState.formattedTime}`);
+      setElgatoTitle(context, latestState.isPlaying ? `▶ Play\n${latestState.formattedTime}` : `⏸ Pause\n${latestState.formattedTime}`);
       break;
 
     case "com.trackhelm.controller.songinfo":
@@ -177,20 +177,37 @@ function updateButtonDisplay(context, action) {
       break;
 
     case "com.trackhelm.controller.pitchup":
+      const semiUp = typeof latestState.pitchSemitones === "number" ? latestState.pitchSemitones : 0;
+      setElgatoTitle(context, `+1 Semi\n${semiUp > 0 ? "+" : ""}${semiUp.toFixed(1)} st`);
+      break;
+
     case "com.trackhelm.controller.pitchdown":
-      const semi = latestState.pitchSemitones;
-      setElgatoTitle(context, `${semi > 0 ? "+" : ""}${semi} st`);
+      const semiDown = typeof latestState.pitchSemitones === "number" ? latestState.pitchSemitones : 0;
+      setElgatoTitle(context, `-1 Semi\n${semiDown > 0 ? "+" : ""}${semiDown.toFixed(1)} st`);
       break;
 
     case "com.trackhelm.controller.volup":
+      const volUp = typeof latestState.volumeDb === "number" ? latestState.volumeDb : 0;
+      setElgatoTitle(context, `+1 dB\n${volUp > 0 ? "+" : ""}${volUp.toFixed(1)} dB`);
+      break;
+
     case "com.trackhelm.controller.voldown":
-      const vol = latestState.volumeDb;
-      setElgatoTitle(context, `${vol > 0 ? "+" : ""}${vol.toFixed(1)} dB`);
+      const volDown = typeof latestState.volumeDb === "number" ? latestState.volumeDb : 0;
+      setElgatoTitle(context, `-1 dB\n${volDown > 0 ? "+" : ""}${volDown.toFixed(1)} dB`);
       break;
 
     case "com.trackhelm.controller.speedup":
+      const spdUp = typeof latestState.speed === "number" ? latestState.speed : 1.0;
+      setElgatoTitle(context, `+5% Spd\n${spdUp.toFixed(2)}x`);
+      break;
+
     case "com.trackhelm.controller.speeddown":
-      setElgatoTitle(context, `${latestState.speed.toFixed(2)}x`);
+      const spdDown = typeof latestState.speed === "number" ? latestState.speed : 1.0;
+      setElgatoTitle(context, `-5% Spd\n${spdDown.toFixed(2)}x`);
+      break;
+
+    case "com.trackhelm.controller.loop":
+      setElgatoTitle(context, `Loop\n${latestState.isLooping ? "ACTIVE" : "OFF"}`);
       break;
 
     default:

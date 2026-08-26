@@ -1742,7 +1742,7 @@
               playlistTotal: playlistItems.length,
               currentMarker: activeMarkerName,
               pitchSemitones: pitch + (pitchCents / 100.0),
-              volumeDb: volume,
+              volumeDb: dbVolume,
               speed,
               isLooping: regions.some(r => r.isLoop && currentTime >= r.startTime && currentTime <= r.endTime)
             });
@@ -2928,26 +2928,30 @@
           }
           break;
         case "volume_up":
-          volume = Math.min(6, volume + 1);
-          updateVolumeEngine();
+          dbVolume = Math.min(12.0, parseFloat((dbVolume + 1.0).toFixed(1)));
+          volumeLinear = dbToLinear(dbVolume);
+          await invoke("set_volume", { volume: volumeLinear });
           saveCurrentTrackProfile(filePath);
           break;
         case "volume_down":
-          volume = Math.max(-60, volume - 1);
-          updateVolumeEngine();
+          dbVolume = Math.max(-60.0, parseFloat((dbVolume - 1.0).toFixed(1)));
+          volumeLinear = dbToLinear(dbVolume);
+          await invoke("set_volume", { volume: volumeLinear });
           saveCurrentTrackProfile(filePath);
           break;
         case "adjust_volume":
           if (typeof data.delta === "number") {
-            volume = Math.max(-60, Math.min(6, volume + data.delta));
-            updateVolumeEngine();
+            dbVolume = Math.max(-60.0, Math.min(12.0, parseFloat((dbVolume + data.delta).toFixed(1))));
+            volumeLinear = dbToLinear(dbVolume);
+            await invoke("set_volume", { volume: volumeLinear });
             saveCurrentTrackProfile(filePath);
           }
           break;
         case "set_volume":
           if (typeof data.db === "number") {
-            volume = Math.max(-60, Math.min(6, data.db));
-            updateVolumeEngine();
+            dbVolume = Math.max(-60.0, Math.min(12.0, parseFloat(data.db.toFixed(1))));
+            volumeLinear = dbToLinear(dbVolume);
+            await invoke("set_volume", { volume: volumeLinear });
             saveCurrentTrackProfile(filePath);
           }
           break;
@@ -3008,8 +3012,9 @@
         const val = parsed.value;
         if (cc === 7) { // CC 7 = Volume (0-127 -> -60dB to +6dB)
           const norm = val / 127.0;
-          volume = parseFloat((-60 + norm * 66).toFixed(1));
-          updateVolumeEngine();
+          dbVolume = parseFloat((-60 + norm * 66).toFixed(1));
+          volumeLinear = dbToLinear(dbVolume);
+          invoke("set_volume", { volume: volumeLinear });
           saveCurrentTrackProfile(filePath);
         } else if (cc === 1) { // CC 1 = Speed Mod (0-127 -> 0.5x to 2.0x)
           const norm = val / 127.0;
