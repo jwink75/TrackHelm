@@ -1894,6 +1894,16 @@
               isPlaying = true;
             });
           }
+        } else if (activeTab === "playlist" && selectedPlaylistIndex >= 0 && selectedPlaylistIndex < playlistItems.length) {
+          const highlighted = playlistItems[selectedPlaylistIndex];
+          if (highlighted && highlighted.path !== filePath) {
+            loadAudioPath(highlighted.path, "main", true).then(async () => {
+              await invoke("play");
+              isPlaying = true;
+            });
+          } else {
+            handleStop();
+          }
         } else {
           handleStop();
         }
@@ -2745,20 +2755,13 @@
               selectedFilePaths = selectedFilePaths;
               lastSelectedEntry = targetEntry;
               scrollSelectedBrowserItemIntoView();
-              if (!targetEntry.is_dir) {
-                await loadAudioPath(targetEntry.path, "main", true);
-              }
             }
           } else if (playlistItems.length > 0) {
-            let currentIdx = playlistItems.findIndex(p => p.path === filePath);
+            let currentIdx = selectedPlaylistIndex !== -1 ? selectedPlaylistIndex : playlistItems.findIndex(p => p.path === filePath);
             if (currentIdx === -1) currentIdx = 0;
             else currentIdx = Math.min(playlistItems.length - 1, currentIdx + 1);
             selectedPlaylistIndex = currentIdx;
             scrollSelectedPlaylistItemIntoView();
-            const target = playlistItems[currentIdx];
-            if (target) {
-              await loadAudioPath(target.path, "main", true);
-            }
           }
           break;
         case "prev_track":
@@ -2773,30 +2776,19 @@
               selectedFilePaths = selectedFilePaths;
               lastSelectedEntry = targetEntry;
               scrollSelectedBrowserItemIntoView();
-              if (!targetEntry.is_dir) {
-                await loadAudioPath(targetEntry.path, "main", true);
-              }
             }
           } else if (playlistItems.length > 0) {
-            let currentIdx = playlistItems.findIndex(p => p.path === filePath);
+            let currentIdx = selectedPlaylistIndex !== -1 ? selectedPlaylistIndex : playlistItems.findIndex(p => p.path === filePath);
             if (currentIdx === -1) currentIdx = 0;
             else currentIdx = Math.max(0, currentIdx - 1);
             selectedPlaylistIndex = currentIdx;
             scrollSelectedPlaylistItemIntoView();
-            const target = playlistItems[currentIdx];
-            if (target) {
-              await loadAudioPath(target.path, "main", true);
-            }
           }
           break;
         case "select_track":
           if (typeof data.index === "number" && data.index >= 0 && data.index < playlistItems.length) {
             selectedPlaylistIndex = data.index;
             scrollSelectedPlaylistItemIntoView();
-            const target = playlistItems[data.index];
-            if (target) {
-              await loadAudioPath(target.path, "main", true);
-            }
           }
           break;
         case "next_marker":
