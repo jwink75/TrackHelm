@@ -55,9 +55,19 @@ pub fn start_websocket_server<R: Runtime>(
 
                 // Forward incoming broadcast messages to the connected client
                 let mut send_task = tauri::async_runtime::spawn(async move {
-                    while let Ok(msg) = broadcast_rx.recv().await {
-                        if ws_sender.send(Message::Text(msg)).await.is_err() {
-                            break;
+                    loop {
+                        match broadcast_rx.recv().await {
+                            Ok(msg) => {
+                                if ws_sender.send(Message::Text(msg)).await.is_err() {
+                                    break;
+                                }
+                            }
+                            Err(broadcast::error::RecvError::Lagged(_)) => {
+                                continue;
+                            }
+                            Err(broadcast::error::RecvError::Closed) => {
+                                break;
+                            }
                         }
                     }
                 });

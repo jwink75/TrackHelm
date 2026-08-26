@@ -62,6 +62,8 @@ function initTrackHelmConnection() {
 
   trackhelmWs.onopen = function () {
     console.log("[StreamDeck] Connected to TrackHelm on port 4545");
+    trackhelmWs.send("get_state");
+    trackhelmWs.send(JSON.stringify({ action: "get_state" }));
   };
 
   trackhelmWs.onmessage = function (evt) {
@@ -145,7 +147,7 @@ function handleStreamDeckKeyDown(action, context) {
   }
 
   if (command) {
-    trackhelmWs.send(command);
+    trackhelmWs.send(JSON.stringify({ action: command }));
   }
 }
 
@@ -164,6 +166,18 @@ function updateButtonDisplay(context, action) {
       const stateIdx = latestState.isPlaying ? 1 : 0;
       setElgatoState(context, stateIdx);
       setElgatoTitle(context, latestState.isPlaying ? `▶ Play\n${latestState.formattedTime}` : `⏸ Pause\n${latestState.formattedTime}`);
+      break;
+
+    case "com.trackhelm.controller.rewind":
+      setElgatoTitle(context, `Rewind\n${latestState.formattedTime}`);
+      break;
+
+    case "com.trackhelm.controller.nexttrack":
+      setElgatoTitle(context, `Next ⏭\nTrk ${latestState.playlistIndex || 1}/${latestState.playlistTotal || 1}`);
+      break;
+
+    case "com.trackhelm.controller.prevtrack":
+      setElgatoTitle(context, `⏮ Prev\nTrk ${latestState.playlistIndex || 1}/${latestState.playlistTotal || 1}`);
       break;
 
     case "com.trackhelm.controller.songinfo":
@@ -208,6 +222,10 @@ function updateButtonDisplay(context, action) {
 
     case "com.trackhelm.controller.loop":
       setElgatoTitle(context, `Loop\n${latestState.isLooping ? "ACTIVE" : "OFF"}`);
+      break;
+
+    case "com.trackhelm.controller.cut":
+      setElgatoTitle(context, "Cut\nOFF");
       break;
 
     default:
