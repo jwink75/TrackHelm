@@ -305,18 +305,16 @@ impl AudioEngine {
                                 let audio_channels = audio.channels;
                                 let frame_rate = audio.sample_rate as f64;
 
-                                // Region handling: Check for Cut skip and Loop wrap
+                                // Region handling: Check for Cut skip and Loop wrap (gapless continuous playback)
                                 let current_sec = playback_frame as f64 / frame_rate;
                                 for reg in &active_regions[..active_region_count] {
                                     if reg.is_cut && current_sec >= reg.start_seconds && current_sec < reg.end_seconds {
                                         playback_frame = (reg.end_seconds * frame_rate) as usize;
                                         shared_current_frame.store(playback_frame, Ordering::SeqCst);
-                                        stretch.reset();
                                         break;
                                     } else if reg.is_loop && current_sec >= reg.end_seconds {
                                         playback_frame = (reg.start_seconds * frame_rate) as usize;
                                         shared_current_frame.store(playback_frame, Ordering::SeqCst);
-                                        stretch.reset();
                                         break;
                                     }
                                 }

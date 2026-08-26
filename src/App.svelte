@@ -5782,7 +5782,7 @@
                         }
                       }}
                     >
-                      ⚡ {region.crossfadeMs ?? 5}ms
+                      ✕ {region.crossfadeMs ?? 5}ms
                     </button>
                   {/if}
                   <button 
@@ -5806,7 +5806,7 @@
                     title="Toggle Cut / Skip mode (X)"
                     on:click|stopPropagation={() => toggleRegionCut(region)}
                   >
-                    ✂️
+                    ✕
                   </button>
                   <button 
                     class="delete-marker-btn" 
@@ -6193,7 +6193,7 @@
             }
           }
         }}>
-          ⚡ Splice Crossfade ({contextMenuRegion.crossfadeMs ?? 5}ms)...
+          ✕ Splice Crossfade ({contextMenuRegion.crossfadeMs ?? 5}ms)...
         </div>
       {/if}
       <div class="menu-item" on:click={() => { if (contextMenuRegion) startRenameRegion(contextMenuRegion); showRegionContextMenu = false; }}>
