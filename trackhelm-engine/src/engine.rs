@@ -87,9 +87,9 @@ impl AudioEngine {
             let mut is_playing = false;
             let mut current_speed: f32 = 1.0;
             let mut current_pitch: f32 = 0.0;
-            let stretch = signalsmith_stretch_rs::SignalsmithStretch::new(MAX_CHANNELS, config.sample_rate().0 as f32);
+            let mut stretch = signalsmith_stretch_rs::SignalsmithStretch::new(output_channels.max(2).min(MAX_CHANNELS), config.sample_rate().0 as f32);
             stretch.set_transpose_semitones(current_pitch);
-            let mut stretch_channels: usize = 2;
+            let mut stretch_channels: usize = output_channels.max(2).min(MAX_CHANNELS);
 
             // Pre-allocated scratch buffers (zero heap allocations in audio loop)
             let mut in_channel_scratch: Vec<Vec<f32>> = vec![vec![0.0f32; MAX_BUFFER_FRAMES]; MAX_CHANNELS];
@@ -246,6 +246,7 @@ impl AudioEngine {
                                         
                                         let ch = audio.channels.max(1).min(MAX_CHANNELS);
                                         stretch_channels = ch;
+                                        stretch.preset_default(stretch_channels, current_sample_rate as f32);
                                         stretch.reset();
                                         stretch.set_transpose_semitones(current_pitch);
 

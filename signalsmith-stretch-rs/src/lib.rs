@@ -3,6 +3,7 @@ use std::ffi::c_void;
 extern "C" {
     fn signalsmith_stretch_create(channels: i32, sample_rate: f32) -> *mut c_void;
     fn signalsmith_stretch_destroy(instance: *mut c_void);
+    fn signalsmith_stretch_preset_default(instance: *mut c_void, channels: i32, sample_rate: f32);
     fn signalsmith_stretch_set_transpose_factor(instance: *mut c_void, factor: f32);
     fn signalsmith_stretch_set_transpose_semitones(instance: *mut c_void, semitones: f32);
     fn signalsmith_stretch_process(
@@ -33,6 +34,11 @@ impl SignalsmithStretch {
         Self { instance, channels }
     }
 
+    pub fn preset_default(&mut self, channels: usize, sample_rate: f32) {
+        unsafe { signalsmith_stretch_preset_default(self.instance, channels as i32, sample_rate) };
+        self.channels = channels;
+    }
+
     pub fn set_transpose_factor(&self, factor: f32) {
         unsafe { signalsmith_stretch_set_transpose_factor(self.instance, factor) };
     }
@@ -42,20 +48,30 @@ impl SignalsmithStretch {
     }
 
     pub fn process(&self, input: &[&[f32]], output: &mut [&mut [f32]]) {
-        assert_eq!(input.len(), self.channels);
-        assert_eq!(output.len(), self.channels);
+        if input.is_empty() || output.is_empty() {
+            return;
+        }
+
+        let channels = input.len().min(output.len()).min(self.channels);
+        if channels == 0 {
+            return;
+        }
 
         let input_samples = input[0].len();
         let output_samples = output[0].len();
-
-        for i in 1..self.channels {
-            assert_eq!(input[i].len(), input_samples, "Mismatched input channel lengths");
-            assert_eq!(output[i].len(), output_samples, "Mismatched output channel lengths");
+        if input_samples == 0 || output_samples == 0 {
+            return;
         }
 
-        // Convert nested slices to pointers of pointers
-        let input_ptrs: Vec<*const f32> = input.iter().map(|ch| ch.as_ptr()).collect();
-        let mut output_ptrs: Vec<*mut f32> = output.iter_mut().map(|ch| ch.as_mut_ptr()).collect();
+        // Stack-allocated pointer arrays for zero allocation on the audio thread
+        let mut input_ptrs: [*const f32; 16] = [std::ptr::null(); 16];
+        let mut output_ptrs: [*mut f32; 16] = [std::ptr::null_mut(); 16];
+
+        let safe_channels = channels.min(16);
+        for i in 0..safe_channels {
+            input_ptrs[i] = input[i].as_ptr();
+            output_ptrs[i] = output[i].as_mut_ptr();
+        }
 
         unsafe {
             signalsmith_stretch_process(

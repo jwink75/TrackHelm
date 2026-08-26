@@ -52,6 +52,13 @@ void signalsmith_stretch_process(void* instance, const float* const* input, int 
     }
 }
 
+void signalsmith_stretch_preset_default(void* instance, int channels, float sample_rate) {
+    if (instance) {
+        auto* stretch = static_cast<signalsmith::stretch::SignalsmithStretch<float>*>(instance);
+        stretch->presetDefault(channels, sample_rate);
+    }
+}
+
 void signalsmith_stretch_reset(void* instance) {
     if (instance) {
         auto* stretch = static_cast<signalsmith::stretch::SignalsmithStretch<float>*>(instance);
