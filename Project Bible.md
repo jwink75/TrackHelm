@@ -15,12 +15,12 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
 
 ---
 
-## 2. Core Architecture Decisions (Milestone 0 ADR)
+## 2. Core Architecture Decisions (ADRs)
 
 ### 2.1 Authoritative Audio Engine
 * **Decision:** Native Rust real-time audio thread using `cpal` for low-latency CoreAudio backend integration.
-* **Rationale:** Tauri's webview runs in a sandbox and cannot natively host third-party VST/AU plugins (a long-term project requirement). The UI will act as a thin client communicating with the native Rust engine.
-* **Communication:** Lock-free, thread-safe ring buffers (e.g., `ringbuf` or `rtrb` crates) will handle audio data passing, and lightweight channel-based queues will route controls from the main thread.
+* **Rationale:** Tauri's webview runs in a sandbox and cannot natively host third-party VST/AU plugins (a long-term project requirement). The UI acts as a thin client communicating with the native Rust engine.
+* **Communication:** Lock-free, thread-safe ring buffers handle audio data passing, and lightweight channel-based queues route controls from the main thread.
 
 ### 2.2 Time/Pitch Shifting Engine
 * **Decision:** Native C++ compilation of `Signalsmith Stretch` linked directly to the Rust engine via FFI bindings.
@@ -85,18 +85,18 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
   * **In-Memory Store:** The profile database is cached in memory (`cachedProfilesStore`), providing instant reads and writes without synchronous disk or `localStorage` serialization.
   * **Debounced Persistence:** Live parameter tweaks (knob dragging, sliders, text input) update memory instantly and debounce writes to storage by 400ms, flushing immediately on track change or window unload.
   * **Decoupled Waveform Redraws:** Playhead animation is gated on playback/scrubbing, while heavy waveform peak re-computations only occur on zoom, pan, window resize, or dirty flags.
-* **Rationale:** Musicians expect all adjustments made during rehearsal (volume, tempo, pitch, markers, attached chord charts, and alternate takes) to be instantly restored when returning to that song.
 * **Preserved Parameters:**
-  * `dbVolume`, `speed`, `pitch`
-  * `eqBass`, `eqTreble`
-  * `compressorThreshold`, `compressorRatio`, `compressorMakeup`
-  * `markers` (IDs, names, timestamps, and colors)
-  * `pdfChartPath`, `pdfChartName`
-  * `associatedVersions` (alternate backing tracks, stems, and live takes)
-  * `alternateTrackPath`
-* **Lifecycle:** When switching tracks, the outgoing track's profile is automatically persisted to disk, and the incoming track's profile is restored and dispatched directly to the real-time DSP engine.
+  * `dbVolume`, `speed`, `pitch`, `pitchCents`
+  * `eqBass`, `eqTreble`, full `eqNodes` array
+  * `compStage1`, `compStage2`, `compRouting`, `compParallelBlend`
+  * `isEqBypassed`, `isCompressorBypassed`
+  * `markers` (IDs, names, timestamps, colors, and PDF anchors)
+  * `regions` (IDs, names, start/end times, loop/cut flags, crossfadeMs)
+  * `pdfChartPath`, `pdfChartName`, `openPdfTabs`, active dynamic PDF state
+  * `associatedVersions` (alternate backing tracks, stems, guide tracks)
+  * `notesMarkdown`, `lyricsMarkdown`, markdown view modes
 
-### 2.12 Markers & Rehearsal Regions System
+### 2.13 Markers & Rehearsal Regions System
 * **Decision:** Interactive, color-coded, draggable markers with synchronized multi-view feedback.
 * **Features:**
   * **Vibrant Rehearsal Palette:** Amber/Orange (Default/Intro), Cyan/Blue (Verse), Green (Solo), Purple (Chorus), Red (Bridge/Outro), Yellow (Cues/Loops).
@@ -104,43 +104,19 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
   * **Waveform & Ruler Synchronization:** Renders matching colored flags in the top time ruler and vertical locator lines through the waveform.
   * **Navigation Shortcuts:** `ArrowLeft` and `ArrowRight` jump to previous and next markers during playback.
 
-### 2.13 Rehearsal Workstation Knob & Hardware Reference Controls
+### 2.14 Rehearsal Workstation Knob & Hardware Reference Controls
 * **Decision:** Custom analog-style virtual knobs with vertical drag sensitivity and hardware zero-point reference marks.
 * **Features:**
   * **Zero/Center Ticks:** Top 12 o'clock center tick marks (`.knob-zero-tick`) on all parameter dials (Speed, Pitch, Fine Tune, Bass, Mid, Treble, Threshold, Ratio, Makeup) for precise visual alignment.
   * **Double-Click Reset:** Double-clicking any knob or slider instantly resets it to its unity default value.
   * **Real-time DSP Dispatch:** Live knob movements dispatch parameter updates to `SignalsmithStretch` on the native audio thread with zero stutter.
 
-### 2.14 Full Audio Tag Metadata Inspector & In-Place Editor (Lofty Integration)
+### 2.15 Full Audio Tag Metadata Inspector & In-Place Editor (Lofty Integration)
 * **Decision:** Integrated native audio tag reading and non-destructive writing via `lofty-rs` (v0.21) across ID3v1/v2, Vorbis Comments, MP4/M4A atoms, and FLAC/RIFF chunks.
 * **Editable Tag Fields:** Song Title, Artist/Performer, Album/Project, Grouping (Movement/Act/Scene/Band), Composer/Arranger, Genre, Year, Track Number, and Comments/Notes.
 * **Inspector:** Dedicated `ℹ️ METADATA` split-view tab in the Rehearsal Deck displaying editable tags on the left and technical stream specs (sample rate, channels, duration, file path) on the right.
 
-### 2.15 Dual-Mode Stable Waveform Rendering (Peak Bars vs. Sample Interpolation)
-* **Decision:** Dual-phase waveform visualization combining solid peak-holding column bars when zoomed out with continuous sample interpolation and RX-style node squares when zoomed in.
-* **Acoustic Rationale:** Single-point subsampling of high-frequency audio oscillations during scrolling playback causes phase-aliasing jitter (visual "fluttering"). Calculating max absolute peak per pixel column eliminates flutter at all zoom levels (including the 15-second rehearsal view).
-* **Sample-Level Transition:** When zoomed in to $< 400$ frames on screen, the display automatically transitions to the unbroken continuous sample line with draggable node points.
-
-### 2.16 3-Knob Pitch & Time Shifting Interface (Speed, Semitones, Fine Tune Cents)
-* **Decision:** 3-dial hardware-style row with dedicated Fine Tune ($\pm 100\text{ cents}$) adjustment, placing Semitone transposition in the middle and Speed on the left.
-* **Formula:** $\text{Effective Semitones} = \text{Semitones} + \frac{\text{Cents}}{100.0}$.
-* **Persistence:** Both coarse semitone shifts and fine-tune cent adjustments are saved to the persistent `TrackProfile` and updated in real-time on `SignalsmithStretch`.
-
-### 2.17 Native Real-Time DSP Engine: 3-Band Biquad EQ & Feedforward Dynamic Compressor
-* **Decision:** Real-time audio DSP filters compiled directly into `trackhelm-engine` and processed inside the CPAL stream rendering loop.
-* **3-Band Parametric Equalizer (`biquad.rs`):**
-  * Robert Bristow-Johnson (RBJ) Audio EQ Cookbook biquad cascade operating with 64-bit float precision.
-  * **Low Shelf Filter:** $100\text{ Hz}$ center frequency ($\pm 12\text{ dB}$, $Q=0.707$).
-  * **Parametric Bell Filter:** $1000\text{ Hz}$ center frequency ($\pm 12\text{ dB}$, $Q=0.707$).
-  * **High Shelf Filter:** $8000\text{ Hz}$ center frequency ($\pm 12\text{ dB}$, $Q=0.707$).
-  * **Zero-Overhead Bypass:** Stereo audio samples bypass biquad computation entirely when all gains are set to $0\text{ dB}$.
-* **Feedforward Soft-Knee Compressor (`compressor.rs`):**
-  * Soft knee ($3.0\text{ dB}$ transition width) with feedforward detection topology.
-  * Log-domain decibel envelope follower with ballistic smoothing ($30\text{ ms}$ attack time, $300\text{ ms}$ adaptive smooth decay release).
-  * Continuously adjustable ratio ($1.0:1$ up to $4.0:1$) and linear makeup gain ($0\text{ dB}$ to $+24\text{ dB}$).
-  * Unity default state: $0\text{ dB}$ threshold, $1.0:1$ ratio, $0\text{ dB}$ makeup gain (zero coloration).
-
-### 2.18 Timeline Regions, Dynamic Hotkeys, Loop/Vamp & Cut Engine
+### 2.16 Timeline Regions, Dynamic Hotkeys, Loop/Vamp & Gapless Cut Engine
 * **Decision:** Interactive time region framework layered over the timeline with non-destructive playback engine integration.
 * **Interactive Time Selection & Edge Grab Handles:**
   * **Shift + Drag** on the waveform creates a highlighted time selection box with live grab pills ($\pm 8\text{px}$ hover detection with `ew-resize` cursor) allowing edge adjustments prior to committing.
@@ -148,19 +124,11 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
   * Created regions feature draggable left and right boundary handles, updating start and end boundaries in real time with automatic engine synchronization.
 * **Quick Workflow Hotkeys:**
   * **`R`**: Creates a standard region from the active selection or marker pair.
-  * **`X` (Cut / Skip Mode ✂️)**: Creates a new region or toggles an existing region into Cut mode. In the waveform, cuts appear grayed-out with red diagonal hazard hatching; the native audio engine seamlessly jumps over the cut span during playback.
+  * **`X` (Cut / Skip Mode ✕)**: Creates a new region or toggles an existing region into Cut mode. In the waveform, cuts appear grayed-out with red diagonal hazard hatching; the native audio engine seamlessly jumps over the cut span during playback with zero gap or silence latency (without resetting stretch latency buffers).
   * **`L` (Loop / Vamp Mode 🔁)**: Creates a new region or toggles an existing region into Loop mode. In the waveform, loops appear with green background highlighting and bracket flags; the native audio engine continuously and seamlessly wraps playback back to region start.
-* **Sidebar Management & Renaming:**
-  * Dedicated **REGIONS** section in the right sidebar below markers.
-  * Inline renaming via double-click, dedicated `✏️` button, or right-click context menu (`✏️ Rename Region...`).
+* **Splice Crossfade Control**: Direct click-to-edit badge (`✕ 5ms`) allows adjusting crossfade smoothing from $0$ to $100\text{ ms}$.
 
-### 2.19 Waveform Visual Overlays: Compressor Dotted Threshold & Ghost Dynamics
-* **Dotted Threshold Boundary:**
-  * Lowering the compressor threshold below $0\text{ dB}$ renders upper and lower yellow dotted boundary lines across the waveform with numerical dB readouts.
-* **Dual Ghost + Compressed Waveform Visualization:**
-  * When dynamic compression is active (Threshold $< 0\text{ dB}$, Ratio $> 1.0:1$), the uncompressed track waveform remains visible as a subtle translucent white ghost, while the dynamically compressed waveform is rendered in full vibrant theme color.
-
-### 2.20 Advanced Dual-Stage Dynamic Compressor Console (Sonitus Inspired)
+### 2.17 Advanced Dual-Stage Dynamic Compressor Console (Sonitus Inspired)
 * **Dual Serial & Parallel Compressor Topology:**
   * Native CPAL DSP support for two independent compressor stages (`CompStage1` and `CompStage2`), switchable between **Series** (Stage 1 feeds into Stage 2) and **Parallel** routing with a continuous wet/dry blend slider.
 * **4 Distinct Analog & Modern Character Models:**
@@ -168,107 +136,103 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
   * **Modern:** Transparent, ultra-clean VCA detection with linear transfer slope.
   * **FET:** Lightning-fast ballistic response ($0.1\text{ ms}$ attack, aggressive punch).
   * **Opto:** Smooth, musical electro-optical two-stage decay curve.
-* **Sonitus-Inspired Visual Console & Real-time Meters:**
-  * **Input Stereo Peak Meter & Vertical Threshold Slider:** Dual L/R level meters directly beside an analog-style vertical slider controlling threshold ($-60\text{ dB}$ to $0\text{ dB}$).
-  * **Dynamic Transfer Function Graph:** Real-time SVG transfer curve with soft knee quadratic bezier curve, $1:1$ faint diagonal reference line, and an **animated live signal dot** tracing the incoming audio level along the curve in real time.
-  * **Gain Reduction (GR) Meter:** Fast-decay ballistic visual meter displaying current gain attenuation in decibels.
-  * **Vertical Makeup Gain Slider & Output Stereo Meter:** Post-compression makeup amplification ($0\text{ dB}$ to $+24\text{ dB}$) with stereo output peak monitoring.
+* **Exact Analytical Soft-Knee Transfer Function:**
+  * Soft-knee geometry computed via continuous polynomial equation:
+    $$y(x) = \begin{cases} x & x \le T - W/2 \\ x + \frac{(1/R - 1)(x - T + W/2)^2}{2W} & T - W/2 < x \le T + W/2 \\ T + \frac{x - T}{R} & x > T + W/2 \end{cases}$$
+  * When $R = 1.0$, $(1/R - 1) = 0$, guaranteeing a pure linear diagonal reference line without vertical asymptotes.
+* **Real-time Meters & Live Tracing:**
+  * Dual L/R peak meters, fast-decay Gain Reduction (GR) meter, and animated green signal dot tracing input level along the curve in real time.
 
-### 2.21 Advanced Parametric Equalizer Console (Kirchhoff & AnyTune Inspired)
+### 2.18 Advanced Parametric Equalizer Console (Kirchhoff & AnyTune Inspired)
 * **Multi-Filter RBJ Biquad Cascade Engine:**
-  * Real-time audio thread cascaded biquad vector supporting arbitrary numbers of simultaneous filter bands.
-  * Supported filter types: **Parametric Bell (Peaking)**, **Low Shelf**, **High Shelf**, **Low Pass (High Cut)**, **High Pass (Low Cut)**, and **Notch (Band Stop)**.
-* **Interactive Visual Kirchhoff Spectrum Graph:**
-  * Continuous logarithmic frequency grid ($20\text{ Hz}$ to $20\text{ kHz}$) with calibrated $+24\text{ dB}$ to $-24\text{ dB}$ gain markings.
-  * **Ghosted Audio Spectrum Background:** Visual representation of incoming audio energy across frequency bands.
-  * **Dynamic Cumulative EQ Curve:** Rendered spline path tracking the composite frequency and phase response of all active filter bands.
-  * **Interactive Node Handles:** Draggable SVG nodes with color-coded frequency/gain positioning, hover animations, and $Q$-bandwidth indicator wings.
-* **Selected Node Parameter Deck:**
-  * Bottom dock with pill selectors for instant band switching, filter type dropdowns, frequency sliders, gain controls, $Q$ bandwidth adjustment, active/mute toggles, and new band creation/deletion.
+  * Real-time audio thread cascaded biquad vector supporting arbitrary numbers of simultaneous filter bands (Peaking Bell, Low Shelf, High Shelf, Low Pass, High Pass, Notch).
+* **Interactive Node Dragging & Mousewheel Q Control:**
+  * Direct click-and-drag on SVG filter nodes (horizontal logarithmic frequency $20\text{ Hz} - 20\text{ kHz}$, vertical gain $\pm 24\text{ dB}$).
+  * Mouse wheel / scroll adjusts $Q$ bandwidth smoothly from $0.10$ to $10.00$.
+  * Double-click on empty graph space or click `+ Add Filter Band` to drop a new node at the cursor position.
+* **Logarithmically Mapped Frequency Sliders:**
+  * Slider input normalized across $\log_{10}(f) \in [1.30103, 4.30103]$, ensuring equal distance per octave.
+* **Real-Time Spectrum Analyzer (RTA):**
+  * 64-band animated spiky FFT frequency spectrum glow responding dynamically to playback energy.
 
-### 2.22 Rehearsal Deck Associated Media Hub & Dynamic Multi-PDF Tabs
-* **Dedicated Center Deck `FILES` Manager:**
-  * Replaced the static single PDF tab with a permanent rehearsal media hub managing all attached sheet music, chord charts, alternate takes, guide vocals, and backing tracks.
-  * Interactive file cards with one-click **"Open PDF"** or **"Load as Main Audio"** actions, path tags, and unlinking controls.
-* **Dynamic Multi-PDF Tabs:**
-  * Opening any associated PDF automatically creates an independent dynamic tab (e.g. `📄 Lead_Sheet.pdf ×`) with individual close buttons.
-  * Each tab tracks its own rendering state, page position, canvas resolution, and **Negative Invert** mode for low-light stage reading.
+### 2.19 Elgato Stream Deck Plugin & Show Control Architecture (Milestone 8)
+* **Dedicated Stream Deck Plugin (`com.trackhelm.controller.sdPlugin`)**:
+  * 15-key and 32-key profiles with custom retina icons.
+  * Dynamic centered LCD readouts updated at 10Hz:
+    * Song name and live elapsed timestamp.
+    * Current landmark marker name and cue timestamp.
+    * Semitone pitch transposition (+1 / -1 st).
+    * Calibrated volume in decibels (+1 / -1 dB).
+    * Tempo speed multiplier (+5% / -5% speed).
+    * Play/Pause indicator with live time.
+    * Rewind and playlist progression (`Trk 2/8`).
+  * Automated packaging and direct installation via `Build Stream Deck Plugin.app`.
+* **Lag-Tolerant WebSocket Server (`ws://0.0.0.0:4545`)**:
+  * Outbound broadcast channel using `tokio::sync::broadcast` with `RecvError::Lagged` tolerance, ensuring continuous uninterrupted streaming to connected remotes.
+* **OSC & MIDI Infrastructure**:
+  * UDP-based `/trackhelm/*` endpoints for QLab / Bitfocus Companion.
+  * Hardware MIDI integration via `midir` (CC 7 Volume, CC 1 Speed, Note-on transport).
 
-### 2.23 Markdown Rehearsal Notes & Lyrics Deck with Auto Chord Badges
-* **Obsidian-Style Dark Markdown Renderer:**
-  * Full Markdown support for song notes, arrangement guides, setlist cues, and rehearsal lyrics.
-  * Tri-mode toolbar: **Edit (Raw Markdown)**, **Preview (Formatted)**, and **Split View (Side-by-Side)**.
-* **Automatic Rehearsal Chord Badge Parsing:**
-  * Regex-based detection parses inline and bracketed musical chords (e.g., `[Am7]`, `[G/B]`, `[F#m7b5]`, `[Cadd9]`, `[D7sus4]`) and renders them as glowing blue monospace badges for optimal stage visibility.
-* **Full Per-Track Persistence:**
-  * Markdown text, active view modes, and attached documents are saved automatically to the persistent `TrackProfile`.
-
-### 2.24 Rack Effects Bypass Toggles & Sidebar Workspace Optimization
-* **Dedicated Module Bypass Toggles (`BYP`):**
-  * Hardware-style bypass switches on both Compressor and EQ rack module rows, allowing instantaneous A/B comparison without altering saved dial settings.
-* **Right Sidebar Clean-up:**
-  * Removed redundant top project setup and file association cards, allocating 100% of the right sidebar height to the combined Markers and Regions list for streamlined live navigation.
+### 2.20 High-Fidelity Multi-Threaded Offline Audio Export Engine (Milestone 9)
+* **Non-Destructive Audio Baking (`render_export_audio`)**:
+  * Offline multi-threaded audio renderer processing the source PCM through the full DSP graph.
+  * Bakes tempo stretch (Signalsmith), pitch shift, cascaded biquad EQ, dual-stage compression, and region cut splices into 16-bit, 24-bit, or 32-bit Float WAV files.
+  * Configurable range export: Entire Song, Active Time Selection, or Selected Timeline Region.
+  * Metadata preservation copying ID3v2/Vorbis tags and album artwork to exported files.
 
 ---
 
-## 3. Core Requirements (MVP Scope)
+## 3. Core Requirements & System Features
 
 ### 3.1 Audio Engine & DSP
 * Multi-format playback (WAV, AIFF, FLAC, MP3, AAC/M4A, Ogg Vorbis).
-* Independent pitch shift and time stretch controls.
-* Parametric EQ with interactive nodes + global bass/treble shelf controls.
-* Feedforward compressor with dynamic waveform gain-reduction overlay.
-* Non-destructive cuts (nonlinear playback timeline: jump from Time A to Time B with zero-crossing/crossfades).
-* Node-based volume envelope drawn on waveform.
-* Live layering (primary track + secondary reference pitches/clicks).
-* BPM and key detection.
+* Independent pitch shift and time stretch controls with permanent zero-glitch Signalsmith engagement.
+* Parametric EQ with interactive draggable nodes + logarithmic sliders.
+* Dual-stage serial/parallel compressor with 4 character models and exact analytical transfer curve.
+* Non-destructive gapless cuts and continuous loop wrapping.
 * Grand undo/redo, auto-save, and crash recovery.
 
 ### 3.2 Waveform & Timeline
 * Dual waveform display: Large scrollable/zoomable waveform + mini Overview bar.
 * Persistent peak cache.
-* Color-coded, draggable, and renamable markers.
+* Color-coded, draggable, and renamable markers with PDF chart anchor links.
 * Multiple concurrent loops with a "Vamp Mode" option (continuous loop until disabled).
 
 ### 3.3 Library, Projects & Files
-* **Media vs. Project model:** Media is raw audio. Project stores playback state, loops, markers, EQ settings, associated assets, and notes. One Media file can have multiple independent Projects.
-* Smart folders/playlists, reorderable virtual playlists with CSV import/export.
-* Type-ahead search with 500ms debounce.
-* **Associated Media System:** Link audio to alternate backing tracks, score PDFs, lyrics, video, or notes. Backing tracks and original recordings are hot-swappable during playback.
-* Orphan detection using media hash/fingerprint.
-* Preserved metadata tags with dedicated lyrics and application notes.
+* **Per-Song Persistent Project Profiles:** Preserves all DSP, markers, regions, PDF charts, metadata, and associated tracks.
+* Smart folders/playlists with fuzzy search and quick type-ahead jump.
+* **Associated Media System:** Link audio to alternate backing tracks, score PDFs, lyrics, video, or notes.
+* Preserved metadata tags via Lofty ID3v2/Vorbis editor.
 
-### 3.4 Hardware & External Control
-* MIDI Learn interface (sending and receiving MIDI).
+### 3.4 Hardware & External Show Control
+* Dedicated Elgato Stream Deck plugin with dynamic LCD feedback.
+* WebSocket broadcast server on port `4545`.
 * Extensible OSC routing/mapping system with presets for QLab integration.
-* Outgoing status events for external cue setups.
+* Hardware MIDI Learn interface with CC and Note mapping.
 
-### 3.5 Export
-* Non-destructive render of the timeline including EQ, compression, cuts, pitch, and tempo adjustments.
-* Formats: WAV, M4A, MP3. Warning checks before overwriting original files.
+### 3.5 High-Fidelity Export
+* Multi-format offline WAV export (16-bit, 24-bit, 32-bit float) baking DSP, cuts, tempo, pitch, and metadata.
 
 ---
 
-## 4. Phase 2 & Later (Deferred - Do Not Build Yet)
+## 4. Phase 2 & Later (Future Roadmap)
 * Elastic Alignment / Sync Anchors (piecewise time-stretch).
 * Practice Mode / Rehearsal Sequences (loop chaining with tempo ramps).
 * Command Palette (`Cmd+K`) and custom keyboard shortcuts.
 * A/B processing state comparison.
-* Output metering (LUFS/RMS meters).
 * Full VST/AU plugin hosting implementation (infrastructure stub only in MVP).
 
 ---
 
 ## 5. Milestone Plan & Progress
 * **Milestone 0:** Architecture Decisions & Workspace Skeleton *(Completed)*
-* **Milestone 1:** Minimal Viable Playback Engine *(Completed — CPAL stream, dual waveform display, deep zoom, overview seek, zero-delay load)*
-* **Milestone 2:** Pitch and Time Shifting *(Completed — Native Signalsmith Stretch real-time integration, speed, pitch, and fine-tune dials, bypass optimizations)*
-* **Milestone 3:** Loops, Markers, and Vamp Mode *(Completed — Interactive color-coded markers, Shift+click multi-marker selection, timeline regions, loop/vamp mode with seamless audio engine wrapping, draggable edge handles, hotkeys L, R)*
-* **Milestone 4:** Persistent Projects & Track Profiles *(Completed — Per-track persistent AnyTune-style profiles preserving DSP, markers, regions, PDF charts, metadata, and associated tracks)*
-* **Milestone 5:** EQ and Compressor DSP *(Completed — 3-band RBJ biquad EQ, feedforward soft-knee compressor, vertical 90° module tab buttons, inspector dialogs, dotted threshold lines, ghost compressed waveform visualizer)*
-* **Milestone 6:** Nonlinear Timeline (Cuts) and Volume Envelopes *(Partially Completed — Real-time audio engine cut-skip integration, hazard hatch visualizer, hotkey X, and edge resizing handles complete)*
-* **Milestone 7:** Library Management, Associated Media, and Metadata *(Completed — Integrated OS folder browser, playlist management, PDF chart association, alternate audio takes, Lofty ID3/Vorbis tag editor)*
-* **Milestone 8:** MIDI, OSC, and QLab Integration
-* **Milestone 9:** Export Engine
-* **Milestone 10:** Practice Mode / Rehearsal Sequences
-* **Later:** Advanced UI features, Sync Anchors, VST/AU hosting, Command Palette.
+* **Milestone 1:** Minimal Viable Playback Engine *(Completed)*
+* **Milestone 2:** Pitch and Time Shifting *(Completed)*
+* **Milestone 3:** Loops, Markers, and Vamp Mode *(Completed)*
+* **Milestone 4:** Persistent Projects & Track Profiles *(Completed)*
+* **Milestone 5:** EQ and Compressor DSP *(Completed)*
+* **Milestone 6:** Nonlinear Timeline (Cuts) & Splice Crossfades *(Completed)*
+* **Milestone 7:** Library Management, Associated Media, and Metadata *(Completed)*
+* **Milestone 8:** Stream Deck, WebSocket, MIDI & OSC Show Control *(Completed)*
+* **Milestone 9:** High-Fidelity Offline Audio Export Engine *(Completed)*
+* **Milestone 10:** Practice Mode / Rehearsal Sequences *(Next Phase)*
