@@ -4899,9 +4899,9 @@
         <div class="control-group loop-group">
           <div class="loop-zoom-grid">
             <div class="btn-row">
-              <button class="control-btn accent-btn" on:click={addMarker}>+ Add Marker</button>
-              <button class="control-btn disabled-btn" title="Loop start (Milestone 5)">[ Loop</button>
-              <button class="control-btn disabled-btn" title="Loop end (Milestone 5)">Loop ]</button>
+              <button class="control-btn accent-btn" on:click={addMarker} title="Add Landmark / Marker at playhead (M)">+ Marker</button>
+              <button class="control-btn" on:click={() => createRegionFromSelectionOrMarkers(false, false)} title="Create Region from active selection or markers (R)">+ Region</button>
+              <button class="control-btn" on:click={handleLoopHotkey} title="Toggle Loop mode on selected region or create loop (L)">🔁 Loop</button>
             </div>
             <div class="zoom-slider-group">
               <span class="control-text-label">ZOOM</span>
