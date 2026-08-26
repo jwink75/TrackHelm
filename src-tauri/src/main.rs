@@ -7,6 +7,8 @@ use tauri::menu::{Menu, MenuItem, Submenu, PredefinedMenuItem};
 use trackhelm_engine::{Command, CommandBus, SharedEngineState, DecodedAudio, decode_file};
 use lofty::prelude::*;
 
+mod control;
+
 use std::collections::HashMap;
 
 #[derive(Clone, serde::Serialize)]
@@ -84,6 +86,8 @@ struct AppState {
     shared_engine_state: Arc<SharedEngineState>,
     active_audio: Mutex<Option<Arc<DecodedAudio>>>,
     track_cache: Mutex<LruTrackCache>,
+    ws_state: Arc<control::websocket::WebSocketServerState>,
+    midi_manager: Arc<control::midi::MidiManager>,
 }
 
 #[derive(serde::Serialize)]
@@ -998,6 +1002,21 @@ fn load_playlist_file(path: String) -> Result<Vec<PlaylistItemDto>, String> {
     Ok(items)
 }
 
+#[tauri::command]
+fn broadcast_remote_state(state_json: String, state: State<'_, AppState>) {
+    state.ws_state.broadcast(state_json);
+}
+
+#[tauri::command]
+fn list_midi_devices(state: State<'_, AppState>) -> Vec<String> {
+    state.midi_manager.list_ports()
+}
+
+#[tauri::command]
+fn connect_midi_device(device_name: String, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+    state.midi_manager.connect_port(app, &device_name)
+}
+
 fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
     let file_menu = Submenu::with_items(
         app,
@@ -1059,6 +1078,8 @@ fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
             &MenuItem::with_id(app, "tab_metadata", "Metadata Tab", true, Some("CmdOrCtrl+3"))?,
             &MenuItem::with_id(app, "tab_files", "Files & Alternate Takes Tab", true, Some("CmdOrCtrl+4"))?,
             &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "open_remotes", "Show Control & Remotes...", true, Some("CmdOrCtrl+Shift+R"))?,
+            &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::fullscreen(app, None)?,
         ],
     )?;
@@ -1078,6 +1099,10 @@ fn main() {
         eprintln!("Audio engine failed to start: {}", e);
     }
 
+    let ws_state = Arc::new(control::websocket::WebSocketServerState::new());
+    let midi_manager = Arc::new(control::midi::MidiManager::new());
+    let ws_state_clone = ws_state.clone();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
@@ -1086,14 +1111,23 @@ fn main() {
             shared_engine_state: shared_state,
             active_audio: Mutex::new(None),
             track_cache: Mutex::new(LruTrackCache::new(6)),
+            ws_state,
+            midi_manager,
         })
-        .setup(|app| {
+        .setup(move |app| {
             let menu = create_app_menu(app.handle())?;
             app.set_menu(menu)?;
             app.on_menu_event(|app_handle, event| {
                 let id_str = event.id().as_ref().to_string();
                 let _ = app_handle.emit("menu-action", id_str);
             });
+
+            // Start WebSocket server on default port 4545 (ws://0.0.0.0:4545)
+            control::websocket::start_websocket_server(app.handle().clone(), 4545, ws_state_clone);
+
+            // Start OSC server on UDP port 4546
+            control::osc::start_osc_server(app.handle().clone(), 4546);
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1122,7 +1156,10 @@ fn main() {
             read_file_bytes,
             export_audio_file,
             save_playlist_file,
-            load_playlist_file
+            load_playlist_file,
+            broadcast_remote_state,
+            list_midi_devices,
+            connect_midi_device
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

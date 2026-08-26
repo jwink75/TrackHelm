@@ -107,6 +107,12 @@
   let isExporting = false;
   let exportStatusMessage = "";
   let exportErrorMessage = "";
+
+  // Show Control & Remotes State (Milestone 8)
+  let showRemoteSettingsModal = false;
+  let midiPorts: string[] = [];
+  let selectedMidiPort = "";
+  let midiStatusMessage = "";
   
   // Center Lower Deck tabs & Metadata
   let activeCenterTab: "notes" | "lyrics" | "metadata" | "pdf" = "notes";
@@ -1609,6 +1615,37 @@
             drawOverviewWaveform();
           }
 
+          // Broadcast state to connected WebSocket clients (Stream Deck, Web remotes, Bitfocus Companion)
+          if (filePath) {
+            let activeMarkerName = "";
+            for (const m of markers) {
+              if (m.time <= currentTime + 0.15) {
+                if (!activeMarkerName || m.time > (markers.find(x => x.name === activeMarkerName)?.time ?? 0)) {
+                  activeMarkerName = m.name;
+                }
+              }
+            }
+
+            const statePayload = JSON.stringify({
+              type: "state",
+              isPlaying,
+              currentTime,
+              duration,
+              formattedTime: formatTime(currentTime),
+              formattedRemaining: formatTime(Math.max(0, duration - currentTime)),
+              trackName: fileName,
+              filePath,
+              playlistIndex: selectedPlaylistIndex >= 0 ? selectedPlaylistIndex + 1 : 0,
+              playlistTotal: playlistItems.length,
+              currentMarker: activeMarkerName,
+              pitchSemitones: pitch + (pitchCents / 100.0),
+              volumeDb: volume,
+              speed,
+              isLooping: regions.some(r => r.isLoop && currentTime >= r.startTime && currentTime <= r.endTime)
+            });
+            invoke("broadcast_remote_state", { stateJson: statePayload }).catch(() => {});
+          }
+
           // Auto-scroll PDF to active anchored marker (12px below top)
           if (activeCenterTab === "pdf" && pdfContainer && isPlaying) {
             let currentMarker: Marker | null = null;
@@ -1719,12 +1756,29 @@
       else if (action === "tab_lyrics") switchCenterTab("lyrics");
       else if (action === "tab_metadata") switchCenterTab("metadata");
       else if (action === "tab_files") switchCenterTab("files");
+      else if (action === "open_remotes") openRemoteSettingsModal();
     });
 
-    // Global keyboard shortcuts: Space = Play/Pause/Load, Up/Down = Playlist/Browser Nav, Left/Right = Marker Jump, M = Add Marker, Enter = Stop & Return to 0, Cmd+Shift+E = Export Audio
+    // Listen to Remote Show Control commands (WebSocket / OSC)
+    const unlistenRemote = listen("remote-control-action", (event: any) => {
+      handleRemoteControlAction(event.payload);
+    });
+
+    // Listen to Hardware MIDI events
+    const unlistenMidi = listen("midi-event", (event: any) => {
+      handleMidiEvent(event.payload);
+    });
+
+    // Global keyboard shortcuts: Space = Play/Pause/Load, Up/Down = Playlist/Browser Nav, Left/Right = Marker Jump, M = Add Marker, Enter = Stop & Return to 0, Cmd+Shift+E = Export Audio, Cmd+Shift+R = Remote Settings
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+        return;
+      }
+
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.code === "KeyR" || e.key === "r" || e.key === "R")) {
+        e.preventDefault();
+        openRemoteSettingsModal();
         return;
       }
 
@@ -1848,6 +1902,8 @@
       if (resizeObserver) resizeObserver.disconnect();
       unlistenDragDrop.then(fn => fn());
       unlistenMenu.then(fn => fn());
+      unlistenRemote.then(fn => fn());
+      unlistenMidi.then(fn => fn());
       window.removeEventListener("click", closeMenu);
       window.removeEventListener("keydown", handleKeyDown);
     };
@@ -2575,6 +2631,233 @@
       exportStatusMessage = "";
     } finally {
       isExporting = false;
+    }
+  }
+
+  // Show Control & Remotes Functions (Milestone 8)
+  async function handleRemoteControlAction(payloadStr: string) {
+    try {
+      const parsed = typeof payloadStr === "string" ? JSON.parse(payloadStr) : payloadStr;
+      const action = parsed.action || parsed.command;
+      const data = parsed.data || {};
+
+      switch (action) {
+        case "play":
+          if (!isPlaying) handlePlayPause();
+          break;
+        case "pause":
+          if (isPlaying) handlePlayPause();
+          break;
+        case "play_pause":
+          handlePlayPause();
+          break;
+        case "stop":
+          handleStop();
+          break;
+        case "rewind":
+          if (activeTab === "playlist" && selectedPlaylistIndex >= 0 && selectedPlaylistIndex < playlistItems.length) {
+            const highlighted = playlistItems[selectedPlaylistIndex];
+            if (highlighted && highlighted.path !== filePath) {
+              await loadAudioPath(highlighted.path, "main", true);
+              await invoke("play");
+              isPlaying = true;
+              return;
+            }
+          }
+          await invoke("seek", { positionSeconds: 0.0 });
+          currentTime = 0;
+          break;
+        case "next_track":
+          if (playlistItems.length > 0) {
+            let currentIdx = playlistItems.findIndex(p => p.path === filePath);
+            if (currentIdx === -1) currentIdx = 0;
+            else currentIdx = Math.min(playlistItems.length - 1, currentIdx + 1);
+            selectedPlaylistIndex = currentIdx;
+            const target = playlistItems[currentIdx];
+            if (target) {
+              await loadAudioPath(target.path, "main", true);
+              await invoke("play");
+              isPlaying = true;
+            }
+          }
+          break;
+        case "prev_track":
+          if (playlistItems.length > 0) {
+            let currentIdx = playlistItems.findIndex(p => p.path === filePath);
+            if (currentIdx === -1) currentIdx = 0;
+            else currentIdx = Math.max(0, currentIdx - 1);
+            selectedPlaylistIndex = currentIdx;
+            const target = playlistItems[currentIdx];
+            if (target) {
+              await loadAudioPath(target.path, "main", true);
+              await invoke("play");
+              isPlaying = true;
+            }
+          }
+          break;
+        case "select_track":
+          if (typeof data.index === "number" && data.index >= 0 && data.index < playlistItems.length) {
+            selectedPlaylistIndex = data.index;
+            const target = playlistItems[data.index];
+            if (target) {
+              await loadAudioPath(target.path, "main", true);
+              await invoke("play");
+              isPlaying = true;
+            }
+          }
+          break;
+        case "next_marker":
+          jumpToNextMarker();
+          break;
+        case "prev_marker":
+          jumpToPrevMarker();
+          break;
+        case "add_marker":
+          addMarker();
+          break;
+        case "pitch_up":
+          pitch = Math.min(24, pitch + 1);
+          updatePitchEngine();
+          saveCurrentTrackProfile(filePath);
+          break;
+        case "pitch_down":
+          pitch = Math.max(-24, pitch - 1);
+          updatePitchEngine();
+          saveCurrentTrackProfile(filePath);
+          break;
+        case "adjust_pitch":
+          if (typeof data.delta === "number") {
+            pitch = Math.max(-24, Math.min(24, pitch + data.delta));
+            updatePitchEngine();
+            saveCurrentTrackProfile(filePath);
+          }
+          break;
+        case "set_pitch":
+          if (typeof data.semitones === "number") {
+            pitch = Math.max(-24, Math.min(24, data.semitones));
+            updatePitchEngine();
+            saveCurrentTrackProfile(filePath);
+          }
+          break;
+        case "volume_up":
+          volume = Math.min(6, volume + 1);
+          updateVolumeEngine();
+          saveCurrentTrackProfile(filePath);
+          break;
+        case "volume_down":
+          volume = Math.max(-60, volume - 1);
+          updateVolumeEngine();
+          saveCurrentTrackProfile(filePath);
+          break;
+        case "adjust_volume":
+          if (typeof data.delta === "number") {
+            volume = Math.max(-60, Math.min(6, volume + data.delta));
+            updateVolumeEngine();
+            saveCurrentTrackProfile(filePath);
+          }
+          break;
+        case "set_volume":
+          if (typeof data.db === "number") {
+            volume = Math.max(-60, Math.min(6, data.db));
+            updateVolumeEngine();
+            saveCurrentTrackProfile(filePath);
+          }
+          break;
+        case "speed_up":
+          speed = Math.min(4.0, parseFloat((speed + 0.05).toFixed(2)));
+          updateSpeedEngine();
+          saveCurrentTrackProfile(filePath);
+          break;
+        case "speed_down":
+          speed = Math.max(0.25, parseFloat((speed - 0.05).toFixed(2)));
+          updateSpeedEngine();
+          saveCurrentTrackProfile(filePath);
+          break;
+        case "adjust_speed":
+          if (typeof data.delta === "number") {
+            speed = Math.max(0.25, Math.min(4.0, parseFloat((speed + data.delta).toFixed(2))));
+            updateSpeedEngine();
+            saveCurrentTrackProfile(filePath);
+          }
+          break;
+        case "set_speed":
+          if (typeof data.speed === "number") {
+            speed = Math.max(0.25, Math.min(4.0, parseFloat(data.speed.toFixed(2))));
+            updateSpeedEngine();
+            saveCurrentTrackProfile(filePath);
+          }
+          break;
+        case "toggle_loop":
+          handleLoopHotkey();
+          break;
+        case "toggle_cut":
+          handleCutHotkey();
+          break;
+        default:
+          break;
+      }
+    } catch (e) {
+      console.error("Error processing remote control action:", e);
+    }
+  }
+
+  function handleMidiEvent(payloadStr: string) {
+    try {
+      const parsed = typeof payloadStr === "string" ? JSON.parse(payloadStr) : payloadStr;
+      if (parsed.type === "note_on") {
+        const note = parsed.note;
+        if (note === 60) handlePlayPause(); // C4 = Play/Pause
+        else if (note === 62) { // D4 = Rewind / Play highlighted
+          handleRemoteControlAction(JSON.stringify({ action: "rewind" }));
+        }
+        else if (note === 64) jumpToNextMarker(); // E4 = Next Marker
+        else if (note === 65) jumpToPrevMarker(); // F4 = Prev Marker
+        else if (note === 67) addMarker(); // G4 = Add Marker
+        else if (note === 69) handleLoopHotkey(); // A4 = Loop Toggle
+        else if (note === 71) handleCutHotkey(); // B4 = Cut Toggle
+      } else if (parsed.type === "cc") {
+        const cc = parsed.cc;
+        const val = parsed.value;
+        if (cc === 7) { // CC 7 = Volume (0-127 -> -60dB to +6dB)
+          const norm = val / 127.0;
+          volume = parseFloat((-60 + norm * 66).toFixed(1));
+          updateVolumeEngine();
+          saveCurrentTrackProfile(filePath);
+        } else if (cc === 1) { // CC 1 = Speed Mod (0-127 -> 0.5x to 2.0x)
+          const norm = val / 127.0;
+          speed = parseFloat((0.5 + norm * 1.5).toFixed(2));
+          updateSpeedEngine();
+          saveCurrentTrackProfile(filePath);
+        }
+      }
+    } catch (e) {
+      console.error("Error processing MIDI event:", e);
+    }
+  }
+
+  async function openRemoteSettingsModal() {
+    await refreshMidiPorts();
+    showRemoteSettingsModal = true;
+  }
+
+  async function refreshMidiPorts() {
+    try {
+      midiPorts = await invoke("list_midi_devices");
+      if (midiPorts.length > 0 && !selectedMidiPort) {
+        selectedMidiPort = midiPorts[0];
+      }
+    } catch (e) {
+      console.error("Failed to list MIDI ports:", e);
+    }
+  }
+
+  async function connectToMidiPort(portName: string) {
+    if (!portName) return;
+    try {
+      const connected = await invoke("connect_midi_device", { deviceName: portName });
+      midiStatusMessage = `✓ Connected to: ${connected}`;
+    } catch (e: any) {
+      midiStatusMessage = `Connection failed: ${e}`;
     }
   }
 
@@ -6313,6 +6596,111 @@
       </div>
     </div>
   {/if}
+
+  <!-- Show Control & Remotes Settings Modal (Milestone 8) -->
+  {#if showRemoteSettingsModal}
+    <!-- svelte-ignore a11y-click-events-have-key-events -->
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div class="modal-backdrop" on:click={() => showRemoteSettingsModal = false}>
+      <div class="inspector-modal remote-modal-card" on:click|stopPropagation>
+        <div class="modal-header">
+          <div class="modal-title-row">
+            <span class="modal-badge remote-badge">REMOTE</span>
+            <h3>Show Control & Remote Hardware</h3>
+            <span class="stage-subhead">Stream Deck • OSC • MIDI</span>
+          </div>
+          <button class="modal-close-btn" on:click={() => showRemoteSettingsModal = false}>×</button>
+        </div>
+
+        <div class="modal-body remote-modal-body">
+          <!-- WebSocket / Stream Deck Section -->
+          <div class="export-section">
+            <div class="remote-section-head">
+              <div class="export-section-title">WEBSOCKET SERVER (STREAM DECK & COMPANION)</div>
+              <span class="remote-status-badge running-badge">● RUNNING</span>
+            </div>
+            <div class="remote-info-box">
+              <div class="remote-endpoint-row">
+                <span class="endpoint-label">Local WebSocket Endpoint:</span>
+                <code class="endpoint-val">ws://127.0.0.1:4545</code>
+              </div>
+              <p class="remote-desc-text">
+                Connect your <strong>Elgato Stream Deck</strong> (via Dorico/WebSocket plugin) or <strong>Bitfocus Companion</strong> to control TrackHelm with two-way LCD state updates.
+              </p>
+              <div class="quick-commands-grid">
+                <span class="cmd-pill" title="Play/Pause Toggle"><code>play_pause</code></span>
+                <span class="cmd-pill" title="Stop & Rewind / Play Highlighted"><code>rewind</code></span>
+                <span class="cmd-pill" title="Next Song in Playlist"><code>next_track</code></span>
+                <span class="cmd-pill" title="Previous Song in Playlist"><code>prev_track</code></span>
+                <span class="cmd-pill" title="Jump to Next Landmark"><code>next_marker</code></span>
+                <span class="cmd-pill" title="Jump to Previous Landmark"><code>prev_marker</code></span>
+                <span class="cmd-pill" title="Add Landmark at Playhead"><code>add_marker</code></span>
+                <span class="cmd-pill" title="Transpose Pitch +1 st"><code>pitch_up</code> / <code>pitch_down</code></span>
+                <span class="cmd-pill" title="Adjust Volume +1 dB"><code>volume_up</code> / <code>volume_down</code></span>
+                <span class="cmd-pill" title="Adjust Playback Speed"><code>speed_up</code> / <code>speed_down</code></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- OSC Show Control Section -->
+          <div class="export-section">
+            <div class="remote-section-head">
+              <div class="export-section-title">OSC PROTOCOL (QLAB & DIGITAL CONSOLES)</div>
+              <span class="remote-status-badge running-badge">● UDP 4546</span>
+            </div>
+            <div class="remote-info-box">
+              <div class="remote-endpoint-row">
+                <span class="endpoint-label">Listening Port:</span>
+                <code class="endpoint-val">0.0.0.0:4546 (UDP)</code>
+              </div>
+              <div class="osc-path-examples">
+                <span class="osc-path"><code>/trackhelm/playpause</code></span>
+                <span class="osc-path"><code>/trackhelm/rewind</code></span>
+                <span class="osc-path"><code>/trackhelm/track/next</code></span>
+                <span class="osc-path"><code>/trackhelm/marker/next</code></span>
+                <span class="osc-path"><code>/trackhelm/pitch/inc</code></span>
+                <span class="osc-path"><code>/trackhelm/volume/inc</code></span>
+              </div>
+            </div>
+          </div>
+
+          <!-- MIDI Hardware Section -->
+          <div class="export-section">
+            <div class="remote-section-head">
+              <div class="export-section-title">HARDWARE MIDI CONTROLLERS & PEDALS</div>
+              <button class="mini-refresh-btn" on:click={refreshMidiPorts}>🔄 Rescan</button>
+            </div>
+            <div class="midi-connect-row">
+              <select class="export-select" bind:value={selectedMidiPort}>
+                {#if midiPorts.length === 0}
+                  <option value="">No MIDI input devices detected</option>
+                {:else}
+                  {#each midiPorts as port}
+                    <option value={port}>{port}</option>
+                  {/each}
+                {/if}
+              </select>
+              <button class="modal-action-btn connect-btn" disabled={!selectedMidiPort} on:click={() => connectToMidiPort(selectedMidiPort)}>
+                Connect Port
+              </button>
+            </div>
+            {#if midiStatusMessage}
+              <div class="midi-status-feedback">{midiStatusMessage}</div>
+            {/if}
+            <div class="midi-note-map-hint">
+              <strong>Default MIDI Notes:</strong> Note 60 (C4) = Play/Pause • Note 62 (D4) = Rewind • Note 64 (E4) = Next Marker • Note 65 (F4) = Prev Marker • Note 67 (G4) = Add Marker • CC 7 = Volume
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button class="modal-action-btn" on:click={() => showRemoteSettingsModal = false}>
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </main>
 
 <style>
@@ -9568,5 +9956,153 @@
 
   .export-run-btn {
     background: linear-gradient(180deg, #007aff 0%, #0060df 100%) !important;
+  }
+
+  /* Show Control & Remotes Modal Styles */
+  .remote-modal-card {
+    width: 600px;
+    max-width: 95vw;
+  }
+
+  .remote-badge {
+    background-color: #af52de;
+    color: #ffffff;
+    font-size: 0.65rem;
+    font-weight: 800;
+    padding: 2px 6px;
+    border-radius: 3px;
+    margin-right: 6px;
+  }
+
+  .remote-section-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+  }
+
+  .remote-status-badge {
+    font-size: 0.62rem;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+  }
+
+  .running-badge {
+    color: #30d158;
+  }
+
+  .remote-info-box {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background-color: #0d0e11;
+    border: 1px solid #1e2026;
+    border-radius: 5px;
+    padding: 8px 10px;
+  }
+
+  .remote-endpoint-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .endpoint-label {
+    font-size: 0.7rem;
+    color: #9499a8;
+  }
+
+  .endpoint-val {
+    font-family: Menlo, monospace;
+    font-size: 0.72rem;
+    background-color: #1a1b22;
+    border: 1px solid #2e313d;
+    padding: 2px 6px;
+    border-radius: 3px;
+    color: #64d2ff;
+  }
+
+  .remote-desc-text {
+    font-size: 0.68rem;
+    color: #7b8090;
+    margin: 0;
+    line-height: 1.3;
+  }
+
+  .quick-commands-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 4px;
+  }
+
+  .cmd-pill {
+    background-color: #17181e;
+    border: 1px solid #282a35;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 0.65rem;
+    color: #cfd3dc;
+  }
+
+  .cmd-pill code {
+    color: #3b99fc;
+    font-weight: 600;
+  }
+
+  .osc-path-examples {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+  }
+
+  .osc-path {
+    background-color: #17181e;
+    border: 1px solid #282a35;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 0.65rem;
+    color: #30d158;
+  }
+
+  .mini-refresh-btn {
+    background: transparent;
+    border: 1px solid #383840;
+    color: #a1a1aa;
+    font-size: 0.65rem;
+    padding: 2px 6px;
+    border-radius: 3px;
+    cursor: pointer;
+    transition: all 0.12s ease;
+  }
+
+  .mini-refresh-btn:hover {
+    background-color: #27272e;
+    color: #ffffff;
+  }
+
+  .midi-connect-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .connect-btn {
+    white-space: nowrap;
+    padding: 6px 12px;
+  }
+
+  .midi-status-feedback {
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: #30d158;
+    margin-top: 2px;
+  }
+
+  .midi-note-map-hint {
+    font-size: 0.64rem;
+    color: #7b8090;
+    line-height: 1.3;
+    margin-top: 4px;
   }
 </style>
