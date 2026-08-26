@@ -2655,6 +2655,12 @@
           handleStop();
           break;
         case "rewind":
+          if (activeTab === "browser" && lastSelectedEntry && !lastSelectedEntry.is_dir && lastSelectedEntry.path !== filePath) {
+            await loadAudioPath(lastSelectedEntry.path, "main", true);
+            await invoke("play");
+            isPlaying = true;
+            return;
+          }
           if (activeTab === "playlist" && selectedPlaylistIndex >= 0 && selectedPlaylistIndex < playlistItems.length) {
             const highlighted = playlistItems[selectedPlaylistIndex];
             if (highlighted && highlighted.path !== filePath) {
@@ -2668,7 +2674,22 @@
           currentTime = 0;
           break;
         case "next_track":
-          if (playlistItems.length > 0) {
+          if (activeTab === "browser" && filteredEntries.length > 0) {
+            let currentIdx = filteredEntries.findIndex(e => selectedFilePaths.has(e.path));
+            if (currentIdx === -1) currentIdx = 0;
+            else currentIdx = Math.min(filteredEntries.length - 1, currentIdx + 1);
+            const targetEntry = filteredEntries[currentIdx];
+            if (targetEntry) {
+              selectedFilePaths.clear();
+              selectedFilePaths.add(targetEntry.path);
+              selectedFilePaths = selectedFilePaths;
+              lastSelectedEntry = targetEntry;
+              scrollSelectedBrowserItemIntoView();
+              if (!targetEntry.is_dir) {
+                await loadAudioPath(targetEntry.path, "main", true);
+              }
+            }
+          } else if (playlistItems.length > 0) {
             let currentIdx = playlistItems.findIndex(p => p.path === filePath);
             if (currentIdx === -1) currentIdx = 0;
             else currentIdx = Math.min(playlistItems.length - 1, currentIdx + 1);
@@ -2681,7 +2702,22 @@
           }
           break;
         case "prev_track":
-          if (playlistItems.length > 0) {
+          if (activeTab === "browser" && filteredEntries.length > 0) {
+            let currentIdx = filteredEntries.findIndex(e => selectedFilePaths.has(e.path));
+            if (currentIdx === -1) currentIdx = 0;
+            else currentIdx = Math.max(0, currentIdx - 1);
+            const targetEntry = filteredEntries[currentIdx];
+            if (targetEntry) {
+              selectedFilePaths.clear();
+              selectedFilePaths.add(targetEntry.path);
+              selectedFilePaths = selectedFilePaths;
+              lastSelectedEntry = targetEntry;
+              scrollSelectedBrowserItemIntoView();
+              if (!targetEntry.is_dir) {
+                await loadAudioPath(targetEntry.path, "main", true);
+              }
+            }
+          } else if (playlistItems.length > 0) {
             let currentIdx = playlistItems.findIndex(p => p.path === filePath);
             if (currentIdx === -1) currentIdx = 0;
             else currentIdx = Math.max(0, currentIdx - 1);
