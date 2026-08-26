@@ -2673,11 +2673,10 @@
             if (currentIdx === -1) currentIdx = 0;
             else currentIdx = Math.min(playlistItems.length - 1, currentIdx + 1);
             selectedPlaylistIndex = currentIdx;
+            scrollSelectedPlaylistItemIntoView();
             const target = playlistItems[currentIdx];
             if (target) {
               await loadAudioPath(target.path, "main", true);
-              await invoke("play");
-              isPlaying = true;
             }
           }
           break;
@@ -2687,22 +2686,20 @@
             if (currentIdx === -1) currentIdx = 0;
             else currentIdx = Math.max(0, currentIdx - 1);
             selectedPlaylistIndex = currentIdx;
+            scrollSelectedPlaylistItemIntoView();
             const target = playlistItems[currentIdx];
             if (target) {
               await loadAudioPath(target.path, "main", true);
-              await invoke("play");
-              isPlaying = true;
             }
           }
           break;
         case "select_track":
           if (typeof data.index === "number" && data.index >= 0 && data.index < playlistItems.length) {
             selectedPlaylistIndex = data.index;
+            scrollSelectedPlaylistItemIntoView();
             const target = playlistItems[data.index];
             if (target) {
               await loadAudioPath(target.path, "main", true);
-              await invoke("play");
-              isPlaying = true;
             }
           }
           break;
