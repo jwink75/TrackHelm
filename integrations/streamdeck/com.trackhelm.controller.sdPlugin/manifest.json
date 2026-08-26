@@ -140,8 +140,8 @@
       "States": [
         {
           "Image": "images/pitchup",
-          "TitleAlignment": "bottom",
-          "FontSize": "10",
+          "TitleAlignment": "middle",
+          "FontSize": "9",
           "TitleColor": "#ffffff"
         }
       ],
@@ -155,8 +155,8 @@
       "States": [
         {
           "Image": "images/pitchdown",
-          "TitleAlignment": "bottom",
-          "FontSize": "10",
+          "TitleAlignment": "middle",
+          "FontSize": "9",
           "TitleColor": "#ffffff"
         }
       ],
@@ -170,8 +170,8 @@
       "States": [
         {
           "Image": "images/volup",
-          "TitleAlignment": "bottom",
-          "FontSize": "10",
+          "TitleAlignment": "middle",
+          "FontSize": "9",
           "TitleColor": "#ffffff"
         }
       ],
@@ -185,8 +185,8 @@
       "States": [
         {
           "Image": "images/voldown",
-          "TitleAlignment": "bottom",
-          "FontSize": "10",
+          "TitleAlignment": "middle",
+          "FontSize": "9",
           "TitleColor": "#ffffff"
         }
       ],
@@ -200,8 +200,8 @@
       "States": [
         {
           "Image": "images/speedup",
-          "TitleAlignment": "bottom",
-          "FontSize": "10",
+          "TitleAlignment": "middle",
+          "FontSize": "9",
           "TitleColor": "#ffffff"
         }
       ],
@@ -215,8 +215,8 @@
       "States": [
         {
           "Image": "images/speeddown",
-          "TitleAlignment": "bottom",
-          "FontSize": "10",
+          "TitleAlignment": "middle",
+          "FontSize": "9",
           "TitleColor": "#ffffff"
         }
       ],

@@ -1719,35 +1719,7 @@
           }
 
           // Broadcast state to connected WebSocket clients (Stream Deck, Web remotes, Bitfocus Companion)
-          if (filePath) {
-            let activeMarkerName = "";
-            for (const m of markers) {
-              if (m.time <= currentTime + 0.15) {
-                if (!activeMarkerName || m.time > (markers.find(x => x.name === activeMarkerName)?.time ?? 0)) {
-                  activeMarkerName = m.name;
-                }
-              }
-            }
-
-            const statePayload = JSON.stringify({
-              type: "state",
-              isPlaying,
-              currentTime,
-              duration,
-              formattedTime: formatTime(currentTime),
-              formattedRemaining: formatTime(Math.max(0, duration - currentTime)),
-              trackName: fileName,
-              filePath,
-              playlistIndex: selectedPlaylistIndex >= 0 ? selectedPlaylistIndex + 1 : 0,
-              playlistTotal: playlistItems.length,
-              currentMarker: activeMarkerName,
-              pitchSemitones: pitch + (pitchCents / 100.0),
-              volumeDb: dbVolume,
-              speed,
-              isLooping: regions.some(r => r.isLoop && currentTime >= r.startTime && currentTime <= r.endTime)
-            });
-            invoke("broadcast_remote_state", { stateJson: statePayload }).catch(() => {});
-          }
+          broadcastCurrentState();
 
           // Auto-scroll PDF to active anchored marker (12px below top)
           if (activeCenterTab === "pdf" && pdfContainer && isPlaying) {
@@ -2808,6 +2780,36 @@
   }
 
   // Show Control & Remotes Functions (Milestone 8)
+  function broadcastCurrentState() {
+    let activeMarkerName = "";
+    for (const m of markers) {
+      if (m.time <= currentTime + 0.15) {
+        if (!activeMarkerName || m.time > (markers.find(x => x.name === activeMarkerName)?.time ?? 0)) {
+          activeMarkerName = m.name;
+        }
+      }
+    }
+
+    const statePayload = JSON.stringify({
+      type: "state",
+      isPlaying,
+      currentTime,
+      duration,
+      formattedTime: formatTime(currentTime),
+      formattedRemaining: formatTime(Math.max(0, duration - currentTime)),
+      trackName: fileName || "No Track",
+      filePath: filePath || "",
+      playlistIndex: selectedPlaylistIndex >= 0 ? selectedPlaylistIndex + 1 : 0,
+      playlistTotal: playlistItems.length,
+      currentMarker: activeMarkerName,
+      pitchSemitones: pitch + (pitchCents / 100.0),
+      volumeDb: dbVolume,
+      speed,
+      isLooping: regions.some(r => r.isLoop && currentTime >= r.startTime && currentTime <= r.endTime)
+    });
+    invoke("broadcast_remote_state", { stateJson: statePayload }).catch(() => {});
+  }
+
   async function handleRemoteControlAction(payloadStr: string) {
     try {
       const parsed = typeof payloadStr === "string" ? JSON.parse(payloadStr) : payloadStr;
@@ -2815,6 +2817,9 @@
       const data = parsed.data || {};
 
       switch (action) {
+        case "get_state":
+          broadcastCurrentState();
+          break;
         case "play":
           if (!isPlaying) handlePlayPause();
           break;
