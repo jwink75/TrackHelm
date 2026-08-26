@@ -817,8 +817,18 @@
     }
   }
 
+  let trackProfileDebounceTimer: any = null;
+
   function saveCurrentTrackProfile(trackPath: string | null, immediate = false) {
     if (!trackPath) return;
+    if (!immediate) {
+      if (trackProfileDebounceTimer) clearTimeout(trackProfileDebounceTimer);
+      trackProfileDebounceTimer = setTimeout(() => {
+        saveCurrentTrackProfile(trackPath, true);
+      }, 350);
+      return;
+    }
+
     const store = getProfilesStore();
     const existing = store[trackPath] || ({} as TrackProfile);
     const isMain = activeTrackMode === "main" || trackPath === mainTrack?.path;
@@ -858,12 +868,7 @@
       lastCenterTab: activeCenterTab
     };
 
-    if (immediate) {
-      flushProfilesToLocalStorage();
-    } else {
-      if (profileSaveDebounceTimer) clearTimeout(profileSaveDebounceTimer);
-      profileSaveDebounceTimer = setTimeout(flushProfilesToLocalStorage, 400);
-    }
+    flushProfilesToLocalStorage();
   }
 
   async function updatePitchEngine() {
@@ -2927,21 +2932,24 @@
   }
 
   // Show Control & Remotes Functions (Milestone 8)
-  function broadcastCurrentState() {
+  let lastBroadcastStateStr = "";
+
+  function broadcastCurrentState(force: boolean = false) {
     let activeMarkerName = "";
-    for (const m of markers) {
-      if (m.time <= currentTime + 0.15) {
-        if (!activeMarkerName || m.time > (markers.find(x => x.name === activeMarkerName)?.time ?? 0)) {
-          activeMarkerName = m.name;
-        }
+    let maxMarkerTime = -1;
+    for (let i = 0; i < markers.length; i++) {
+      const m = markers[i];
+      if (m.time <= currentTime + 0.15 && m.time > maxMarkerTime) {
+        maxMarkerTime = m.time;
+        activeMarkerName = m.name;
       }
     }
 
     const statePayload = JSON.stringify({
       type: "state",
       isPlaying,
-      currentTime,
-      duration,
+      currentTime: Math.round(currentTime * 100) / 100,
+      duration: Math.round(duration * 100) / 100,
       formattedTime: formatTime(currentTime),
       formattedRemaining: formatTime(Math.max(0, duration - currentTime)),
       trackName: fileName || "No Track",
@@ -2954,6 +2962,11 @@
       speed,
       isLooping: regions.some(r => r.isLoop && currentTime >= r.startTime && currentTime <= r.endTime)
     });
+
+    if (!force && statePayload === lastBroadcastStateStr) {
+      return;
+    }
+    lastBroadcastStateStr = statePayload;
     invoke("broadcast_remote_state", { stateJson: statePayload }).catch(() => {});
   }
 

@@ -4,7 +4,7 @@ use rosc::{OscPacket, OscType};
 
 pub fn start_osc_server<R: Runtime>(app: AppHandle<R>, port: u16) {
     tauri::async_runtime::spawn(async move {
-        let addr = format!("0.0.0.0:{}", port);
+        let addr = format!("127.0.0.1:{}", port);
         let socket = match UdpSocket::bind(&addr).await {
             Ok(s) => {
                 println!("[OSC Server] Listening on UDP {}", addr);

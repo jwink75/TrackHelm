@@ -26,7 +26,7 @@ pub fn start_websocket_server<R: Runtime>(
     state: Arc<WebSocketServerState>,
 ) {
     tauri::async_runtime::spawn(async move {
-        let addr = format!("0.0.0.0:{}", port);
+        let addr = format!("127.0.0.1:{}", port);
         let listener = match TcpListener::bind(&addr).await {
             Ok(l) => {
                 println!("[WebSocket Server] Listening on ws://{}", addr);

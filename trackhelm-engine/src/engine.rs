@@ -327,9 +327,9 @@ impl AudioEngine {
                                     }
                                 } else {
                                     // Signalsmith stretch processing (always engaged by default for seamless glitch-free real-time modulation)
-                                    let num_in_frames = ((num_out_frames as f32) * current_speed).round() as usize;
-                                    let safe_in_frames = std::cmp::min(num_in_frames, MAX_BUFFER_FRAMES);
                                     let safe_out_frames = std::cmp::min(num_out_frames, MAX_BUFFER_FRAMES);
+                                    let num_in_frames = ((safe_out_frames as f32) * current_speed).round() as usize;
+                                    let safe_in_frames = std::cmp::min(num_in_frames, MAX_BUFFER_FRAMES);
 
                                     for i in 0..safe_in_frames {
                                         let curr_f = playback_frame + i;
@@ -362,14 +362,21 @@ impl AudioEngine {
 
                                     stretch.process(&in_slices[..stretch_channels], &mut out_slices[..stretch_channels]);
 
-                                    for frame_idx in 0..num_out_frames {
+                                    for frame_idx in 0..safe_out_frames {
                                         for out_c in 0..output_channels {
                                             let in_c = out_c % stretch_channels;
                                             data[frame_idx * output_channels + out_c] = out_channel_scratch[in_c][frame_idx] * volume;
                                         }
                                     }
 
-                                    playback_frame += num_in_frames;
+                                    // Zero-fill any excess frames if CPAL output buffer exceeds MAX_BUFFER_FRAMES
+                                    for frame_idx in safe_out_frames..num_out_frames {
+                                        for out_c in 0..output_channels {
+                                            data[frame_idx * output_channels + out_c] = 0.0;
+                                        }
+                                    }
+
+                                    playback_frame += safe_in_frames;
                                     if playback_frame >= audio_len {
                                         is_playing = false;
                                         shared_is_playing.store(false, Ordering::SeqCst);
