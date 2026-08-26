@@ -328,75 +328,55 @@ impl AudioEngine {
                                         *sample = 0.0;
                                     }
                                 } else {
-                                    let is_passthrough = (current_speed - 1.0).abs() < 0.001 && current_pitch.abs() < 0.001;
+                                    // Signalsmith stretch processing (always engaged by default for seamless glitch-free real-time modulation)
+                                    let num_in_frames = ((num_out_frames as f32) * current_speed).round() as usize;
+                                    let safe_in_frames = std::cmp::min(num_in_frames, MAX_BUFFER_FRAMES);
+                                    let safe_out_frames = std::cmp::min(num_out_frames, MAX_BUFFER_FRAMES);
 
-                                    if is_passthrough {
-                                        // Direct playback without stretch
-                                        for frame_idx in 0..num_out_frames {
-                                            if playback_frame < audio_len {
-                                                for out_c in 0..output_channels {
-                                                    let in_c = out_c % audio_channels;
-                                                    data[frame_idx * output_channels + out_c] = audio.channel_samples[in_c][playback_frame] * volume;
-                                                }
-                                                playback_frame += 1;
-                                            } else {
-                                                for out_c in 0..output_channels {
-                                                    data[frame_idx * output_channels + out_c] = 0.0;
-                                                }
-                                                is_playing = false;
-                                                shared_is_playing.store(false, Ordering::SeqCst);
+                                    for i in 0..safe_in_frames {
+                                        let curr_f = playback_frame + i;
+                                        if curr_f < audio_len {
+                                            for ch in 0..stretch_channels {
+                                                in_channel_scratch[ch][i] = audio.channel_samples[ch % audio_channels][curr_f];
                                             }
-                                        }
-                                    } else {
-                                        // Stretch processing using pre-allocated scratch buffers
-                                        let num_in_frames = ((num_out_frames as f32) * current_speed).round() as usize;
-                                        let safe_in_frames = std::cmp::min(num_in_frames, MAX_BUFFER_FRAMES);
-                                        let safe_out_frames = std::cmp::min(num_out_frames, MAX_BUFFER_FRAMES);
-
-                                        for i in 0..safe_in_frames {
-                                            let curr_f = playback_frame + i;
-                                            if curr_f < audio_len {
-                                                for ch in 0..stretch_channels {
-                                                    in_channel_scratch[ch][i] = audio.channel_samples[ch % audio_channels][curr_f];
-                                                }
-                                            } else {
-                                                for ch in 0..stretch_channels {
-                                                    in_channel_scratch[ch][i] = 0.0;
-                                                }
+                                        } else {
+                                            for ch in 0..stretch_channels {
+                                                in_channel_scratch[ch][i] = 0.0;
                                             }
-                                        }
-
-                                        // Form zero-allocation channel slices for Signalsmith processing
-                                        let mut in_slices: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
-                                        for ch in 0..stretch_channels {
-                                            in_slices[ch] = &in_channel_scratch[ch][..safe_in_frames];
-                                        }
-
-                                        let mut out_slices: [&mut [f32]; MAX_CHANNELS] = std::array::from_fn(|ch| {
-                                            if ch < stretch_channels {
-                                                unsafe {
-                                                    std::slice::from_raw_parts_mut(out_channel_scratch[ch].as_mut_ptr(), safe_out_frames)
-                                                }
-                                            } else {
-                                                &mut [][..]
-                                            }
-                                        });
-
-                                        stretch.process(&in_slices[..stretch_channels], &mut out_slices[..stretch_channels]);
-
-                                        for frame_idx in 0..num_out_frames {
-                                            for out_c in 0..output_channels {
-                                                let in_c = out_c % stretch_channels;
-                                                data[frame_idx * output_channels + out_c] = out_channel_scratch[in_c][frame_idx] * volume;
-                                            }
-                                        }
-
-                                        playback_frame += num_in_frames;
-                                        if playback_frame >= audio_len {
-                                            is_playing = false;
-                                            shared_is_playing.store(false, Ordering::SeqCst);
                                         }
                                     }
+
+                                    // Form zero-allocation channel slices for Signalsmith processing
+                                    let mut in_slices: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
+                                    for ch in 0..stretch_channels {
+                                        in_slices[ch] = &in_channel_scratch[ch][..safe_in_frames];
+                                    }
+
+                                    let mut out_slices: [&mut [f32]; MAX_CHANNELS] = std::array::from_fn(|ch| {
+                                        if ch < stretch_channels {
+                                            unsafe {
+                                                std::slice::from_raw_parts_mut(out_channel_scratch[ch].as_mut_ptr(), safe_out_frames)
+                                            }
+                                        } else {
+                                            &mut [][..]
+                                        }
+                                    });
+
+                                    stretch.process(&in_slices[..stretch_channels], &mut out_slices[..stretch_channels]);
+
+                                    for frame_idx in 0..num_out_frames {
+                                        for out_c in 0..output_channels {
+                                            let in_c = out_c % stretch_channels;
+                                            data[frame_idx * output_channels + out_c] = out_channel_scratch[in_c][frame_idx] * volume;
+                                        }
+                                    }
+
+                                    playback_frame += num_in_frames;
+                                    if playback_frame >= audio_len {
+                                        is_playing = false;
+                                        shared_is_playing.store(false, Ordering::SeqCst);
+                                    }
+                                }
 
                                     // Measure input levels (before EQ & compressor)
                                     let mut max_in_l: f32 = 0.0;
@@ -457,7 +437,6 @@ impl AudioEngine {
                                     let out_r_db = if max_out_r > 1e-5 { (20.0 * max_out_r.log10()).clamp(-60.0, 6.0) } else { -60.0 };
                                     shared_out_peak_l.store((out_l_db * 100.0) as i32, Ordering::Relaxed);
                                     shared_out_peak_r.store((out_r_db * 100.0) as i32, Ordering::Relaxed);
-                                }
                             } else {
                                 shared_in_peak_l.store(-6000, Ordering::Relaxed);
                                 shared_in_peak_r.store(-6000, Ordering::Relaxed);

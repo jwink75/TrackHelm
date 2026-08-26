@@ -18,3 +18,13 @@ zip -r "$OUT_DIR/com.trackhelm.controller.streamDeckPlugin" com.trackhelm.contro
 cp "$OUT_DIR/com.trackhelm.controller.streamDeckPlugin" "$OUT_DIR/TrackHelm.streamDeckPlugin"
 
 echo "✓ Created: dist-streamdeck/TrackHelm.streamDeckPlugin"
+
+# 3. Direct install to Stream Deck Plugins directory on macOS
+PLUGINS_DIR="$HOME/Library/Application Support/com.elgato.StreamDeck/Plugins"
+if [ -d "$PLUGINS_DIR" ]; then
+  TARGET_DIR="$PLUGINS_DIR/com.trackhelm.controller.sdPlugin"
+  mkdir -p "$PLUGINS_DIR"
+  rm -rf "$TARGET_DIR"
+  cp -R "$DIR/com.trackhelm.controller.sdPlugin" "$TARGET_DIR"
+  echo "✓ Installed directly to: $TARGET_DIR"
+fi
