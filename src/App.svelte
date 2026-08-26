@@ -477,6 +477,118 @@
     return path;
   }
 
+  // Kirchhoff Interactive EQ Node Dragging & Mousewheel State
+  let isDraggingEqNode = false;
+  let draggedEqNodeId: string | null = null;
+  let eqSvgElement: SVGSVGElement | null = null;
+
+  function handleEqNodeMousedown(e: MouseEvent, nodeId: string) {
+    if (e.button !== 0) return; // Left click only
+    e.stopPropagation();
+    isDraggingEqNode = true;
+    draggedEqNodeId = nodeId;
+    selectedEqNodeId = nodeId;
+  }
+
+  function handleEqSvgMousedown(e: MouseEvent) {
+    if (e.button !== 0) return;
+    if (!eqSvgElement) return;
+    const rect = eqSvgElement.getBoundingClientRect();
+    const scaleX = 600 / rect.width;
+    const scaleY = 240 / rect.height;
+    const svgX = (e.clientX - rect.left) * scaleX;
+    const svgY = (e.clientY - rect.top) * scaleY;
+
+    if (svgX >= 20 && svgX <= 580 && svgY >= 20 && svgY <= 220) {
+      const clickedNode = eqNodes.find(n => {
+        const nx = 20 + ((Math.log10(Math.max(20, Math.min(20000, n.freq))) - 1.30103) / 3.0) * 560;
+        const ny = n.enabled ? 120 - Math.max(-24, Math.min(24, n.gainDb)) * (100 / 24) : 120;
+        return Math.hypot(svgX - nx, svgY - ny) < 22;
+      });
+
+      if (clickedNode) {
+        selectedEqNodeId = clickedNode.id;
+        isDraggingEqNode = true;
+        draggedEqNodeId = clickedNode.id;
+      }
+    }
+  }
+
+  function handleEqSvgDblClick(e: MouseEvent) {
+    if (!eqSvgElement) return;
+    const rect = eqSvgElement.getBoundingClientRect();
+    const scaleX = 600 / rect.width;
+    const scaleY = 240 / rect.height;
+    const svgX = (e.clientX - rect.left) * scaleX;
+    const svgY = (e.clientY - rect.top) * scaleY;
+
+    if (svgX >= 20 && svgX <= 580 && svgY >= 20 && svgY <= 220) {
+      const normX = (svgX - 20) / 560.0;
+      const freq = Math.round(Math.pow(10, 1.30103 + normX * 3.0));
+      const gainDb = parseFloat(Math.max(-24, Math.min(24, (120 - svgY) / (100 / 24))).toFixed(1));
+
+      const colors = ["#64d2ff", "#ff375f", "#ffd60a", "#30d158", "#bf5af2", "#ff9f0a"];
+      const newId = "node-" + (eqNodes.length + 1);
+      const newColor = colors[eqNodes.length % colors.length];
+
+      eqNodes = [...eqNodes, {
+        id: newId,
+        name: "Band " + (eqNodes.length + 1),
+        filterType: "Peaking",
+        freq: Math.max(20, Math.min(20000, freq)),
+        gainDb: gainDb,
+        q: 1.0,
+        enabled: true,
+        color: newColor
+      }];
+      selectedEqNodeId = newId;
+      isDraggingEqNode = true;
+      draggedEqNodeId = newId;
+      updateEqEngine();
+    }
+  }
+
+  function handleEqSvgMousemove(e: MouseEvent) {
+    if (!isDraggingEqNode || !draggedEqNodeId || !eqSvgElement) return;
+    const node = eqNodes.find(n => n.id === draggedEqNodeId);
+    if (!node) return;
+
+    const rect = eqSvgElement.getBoundingClientRect();
+    const scaleX = 600 / rect.width;
+    const scaleY = 240 / rect.height;
+    const svgX = (e.clientX - rect.left) * scaleX;
+    const svgY = (e.clientY - rect.top) * scaleY;
+
+    const clampedX = Math.max(20, Math.min(580, svgX));
+    const clampedY = Math.max(20, Math.min(220, svgY));
+
+    const normX = (clampedX - 20) / 560.0;
+    const freq = Math.round(Math.pow(10, 1.30103 + normX * 3.0));
+    node.freq = Math.max(20, Math.min(20000, freq));
+
+    if (node.filterType === 'Peaking' || node.filterType === 'LowShelf' || node.filterType === 'HighShelf') {
+      node.gainDb = parseFloat(Math.max(-24, Math.min(24, (120 - clampedY) / (100 / 24))).toFixed(1));
+    }
+
+    eqNodes = [...eqNodes];
+    updateEqEngine();
+  }
+
+  function handleEqSvgMouseup() {
+    if (isDraggingEqNode) {
+      isDraggingEqNode = false;
+      draggedEqNodeId = null;
+    }
+  }
+
+  function handleEqSvgWheel(e: WheelEvent, node: EqNodeState) {
+    e.preventDefault();
+    const delta = e.deltaY < 0 ? 0.1 : -0.1;
+    node.q = parseFloat(Math.max(0.1, Math.min(10.0, node.q + delta)).toFixed(2));
+    eqNodes = [...eqNodes];
+    updateEqEngine();
+  }
+
   // Dual Stage Compressor State (Sonitus Inspired)
   interface CompStageState {
     enabled: boolean;
@@ -520,27 +632,62 @@
   let curCompStage: CompStageState = compStage1;
   $: curCompStage = activeCompStageTab === 1 ? compStage1 : compStage2;
 
+  function computeCompressorOutDb(stage: CompStageState, inDb: number): number {
+    if (!stage) return inDb;
+    const T = stage.thresholdDb;
+    const R = Math.max(1.0, stage.ratio);
+    const W = Math.max(0.0, stage.kneeDb);
+    const makeup = stage.makeupDb || 0.0;
+
+    let outDb = inDb;
+    if (W > 0.1) {
+      const halfW = W / 2.0;
+      if (inDb <= T - halfW) {
+        outDb = inDb;
+      } else if (inDb > T + halfW) {
+        outDb = T + (inDb - T) / R;
+      } else {
+        const diff = inDb - T + halfW;
+        outDb = inDb + ((1.0 / R - 1.0) * diff * diff) / (2.0 * W);
+      }
+    } else {
+      if (inDb <= T) {
+        outDb = inDb;
+      } else {
+        outDb = T + (inDb - T) / R;
+      }
+    }
+    return outDb + makeup;
+  }
+
   function getSonitusCurvePath(stage: CompStageState): string {
     if (!stage) return "M 20 180 L 280 20";
-    const threshPxX = 20 + (60 + stage.thresholdDb) * (260 / 60);
-    const threshPxY = 180 - (60 + stage.thresholdDb + stage.makeupDb) * (160 / 60);
-    const kneeHalfX = (stage.kneeDb / 2) * (260 / 60);
-    const kneeHalfY = (stage.kneeDb / 2) * (160 / 60);
-    const endOutDb = stage.thresholdDb + ((0 - stage.thresholdDb) / stage.ratio) + stage.makeupDb;
-    const endPxY = 180 - (60 + endOutDb) * (160 / 60);
+    const numPoints = 80;
+    let path = "";
 
-    if (stage.kneeDb > 0.5) {
-      return `M 20 ${180 - stage.makeupDb * (160 / 60)} L ${Math.max(20, threshPxX - kneeHalfX)} ${Math.min(180, threshPxY + kneeHalfY)} Q ${threshPxX} ${threshPxY} ${Math.min(280, threshPxX + kneeHalfX)} ${threshPxY - kneeHalfY / stage.ratio} L 280 ${endPxY}`;
-    } else {
-      return `M 20 ${180 - stage.makeupDb * (160 / 60)} L ${threshPxX} ${threshPxY} L 280 ${endPxY}`;
+    for (let i = 0; i <= numPoints; i++) {
+      const inDb = -60.0 + (i / numPoints) * 60.0; // from -60 dB to 0 dB
+      const outDb = computeCompressorOutDb(stage, inDb);
+
+      const pxX = 20 + (60 + inDb) * (260 / 60);
+      const pxY = 180 - (60 + Math.max(-60, Math.min(6, outDb))) * (160 / 60);
+
+      if (i === 0) {
+        path = `M ${pxX.toFixed(1)} ${pxY.toFixed(1)}`;
+      } else {
+        path += ` L ${pxX.toFixed(1)} ${pxY.toFixed(1)}`;
+      }
     }
+    return path;
   }
 
   function getSonitusSignalDot(stage: CompStageState, inDb: number): { x: number, y: number } {
     if (!stage) return { x: 20, y: 180 };
-    const liveDotX = 20 + (60 + Math.max(-60, Math.min(0, inDb))) * (260 / 60);
-    const liveDotOutDb = inDb <= stage.thresholdDb ? inDb + stage.makeupDb : stage.thresholdDb + ((inDb - stage.thresholdDb) / stage.ratio) + stage.makeupDb;
-    const liveDotY = 180 - (60 + Math.max(-60, Math.min(6, liveDotOutDb))) * (160 / 60);
+    const clampedIn = Math.max(-60, Math.min(0, inDb));
+    const outDb = computeCompressorOutDb(stage, clampedIn);
+
+    const liveDotX = 20 + (60 + clampedIn) * (260 / 60);
+    const liveDotY = 180 - (60 + Math.max(-60, Math.min(6, outDb))) * (160 / 60);
     return { x: liveDotX, y: liveDotY };
   }
 
@@ -6438,7 +6585,17 @@
         <div class="modal-body eq-inspector-body">
           <!-- Kirchhoff Interactive EQ Graph Canvas -->
           <div class="kirchhoff-eq-canvas-card">
-            <svg viewBox="0 0 600 240" class="kirchhoff-eq-svg">
+            <svg 
+              bind:this={eqSvgElement}
+              viewBox="0 0 600 240" 
+              class="kirchhoff-eq-svg"
+              on:mousedown={handleEqSvgMousedown}
+              on:mousemove={handleEqSvgMousemove}
+              on:mouseup={handleEqSvgMouseup}
+              on:mouseleave={handleEqSvgMouseup}
+              on:dblclick={handleEqSvgDblClick}
+              style="cursor: {isDraggingEqNode ? 'grabbing' : 'crosshair'};"
+            >
               <defs>
                 <linearGradient id="rtaGrad" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="0%" stop-color="#64d2ff" stop-opacity="0.35" />
@@ -6502,11 +6659,14 @@
                 <circle 
                   cx={nx} 
                   cy={ny} 
-                  r={isSel ? "8" : "6"} 
+                  r={isSel ? "9" : "7"} 
                   fill={node.enabled ? node.color : "#555555"} 
                   stroke="#ffffff" 
                   stroke-width={isSel ? "2.5" : "1.5"}
                   class="eq-node-handle"
+                  style="cursor: grab;"
+                  on:mousedown={(e) => handleEqNodeMousedown(e, node.id)}
+                  on:wheel={(e) => handleEqSvgWheel(e, node)}
                   on:click={() => selectedEqNodeId = node.id}
                   on:contextmenu={(e) => {
                     e.preventDefault();
@@ -6519,7 +6679,7 @@
                 />
 
                 <!-- Node Label Pill -->
-                <text x={nx} y={ny - 12} text-anchor="middle" fill="#ffffff" font-size="10" font-weight="700">
+                <text x={nx} y={ny - 13} text-anchor="middle" fill="#ffffff" font-size="10" font-weight="700">
                   {node.freq >= 1000 ? (node.freq / 1000).toFixed(1) + "k" : Math.round(node.freq)}Hz
                 </text>
               {/each}
@@ -6575,7 +6735,7 @@
                   </select>
                 </div>
 
-                <!-- Frequency -->
+                <!-- Frequency (Logarithmically Mapped Slider) -->
                 <div class="eq-ctrl-group">
                   <div class="eq-label-val-row">
                     <label class="eq-ctrl-label" for="eq-freq-input">Frequency</label>
@@ -6584,11 +6744,15 @@
                   <input 
                     id="eq-freq-input"
                     type="range" 
-                    min="20" 
-                    max="20000" 
-                    step="1" 
-                    bind:value={selEqNode.freq} 
-                    on:input={() => updateEqEngine()}
+                    min="1.30103" 
+                    max="4.30103" 
+                    step="0.001" 
+                    value={Math.log10(Math.max(20, Math.min(20000, selEqNode.freq)))} 
+                    on:input={(e) => {
+                      const logVal = parseFloat(e.currentTarget.value);
+                      selEqNode.freq = Math.round(Math.pow(10, logVal));
+                      updateEqEngine();
+                    }}
                     class="rack-h-slider" 
                   />
                 </div>
