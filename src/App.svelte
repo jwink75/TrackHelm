@@ -709,6 +709,70 @@
     }
   }
 
+  // Application Preferences & Display Settings (Cmd+,)
+  type PdfDefaultTheme = "light" | "dark" | "system";
+  let prefPdfDefaultTheme: PdfDefaultTheme = "system";
+  let showPreferencesModal: boolean = false;
+
+  function loadAppPreferences() {
+    try {
+      const savedTheme = localStorage.getItem("th_pref_pdf_theme");
+      if (savedTheme === "light" || savedTheme === "dark" || savedTheme === "system") {
+        prefPdfDefaultTheme = savedTheme;
+      }
+    } catch (e) {}
+  }
+
+  function setPdfDefaultTheme(theme: PdfDefaultTheme) {
+    prefPdfDefaultTheme = theme;
+    localStorage.setItem("th_pref_pdf_theme", theme);
+  }
+
+  function shouldInvertPdfByDefault(): boolean {
+    if (prefPdfDefaultTheme === "dark") return true;
+    if (prefPdfDefaultTheme === "light") return false;
+    // "system": Follow OS dark mode
+    if (typeof window !== "undefined" && window.matchMedia) {
+      return window.matchMedia("(prefers-color-scheme: dark)").matches;
+    }
+    return false;
+  }
+
+  function openPreferencesModal() {
+    showPreferencesModal = true;
+  }
+
+  function closePreferencesModal() {
+    showPreferencesModal = false;
+  }
+
+  // Crossfade Editor Modal State
+  let showXfadeModal: boolean = false;
+  let editingXfadeRegion: Region | null = null;
+  let editingXfadeMs: number = 5;
+
+  function openXfadeModal(region: Region) {
+    editingXfadeRegion = region;
+    editingXfadeMs = region.crossfadeMs ?? 5;
+    showXfadeModal = true;
+  }
+
+  function applyXfadeModal() {
+    if (editingXfadeRegion) {
+      editingXfadeRegion.crossfadeMs = Math.max(0, Math.min(100, Math.round(editingXfadeMs)));
+      regions = [...regions];
+      syncRegionsToEngine();
+      saveCurrentTrackProfile(filePath);
+    }
+    showXfadeModal = false;
+    editingXfadeRegion = null;
+  }
+
+  function closeXfadeModal() {
+    showXfadeModal = false;
+    editingXfadeRegion = null;
+  }
+
   function toggleDynamicTabInvert(tabId: string) {
     const tab = openPdfTabs.find(t => t.id === tabId);
     if (tab) {
@@ -731,7 +795,7 @@
         currentPage: 1,
         isLoading: true,
         error: null,
-        isInverted: false
+        isInverted: shouldInvertPdfByDefault()
       };
       openPdfTabs = [...openPdfTabs, newTab];
       existing = newTab;
@@ -1818,6 +1882,8 @@
   }
 
   onMount(() => {
+    loadAppPreferences();
+
     // Initial folder load
     const lastDir = localStorage.getItem("th_last_dir");
     loadBrowser(lastDir);
@@ -1842,7 +1908,13 @@
     }
 
     const savedInvert = localStorage.getItem("th_pdf_inverted");
-    if (savedInvert === "1") isPdfInverted = true;
+    if (savedInvert === "1") {
+      isPdfInverted = true;
+    } else if (savedInvert === "0") {
+      isPdfInverted = false;
+    } else {
+      isPdfInverted = shouldInvertPdfByDefault();
+    }
 
     const savedCenterTab = localStorage.getItem("th_last_center_tab") as "notes" | "lyrics" | "metadata" | "pdf" | null;
     if (savedCenterTab) activeCenterTab = savedCenterTab;
@@ -2010,6 +2082,7 @@
       else if (action === "open_playlist") loadPlaylistFromFile();
       else if (action === "save_playlist") savePlaylistToFile();
       else if (action === "export_audio") openExportModal();
+      else if (action === "open_preferences") openPreferencesModal();
       else if (action === "add_marker") addMarker();
       else if (action === "create_region") createRegionFromSelectionOrMarkers();
       else if (action === "toggle_loop") handleLoopHotkey();
@@ -2035,10 +2108,16 @@
       handleMidiEvent(event.payload);
     });
 
-    // Global keyboard shortcuts: Space = Play/Pause/Load, Up/Down = Playlist/Browser Nav, Left/Right = Marker Jump, M = Add Marker, Enter = Stop & Return to 0, Cmd+Shift+E = Export Audio, Cmd+Shift+R = Remote Settings
+    // Global keyboard shortcuts: Space = Play/Pause/Load, Up/Down = Playlist/Browser Nav, Left/Right = Marker Jump, M = Add Marker, Enter = Stop & Return to 0, Cmd+Shift+E = Export Audio, Cmd+Shift+R = Remote Settings, Cmd+, = Preferences
     const handleKeyDown = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+        return;
+      }
+
+      if ((e.metaKey || e.ctrlKey) && (e.key === "," || e.code === "Comma")) {
+        e.preventDefault();
+        openPreferencesModal();
         return;
       }
 
@@ -5824,16 +5903,7 @@
                     <button 
                       class="region-xfade-pill" 
                       title="Click to edit cut splice crossfade (ms)"
-                      on:click|stopPropagation={() => {
-                        const val = prompt("Enter cut splice crossfade (0 - 100 ms):", (region.crossfadeMs ?? 5).toString());
-                        if (val !== null) {
-                          const num = parseFloat(val);
-                          if (!isNaN(num)) {
-                            region.crossfadeMs = Math.max(0, Math.min(100, num));
-                            syncRegionsToEngine();
-                          }
-                        }
-                      }}
+                      on:click|stopPropagation={() => openXfadeModal(region)}
                     >
                       ✕ {region.crossfadeMs ?? 5}ms
                     </button>
@@ -6236,14 +6306,7 @@
           if (contextMenuRegion) {
             const reg = contextMenuRegion;
             showRegionContextMenu = false;
-            const val = prompt("Enter cut splice crossfade (0 - 100 ms):", (reg.crossfadeMs ?? 5).toString());
-            if (val !== null) {
-              const num = parseFloat(val);
-              if (!isNaN(num)) {
-                reg.crossfadeMs = Math.max(0, Math.min(100, num));
-                syncRegionsToEngine();
-              }
-            }
+            openXfadeModal(reg);
           }
         }}>
           ✕ Splice Crossfade ({contextMenuRegion.crossfadeMs ?? 5}ms)...
@@ -7154,6 +7217,133 @@
           <button class="modal-action-btn" on:click={() => showRemoteSettingsModal = false}>
             Done
           </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Cut Splice Crossfade Modal -->
+  {#if showXfadeModal && editingXfadeRegion}
+    <!-- svelte-ignore a11y-click-events-have-key-events -->
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div class="modal-backdrop" on:click={closeXfadeModal}>
+      <div class="inspector-modal xfade-modal-card" on:click|stopPropagation>
+        <div class="modal-header">
+          <div class="modal-title-row">
+            <span class="modal-badge cut-badge">CUT</span>
+            <h3>Splice Crossfade</h3>
+            <span class="stage-subhead">Region: "{editingXfadeRegion.name}"</span>
+          </div>
+          <button class="modal-close-btn" on:click={closeXfadeModal}>×</button>
+        </div>
+
+        <div class="modal-body xfade-modal-body">
+          <div class="xfade-readout-row">
+            <span class="xfade-readout-val">{editingXfadeMs}</span>
+            <span class="xfade-readout-unit">ms</span>
+          </div>
+
+          <div class="xfade-slider-box">
+            <div class="eq-label-val-row">
+              <label class="eq-ctrl-label" for="xfade-slider">Equal-Power Crossfade Duration</label>
+              <span class="eq-val-badge">{editingXfadeMs} ms</span>
+            </div>
+            <input 
+              id="xfade-slider"
+              type="range" 
+              min="0" 
+              max="100" 
+              step="1" 
+              bind:value={editingXfadeMs} 
+              class="rack-h-slider"
+            />
+          </div>
+
+          <div class="xfade-presets-container">
+            <span class="xfade-presets-label">Quick Presets:</span>
+            <div class="xfade-presets-row">
+              <button class="xfade-preset-btn" class:active={editingXfadeMs === 0} on:click={() => editingXfadeMs = 0}>0ms (Hard)</button>
+              <button class="xfade-preset-btn" class:active={editingXfadeMs === 5} on:click={() => editingXfadeMs = 5}>5ms (Fast)</button>
+              <button class="xfade-preset-btn" class:active={editingXfadeMs === 10} on:click={() => editingXfadeMs = 10}>10ms (Standard)</button>
+              <button class="xfade-preset-btn" class:active={editingXfadeMs === 25} on:click={() => editingXfadeMs = 25}>25ms (Smooth)</button>
+              <button class="xfade-preset-btn" class:active={editingXfadeMs === 50} on:click={() => editingXfadeMs = 50}>50ms (Long)</button>
+            </div>
+          </div>
+
+          <p class="xfade-description-hint">
+            Equal-power cosine crossfading smoothly joins audio regions across the splice boundary, eliminating clicks and pop transients.
+          </p>
+        </div>
+
+        <div class="modal-footer">
+          <button class="modal-cancel-btn" on:click={closeXfadeModal}>Cancel</button>
+          <button class="modal-action-btn" on:click={applyXfadeModal}>Save & Apply</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Application Preferences Modal (Cmd+,) -->
+  {#if showPreferencesModal}
+    <!-- svelte-ignore a11y-click-events-have-key-events -->
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div class="modal-backdrop" on:click={closePreferencesModal}>
+      <div class="inspector-modal prefs-modal-card" on:click|stopPropagation>
+        <div class="modal-header">
+          <div class="modal-title-row">
+            <span class="modal-badge prefs-badge">PREFS</span>
+            <h3>Preferences</h3>
+            <span class="stage-subhead">TrackHelm Application Settings</span>
+          </div>
+          <button class="modal-close-btn" on:click={closePreferencesModal}>×</button>
+        </div>
+
+        <div class="modal-body prefs-modal-body">
+          <div class="export-section">
+            <div class="export-section-title">SHEET MUSIC & PDF CHARTS</div>
+            
+            <div class="prefs-field-row">
+              <span class="prefs-field-label">Default PDF Theme:</span>
+              <div class="prefs-segmented-group">
+                <button 
+                  class="prefs-seg-btn" 
+                  class:active={prefPdfDefaultTheme === 'light'} 
+                  on:click={() => setPdfDefaultTheme('light')}
+                >
+                  <span class="seg-icon">☀️</span> Light (Normal)
+                </button>
+                <button 
+                  class="prefs-seg-btn" 
+                  class:active={prefPdfDefaultTheme === 'dark'} 
+                  on:click={() => setPdfDefaultTheme('dark')}
+                >
+                  <span class="seg-icon">🌙</span> Dark (Inverted)
+                </button>
+                <button 
+                  class="prefs-seg-btn" 
+                  class:active={prefPdfDefaultTheme === 'system'} 
+                  on:click={() => setPdfDefaultTheme('system')}
+                >
+                  <span class="seg-icon">💻</span> Follow OS
+                </button>
+              </div>
+            </div>
+
+            <p class="prefs-theme-explanation">
+              {#if prefPdfDefaultTheme === 'light'}
+                Standard white background for all newly opened PDF sheet music documents.
+              {:else if prefPdfDefaultTheme === 'dark'}
+                High-contrast inverted dark mode for low-light stage reading.
+              {:else}
+                Automatically switches between Light and Dark mode based on your macOS System Appearance.
+              {/if}
+            </p>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <span class="footer-hint">Keyboard Shortcut: ⌘,</span>
+          <button class="modal-action-btn" on:click={closePreferencesModal}>Done</button>
         </div>
       </div>
     </div>
@@ -10625,5 +10815,194 @@
     color: #7b8090;
     line-height: 1.3;
     margin-top: 4px;
+  }
+
+  /* Crossfade & Preferences Modal Styles */
+  .xfade-modal-card {
+    width: 440px;
+    max-width: 95vw;
+  }
+
+  .prefs-modal-card {
+    width: 520px;
+    max-width: 95vw;
+  }
+
+  .cut-badge {
+    background: #ff453a;
+    color: #ffffff;
+  }
+
+  .prefs-badge {
+    background: #bf5af2;
+    color: #ffffff;
+  }
+
+  .xfade-modal-body, .prefs-modal-body {
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .xfade-readout-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 6px;
+    padding: 10px 0 6px;
+  }
+
+  .xfade-readout-val {
+    font-size: 2.8rem;
+    font-weight: 800;
+    color: #ff453a;
+    font-family: -apple-system, BlinkMacSystemFont, monospace;
+  }
+
+  .xfade-readout-unit {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #a1a1aa;
+  }
+
+  .xfade-slider-box {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .xfade-presets-container {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .xfade-presets-label {
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: #8e8e93;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .xfade-presets-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .xfade-preset-btn {
+    background: #27272e;
+    border: 1px solid #383840;
+    color: #d1d1d6;
+    padding: 5px 10px;
+    border-radius: 6px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.12s ease;
+  }
+
+  .xfade-preset-btn:hover {
+    background: #383842;
+    color: #ffffff;
+    border-color: #555562;
+  }
+
+  .xfade-preset-btn.active {
+    background: #ff453a;
+    color: #ffffff;
+    border-color: #ff453a;
+    box-shadow: 0 2px 8px rgba(255, 69, 58, 0.4);
+  }
+
+  .xfade-description-hint {
+    font-size: 0.7rem;
+    color: #8e8e93;
+    line-height: 1.4;
+    margin: 0;
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 6px;
+    border-left: 3px solid #ff453a;
+  }
+
+  .modal-cancel-btn {
+    background: transparent;
+    border: 1px solid #383840;
+    color: #a1a1aa;
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.12s ease;
+  }
+
+  .modal-cancel-btn:hover {
+    background: #27272e;
+    color: #ffffff;
+  }
+
+  .prefs-field-row {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 10px;
+  }
+
+  .prefs-field-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: #e4e4e7;
+  }
+
+  .prefs-segmented-group {
+    display: flex;
+    background: #18181c;
+    border: 1px solid #323238;
+    border-radius: 8px;
+    padding: 3px;
+    gap: 3px;
+  }
+
+  .prefs-seg-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    background: transparent;
+    border: none;
+    color: #a1a1aa;
+    font-size: 0.74rem;
+    font-weight: 600;
+    padding: 8px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .prefs-seg-btn:hover {
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .prefs-seg-btn.active {
+    background: #3b99fc;
+    color: #ffffff;
+    box-shadow: 0 2px 8px rgba(59, 153, 252, 0.35);
+  }
+
+  .prefs-theme-explanation {
+    font-size: 0.72rem;
+    color: #8e8e93;
+    line-height: 1.4;
+    margin: 12px 0 0 0;
+    padding: 8px 12px;
+    background: rgba(59, 153, 252, 0.06);
+    border-left: 3px solid #3b99fc;
+    border-radius: 4px;
   }
 </style>
