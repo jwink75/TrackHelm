@@ -1024,6 +1024,15 @@
     saveCurrentTrackProfile(filePath);
   }
 
+  function getActivePdfContainer(): HTMLElement | null {
+    if (activeCenterTab.startsWith("pdf-")) {
+      return document.getElementById("pdf-container-" + activePdfTabId);
+    } else if (activeCenterTab === "pdf") {
+      return pdfContainer;
+    }
+    return document.querySelector(".pdf-scroll-column") as HTMLElement | null;
+  }
+
   async function renderOpenPdfTab(tab: OpenPdfTab) {
     const container = document.getElementById("pdf-container-" + tab.id) as HTMLDivElement | null;
     if (!container) return;
@@ -1052,6 +1061,16 @@
         pageWrapper.className = `pdf-page-card ${tab.isInverted ? 'inverted' : ''}`;
         pageWrapper.dataset.pageNum = pageNum.toString();
 
+        pageWrapper.addEventListener("dragover", (e) => {
+          e.preventDefault();
+          if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+        });
+        pageWrapper.addEventListener("drop", (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          handlePdfPageDrop(e, pageNum, pageWrapper);
+        });
+
         const canvas = document.createElement("canvas");
         canvas.className = "pdf-page-canvas";
         canvas.width = Math.floor(viewport.width);
@@ -1068,7 +1087,7 @@
 
       tab.isLoading = false;
       openPdfTabs = [...openPdfTabs];
-      renderPdfMarkerBadges();
+      tick().then(() => renderPdfMarkerBadges());
     } catch (err: any) {
       tab.isLoading = false;
       tab.error = "Failed to render PDF: " + (err.message || err);
@@ -1100,6 +1119,25 @@
   function handleDynamicPdfContainerDrop(e: DragEvent, tab: OpenPdfTab) {
     e.preventDefault();
     e.stopPropagation();
+
+    const container = document.getElementById("pdf-container-" + tab.id);
+    if (!container) return;
+    const cards = container.querySelectorAll(".pdf-page-card");
+
+    for (let i = 0; i < cards.length; i++) {
+      const card = cards[i] as HTMLElement;
+      const rect = card.getBoundingClientRect();
+      if (
+        e.clientX >= rect.left &&
+        e.clientX <= rect.right &&
+        e.clientY >= rect.top &&
+        e.clientY <= rect.bottom
+      ) {
+        const pageNum = parseInt(card.dataset.pageNum || "1", 10);
+        handlePdfPageDrop(e, pageNum, card);
+        break;
+      }
+    }
   }
 
   function handlePdfScroll() {
@@ -1491,8 +1529,8 @@
   }
 
   function renderPdfMarkerBadges() {
-    if (!pdfContainer) return;
-    const cards = pdfContainer.querySelectorAll(".pdf-page-card");
+    const cards = document.querySelectorAll(".pdf-page-card");
+    if (!cards || cards.length === 0) return;
     cards.forEach(card => {
       const pageNum = parseInt((card as HTMLElement).dataset.pageNum || "1", 10);
       
@@ -1874,7 +1912,8 @@
           broadcastCurrentState();
 
           // Auto-scroll PDF to active anchored marker (12px below top)
-          if (activeCenterTab === "pdf" && pdfContainer && isPlaying) {
+          const activePdfCont = getActivePdfContainer();
+          if (activePdfCont && isPlaying) {
             let currentMarker: Marker | null = null;
             for (const m of markers) {
               if (m.time <= currentTime + 0.15) {
@@ -1902,14 +1941,14 @@
               if (anchor) {
                 lastScrolledMarkerId = currentMarker.id;
                 const markerPage = anchor.page;
-                const card = pdfContainer.querySelector(`.pdf-page-card[data-page-num="${markerPage}"]`) as HTMLElement;
+                const card = activePdfCont.querySelector(`.pdf-page-card[data-page-num="${markerPage}"]`) as HTMLElement;
                 if (card) {
-                  const containerRect = pdfContainer.getBoundingClientRect();
+                  const containerRect = activePdfCont.getBoundingClientRect();
                   const cardRect = card.getBoundingClientRect();
-                  const cardTopRelativeToContainer = (cardRect.top - containerRect.top) + pdfContainer.scrollTop;
+                  const cardTopRelativeToContainer = (cardRect.top - containerRect.top) + activePdfCont.scrollTop;
                   const markerYWithinCard = card.clientHeight * anchor.yPct;
                   const targetScrollTop = Math.max(0, cardTopRelativeToContainer + markerYWithinCard - 12);
-                  pdfContainer.scrollTo({
+                  activePdfCont.scrollTo({
                     top: targetScrollTop,
                     behavior: "smooth"
                   });
@@ -4122,7 +4161,8 @@
     invoke("seek", { seconds: time });
 
     // Instantly scroll PDF to this marker if in PDF tab
-    if (activeCenterTab === "pdf" && pdfContainer) {
+    const activePdfCont = getActivePdfContainer();
+    if (activePdfCont) {
       const match = markers.find(m => Math.abs(m.time - time) < 0.2);
       let anchor = match?.pdfAnchor;
       if (!anchor && activeTrackMode === "alternate" && mainTrack) {
@@ -4132,14 +4172,14 @@
       }
       if (anchor) {
         const markerPage = anchor.page;
-        const card = pdfContainer.querySelector(`.pdf-page-card[data-page-num="${markerPage}"]`) as HTMLElement;
+        const card = activePdfCont.querySelector(`.pdf-page-card[data-page-num="${markerPage}"]`) as HTMLElement;
         if (card) {
-          const containerRect = pdfContainer.getBoundingClientRect();
+          const containerRect = activePdfCont.getBoundingClientRect();
           const cardRect = card.getBoundingClientRect();
-          const cardTopRelativeToContainer = (cardRect.top - containerRect.top) + pdfContainer.scrollTop;
+          const cardTopRelativeToContainer = (cardRect.top - containerRect.top) + activePdfCont.scrollTop;
           const markerYWithinCard = card.clientHeight * anchor.yPct;
           const targetScrollTop = Math.max(0, cardTopRelativeToContainer + markerYWithinCard - 12);
-          pdfContainer.scrollTo({
+          activePdfCont.scrollTo({
             top: targetScrollTop,
             behavior: "smooth"
           });
