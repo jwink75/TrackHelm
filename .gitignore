@@ -1,5 +1,7 @@
 # Rust
 /target
+.cargo/
+src-tauri/.cargo/
 Cargo.lock
 
 # Node.js
