@@ -309,12 +309,59 @@
   let lyricsViewMode: "edit" | "preview" | "split" = "edit";
 
   function renderMarkdown(md: string): string {
-    if (!md || !md.trim()) return "<div class='markdown-empty-hint'>No notes recorded yet. Click <strong>Edit</strong> or <strong>Split</strong> to add notes or chord charts...</div>";
+    if (!md || !md.trim()) return "<div class='markdown-empty-hint'>No notes recorded yet. Click <strong>Raw Text</strong> or <strong>Split</strong> to add rehearsal notes, singer tables, or chord cues...</div>";
     
-    let html = md
+    // First parse and convert Markdown tables
+    const rawLines = md.split("\n");
+    let inTable = false;
+    let tableHtml = "";
+    const processedLines: string[] = [];
+
+    for (let i = 0; i < rawLines.length; i++) {
+      const line = rawLines[i].trim();
+      if (line.startsWith("|") && line.endsWith("|")) {
+        const cells = line.slice(1, -1).split("|").map(c => c.trim());
+        // Check if delimiter row e.g. |---|---| or |:---:|---:|
+        if (cells.every(c => /^:?-+:?$/.test(c))) {
+          continue;
+        }
+        if (!inTable) {
+          inTable = true;
+          tableHtml = '<div class="md-table-wrapper"><table class="md-table"><thead><tr>' + cells.map(c => `<th>${c}</th>`).join('') + '</tr></thead><tbody>';
+        } else {
+          tableHtml += '<tr>' + cells.map(c => `<td>${c}</td>`).join('') + '</tr>';
+        }
+      } else {
+        if (inTable) {
+          inTable = false;
+          tableHtml += '</tbody></table></div>';
+          processedLines.push(tableHtml);
+          tableHtml = "";
+        }
+        processedLines.push(rawLines[i]);
+      }
+    }
+    if (inTable) {
+      tableHtml += '</tbody></table></div>';
+      processedLines.push(tableHtml);
+    }
+
+    let html = processedLines.join("\n")
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
       .replace(/>/g, "&gt;");
+
+    // Restore table tags that were HTML-escaped
+    html = html
+      .replace(/&lt;div class="md-table-wrapper"&gt;&lt;table class="md-table"&gt;&lt;thead&gt;&lt;tr&gt;/g, '<div class="md-table-wrapper"><table class="md-table"><thead><tr>')
+      .replace(/&lt;\/tr&gt;&lt;\/thead&gt;&lt;tbody&gt;/g, '</tr></thead><tbody>')
+      .replace(/&lt;\/tbody&gt;&lt;\/table&gt;&lt;\/div&gt;/g, '</tbody></table></div>')
+      .replace(/&lt;th&gt;/g, '<th>')
+      .replace(/&lt;\/th&gt;/g, '</th>')
+      .replace(/&lt;tr&gt;/g, '<tr>')
+      .replace(/&lt;\/tr&gt;/g, '</tr>')
+      .replace(/&lt;td&gt;/g, '<td>')
+      .replace(/&lt;\/td&gt;/g, '</td>');
 
     // Highlight chords in brackets e.g. [C#m7], [G/B], [F#7b9]
     html = html.replace(/\[([A-G][b#]?(?:m|maj|min|dim|aug|sus|add)?[0-9]?(?:[b#][0-9])?(?:\/[A-G][b#]?)?)\]/g, '<span class="chord-badge">$1</span>');
@@ -751,6 +798,10 @@
   // Application Preferences & Display Settings (Cmd+,)
   type PdfDefaultTheme = "light" | "dark" | "system";
   let prefPdfDefaultTheme: PdfDefaultTheme = "system";
+  let prefFolderAac: string = "";
+  let prefFolderHiRes: string = "";
+  let prefFolderOrig: string = "";
+  let prefFolderPdf: string = "";
   let showPreferencesModal: boolean = false;
 
   function loadAppPreferences() {
@@ -759,12 +810,45 @@
       if (savedTheme === "light" || savedTheme === "dark" || savedTheme === "system") {
         prefPdfDefaultTheme = savedTheme;
       }
+      prefFolderAac = localStorage.getItem("th_pref_folder_aac") || "";
+      prefFolderHiRes = localStorage.getItem("th_pref_folder_hires") || "";
+      prefFolderOrig = localStorage.getItem("th_pref_folder_orig") || "";
+      prefFolderPdf = localStorage.getItem("th_pref_folder_pdf") || "";
+    } catch (e) {}
+  }
+
+  function saveAppPreferences() {
+    try {
+      localStorage.setItem("th_pref_pdf_theme", prefPdfDefaultTheme);
+      localStorage.setItem("th_pref_folder_aac", prefFolderAac);
+      localStorage.setItem("th_pref_folder_hires", prefFolderHiRes);
+      localStorage.setItem("th_pref_folder_orig", prefFolderOrig);
+      localStorage.setItem("th_pref_folder_pdf", prefFolderPdf);
     } catch (e) {}
   }
 
   function setPdfDefaultTheme(theme: PdfDefaultTheme) {
     prefPdfDefaultTheme = theme;
-    localStorage.setItem("th_pref_pdf_theme", theme);
+    saveAppPreferences();
+  }
+
+  async function pickPreferenceFolder(key: "aac" | "hires" | "orig" | "pdf") {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: "Select Rehearsal Assets Folder"
+      });
+      if (selected && typeof selected === "string") {
+        if (key === "aac") prefFolderAac = selected;
+        else if (key === "hires") prefFolderHiRes = selected;
+        else if (key === "orig") prefFolderOrig = selected;
+        else if (key === "pdf") prefFolderPdf = selected;
+        saveAppPreferences();
+      }
+    } catch (err) {
+      console.error("Failed to select folder:", err);
+    }
   }
 
   function shouldInvertPdfByDefault(): boolean {
@@ -5304,9 +5388,9 @@
               <div class="markdown-toolbar">
                 <span class="md-toolbar-title">REHEARSAL NOTES</span>
                 <div class="md-view-toggles">
-                  <button class="md-toggle-btn" class:active={notesViewMode === 'edit'} on:click={() => notesViewMode = 'edit'}>✏️ Edit</button>
-                  <button class="md-toggle-btn" class:active={notesViewMode === 'preview'} on:click={() => notesViewMode = 'preview'}>👁️ Preview</button>
-                  <button class="md-toggle-btn" class:active={notesViewMode === 'split'} on:click={() => notesViewMode = 'split'}>◫ Split</button>
+                  <button class="md-toggle-btn" class:active={notesViewMode === 'edit'} on:click={() => notesViewMode = 'edit'} title="View and edit raw Markdown text">✏️ Raw Text</button>
+                  <button class="md-toggle-btn" class:active={notesViewMode === 'preview'} on:click={() => notesViewMode = 'preview'} title="View rendered rich Markdown">👁️ Rendered</button>
+                  <button class="md-toggle-btn" class:active={notesViewMode === 'split'} on:click={() => notesViewMode = 'split'} title="Split side-by-side view">◫ Split</button>
                 </div>
               </div>
 
@@ -5314,7 +5398,7 @@
                 {#if notesViewMode === 'edit' || notesViewMode === 'split'}
                   <textarea 
                     class="rehearsal-textarea md-textarea" 
-                    placeholder="Type rehearsal notes, chord cues (e.g. [C#m7]), key changes, or arrangement details using Markdown (auto-saved)..."
+                    placeholder="Type rehearsal notes, singer assignments (tables e.g. | Song | Singer |), chord cues (e.g. [C#m7]), key changes, or arrangement details using Markdown (auto-saved)..."
                     bind:value={songNotes}
                     on:input={() => saveCurrentTrackProfile(filePath)}
                   ></textarea>
@@ -5333,9 +5417,9 @@
               <div class="markdown-toolbar">
                 <span class="md-toolbar-title">SONG LYRICS & CUES</span>
                 <div class="md-view-toggles">
-                  <button class="md-toggle-btn" class:active={lyricsViewMode === 'edit'} on:click={() => lyricsViewMode = 'edit'}>✏️ Edit</button>
-                  <button class="md-toggle-btn" class:active={lyricsViewMode === 'preview'} on:click={() => lyricsViewMode = 'preview'}>👁️ Preview</button>
-                  <button class="md-toggle-btn" class:active={lyricsViewMode === 'split'} on:click={() => lyricsViewMode = 'split'}>◫ Split</button>
+                  <button class="md-toggle-btn" class:active={lyricsViewMode === 'edit'} on:click={() => lyricsViewMode = 'edit'} title="View and edit raw Markdown text">✏️ Raw Text</button>
+                  <button class="md-toggle-btn" class:active={lyricsViewMode === 'preview'} on:click={() => lyricsViewMode = 'preview'} title="View rendered rich Markdown">👁️ Rendered</button>
+                  <button class="md-toggle-btn" class:active={lyricsViewMode === 'split'} on:click={() => lyricsViewMode = 'split'} title="Split side-by-side view">◫ Split</button>
                 </div>
               </div>
 
@@ -7433,6 +7517,113 @@
         </div>
 
         <div class="modal-body prefs-modal-body">
+          <!-- Library & Setlist Default Folders (AI Assistant Groundwork) -->
+          <div class="export-section">
+            <div class="export-section-title">LIBRARY & SETLIST ASSETS FOLDERS</div>
+            <p class="prefs-section-hint">
+              Designate your primary rehearsal library directories. Used by the <strong>AI Setlist Importer</strong> and Media Linker to automatically discover and pair backing tracks, stems, original recordings, and sheet music.
+            </p>
+
+            <div class="prefs-folder-grid">
+              <!-- 1. Low-Res Performance Tracks (AAC / M4A) -->
+              <div class="prefs-folder-row">
+                <div class="folder-label-cell">
+                  <span class="folder-badge aac-badge">AAC</span>
+                  <div class="folder-title-desc">
+                    <span class="folder-title">Performance Tracks (Low-Res)</span>
+                    <span class="folder-desc">Default AAC / M4A rehearsal & stage backing tracks</span>
+                  </div>
+                </div>
+                <div class="folder-input-cell">
+                  <input 
+                    type="text" 
+                    class="folder-path-input" 
+                    placeholder="Choose folder e.g. ~/Music/Performance Tracks (AAC)..." 
+                    bind:value={prefFolderAac} 
+                    on:change={saveAppPreferences}
+                  />
+                  <button class="folder-pick-btn" on:click={() => pickPreferenceFolder('aac')}>Choose...</button>
+                  {#if prefFolderAac}
+                    <button class="folder-clear-btn" on:click={() => { prefFolderAac = ""; saveAppPreferences(); }} title="Clear path">×</button>
+                  {/if}
+                </div>
+              </div>
+
+              <!-- 2. High-Res Performance Tracks (WAV / FLAC) -->
+              <div class="prefs-folder-row">
+                <div class="folder-label-cell">
+                  <span class="folder-badge hires-badge">WAV</span>
+                  <div class="folder-title-desc">
+                    <span class="folder-title">Performance Tracks (Full-Res)</span>
+                    <span class="folder-desc">Master uncompressed WAV / FLAC alternate performance files</span>
+                  </div>
+                </div>
+                <div class="folder-input-cell">
+                  <input 
+                    type="text" 
+                    class="folder-path-input" 
+                    placeholder="Choose folder e.g. ~/Music/Master Tracks (WAV)..." 
+                    bind:value={prefFolderHiRes} 
+                    on:change={saveAppPreferences}
+                  />
+                  <button class="folder-pick-btn" on:click={() => pickPreferenceFolder('hires')}>Choose...</button>
+                  {#if prefFolderHiRes}
+                    <button class="folder-clear-btn" on:click={() => { prefFolderHiRes = ""; saveAppPreferences(); }} title="Clear path">×</button>
+                  {/if}
+                </div>
+              </div>
+
+              <!-- 3. Original Artist Recordings -->
+              <div class="prefs-folder-row">
+                <div class="folder-label-cell">
+                  <span class="folder-badge orig-badge">ORIG</span>
+                  <div class="folder-title-desc">
+                    <span class="folder-title">Original Artist Recordings</span>
+                    <span class="folder-desc">Reference album recordings for rehearsal comparison</span>
+                  </div>
+                </div>
+                <div class="folder-input-cell">
+                  <input 
+                    type="text" 
+                    class="folder-path-input" 
+                    placeholder="Choose folder e.g. ~/Music/Original Tracks..." 
+                    bind:value={prefFolderOrig} 
+                    on:change={saveAppPreferences}
+                  />
+                  <button class="folder-pick-btn" on:click={() => pickPreferenceFolder('orig')}>Choose...</button>
+                  {#if prefFolderOrig}
+                    <button class="folder-clear-btn" on:click={() => { prefFolderOrig = ""; saveAppPreferences(); }} title="Clear path">×</button>
+                  {/if}
+                </div>
+              </div>
+
+              <!-- 4. Sheet Music PDFs -->
+              <div class="prefs-folder-row">
+                <div class="folder-label-cell">
+                  <span class="folder-badge pdf-badge">PDF</span>
+                  <div class="folder-title-desc">
+                    <span class="folder-title">Sheet Music & Chord Charts</span>
+                    <span class="folder-desc">Master PDF charts, lead sheets, and vocal scores</span>
+                  </div>
+                </div>
+                <div class="folder-input-cell">
+                  <input 
+                    type="text" 
+                    class="folder-path-input" 
+                    placeholder="Choose folder e.g. ~/Documents/Sheet Music..." 
+                    bind:value={prefFolderPdf} 
+                    on:change={saveAppPreferences}
+                  />
+                  <button class="folder-pick-btn" on:click={() => pickPreferenceFolder('pdf')}>Choose...</button>
+                  {#if prefFolderPdf}
+                    <button class="folder-clear-btn" on:click={() => { prefFolderPdf = ""; saveAppPreferences(); }} title="Clear path">×</button>
+                  {/if}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Sheet Music & PDF Theme Section -->
           <div class="export-section">
             <div class="export-section-title">SHEET MUSIC & PDF CHARTS</div>
             
@@ -11245,5 +11436,177 @@
     background: rgba(59, 153, 252, 0.06);
     border-left: 3px solid #3b99fc;
     border-radius: 4px;
+  }
+
+  .prefs-section-hint {
+    font-size: 0.72rem;
+    color: #8e8e93;
+    line-height: 1.4;
+    margin: 4px 0 12px 0;
+  }
+
+  .prefs-folder-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .prefs-folder-row {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background: #141417;
+    border: 1px solid #26262c;
+    border-radius: 6px;
+    padding: 8px 10px;
+  }
+
+  .folder-label-cell {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .folder-badge {
+    font-size: 0.62rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    padding: 2px 6px;
+    border-radius: 3px;
+    color: #ffffff;
+  }
+
+  .aac-badge {
+    background-color: #3b99fc;
+  }
+
+  .hires-badge {
+    background-color: #30d158;
+  }
+
+  .orig-badge {
+    background-color: #ff9f0a;
+  }
+
+  .pdf-badge {
+    background-color: #ff375f;
+  }
+
+  .folder-title-desc {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .folder-title {
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: #f2f2f7;
+  }
+
+  .folder-desc {
+    font-size: 0.65rem;
+    color: #8e8e93;
+  }
+
+  .folder-input-cell {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .folder-path-input {
+    flex: 1;
+    background: #1c1c20;
+    border: 1px solid #333338;
+    color: #64d2ff;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Mono", monospace;
+    font-size: 0.72rem;
+    padding: 5px 8px;
+    border-radius: 4px;
+    outline: none;
+    transition: border-color 0.12s ease;
+  }
+
+  .folder-path-input:focus {
+    border-color: #3b99fc;
+    box-shadow: 0 0 0 1px rgba(59, 153, 252, 0.3);
+  }
+
+  .folder-pick-btn {
+    background: #282830;
+    border: 1px solid #3a3a44;
+    color: #e4e4e7;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 5px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.12s ease;
+  }
+
+  .folder-pick-btn:hover {
+    background: #383842;
+    color: #ffffff;
+  }
+
+  .folder-clear-btn {
+    background: transparent;
+    border: 1px solid #3a3a44;
+    color: #ff453a;
+    font-size: 0.8rem;
+    padding: 3px 7px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.12s ease;
+  }
+
+  .folder-clear-btn:hover {
+    background: rgba(255, 69, 58, 0.15);
+    border-color: #ff453a;
+  }
+
+  /* Markdown Table Rendering Styles */
+  :global(.md-table-wrapper) {
+    overflow-x: auto;
+    margin: 10px 0;
+    border-radius: 6px;
+    border: 1px solid #33333d;
+    background-color: #151518;
+  }
+
+  :global(.md-table) {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.78rem;
+    text-align: left;
+  }
+
+  :global(.md-table th) {
+    background-color: #22222a;
+    color: #64d2ff;
+    padding: 7px 12px;
+    font-weight: 700;
+    border-bottom: 1px solid #383844;
+    letter-spacing: 0.02em;
+  }
+
+  :global(.md-table td) {
+    padding: 7px 12px;
+    border-bottom: 1px solid #24242c;
+    color: #e4e4e7;
+  }
+
+  :global(.md-table tr:last-child td) {
+    border-bottom: none;
+  }
+
+  :global(.md-table tr:nth-child(even)) {
+    background-color: rgba(255, 255, 255, 0.02);
+  }
+
+  :global(.md-table tr:hover) {
+    background-color: rgba(100, 210, 255, 0.04);
   }
 </style>
