@@ -6879,24 +6879,56 @@
           <!-- Bottom Parameter Deck for Selected Node -->
           {#if selEqNode}
             <div class="selected-eq-node-deck">
-              <!-- Node Tabs Selector (Sorted by frequency with core band visual distinction) -->
-              <div class="eq-node-pills-row">
-                {#each sortedEqNodes as node, idx}
+              <!-- Top Header Row: Node Tabs Selector (Left) & Actions/Delete/Power (Right) -->
+              <div class="eq-deck-top-row">
+                <div class="eq-node-pills-row">
+                  {#each sortedEqNodes as node, idx}
+                    <button 
+                      class="eq-node-pill-btn" 
+                      class:active={selectedEqNodeId === node.id}
+                      class:core-node-pill={isCoreEqNode(node.id)}
+                      style="--node-color: {node.color};"
+                      on:click={() => selectedEqNodeId = node.id}
+                      title={isCoreEqNode(node.id) ? "Primary Rack-Linked EQ Band (Permanent)" : "Custom Parametric EQ Band"}
+                    >
+                      <span class="pill-dot" style="background-color: {node.color};"></span>
+                      <span>{idx + 1}. {node.name}</span>
+                    </button>
+                  {/each}
+                </div>
+
+                <!-- Top Right Action Controls for Selected Band -->
+                <div class="eq-deck-top-actions">
                   <button 
-                    class="eq-node-pill-btn" 
-                    class:active={selectedEqNodeId === node.id}
-                    class:core-node-pill={isCoreEqNode(node.id)}
-                    style="--node-color: {node.color};"
-                    on:click={() => selectedEqNodeId = node.id}
-                    title={isCoreEqNode(node.id) ? "Primary Rack-Linked EQ Band (Permanent)" : "Custom Parametric EQ Band"}
+                    class="eq-node-power-btn" 
+                    class:active={selEqNode.enabled}
+                    on:click={() => { selEqNode.enabled = !selEqNode.enabled; updateEqEngine(); }}
+                    title="Toggle active / bypass state for this filter band"
                   >
-                    <span class="pill-dot" style="background-color: {node.color};"></span>
-                    <span>{idx + 1}. {node.name}</span>
+                    {selEqNode.enabled ? "ACTIVE" : "MUTED"}
                   </button>
-                {/each}
+
+                  {#if !isCoreEqNode(selEqNode.id)}
+                    <button 
+                      class="eq-delete-node-btn" 
+                      on:click={() => {
+                        eqNodes = eqNodes.filter(n => n.id !== selEqNode.id);
+                        selectedEqNodeId = eqNodes[0].id;
+                        updateEqEngine();
+                      }}
+                      title="Delete this filter band"
+                    >
+                      Delete Band
+                    </button>
+                  {:else}
+                    <span class="eq-core-band-badge" title="Primary rack-linked EQ bands cannot be deleted">
+                      🔒 Core Band
+                    </span>
+                  {/if}
+                </div>
               </div>
 
-              <!-- Node Parameters Control Grid -->
+              <!-- Node Parameters Control Grid (4 Columns) -->
               <div class="eq-node-controls-grid">
                 <!-- Filter Type -->
                 <div class="eq-ctrl-group">
@@ -6992,6 +7024,14 @@
                       class="rack-h-slider" 
                     />
                   </div>
+                {:else}
+                  <div class="eq-ctrl-group">
+                    <div class="eq-label-val-row">
+                      <label class="eq-ctrl-label">Gain</label>
+                      <span class="eq-unit-suffix">Fixed Cut (N/A)</span>
+                    </div>
+                    <div class="eq-disabled-slider-placeholder"></div>
+                  </div>
                 {/if}
 
                 <!-- Q / Bandwidth -->
@@ -7028,35 +7068,6 @@
                     on:input={() => updateEqEngine()}
                     class="rack-h-slider" 
                   />
-                </div>
-
-                <!-- Actions: Enable / Delete (Protected for Core Bands) -->
-                <div class="eq-ctrl-group actions-group">
-                  <button 
-                    class="eq-node-power-btn" 
-                    class:active={selEqNode.enabled}
-                    on:click={() => { selEqNode.enabled = !selEqNode.enabled; updateEqEngine(); }}
-                  >
-                    {selEqNode.enabled ? "ACTIVE" : "MUTED"}
-                  </button>
-
-                  {#if !isCoreEqNode(selEqNode.id)}
-                    <button 
-                      class="eq-delete-node-btn" 
-                      on:click={() => {
-                        eqNodes = eqNodes.filter(n => n.id !== selEqNode.id);
-                        selectedEqNodeId = eqNodes[0].id;
-                        updateEqEngine();
-                      }}
-                      title="Delete this filter band"
-                    >
-                      Delete Band
-                    </button>
-                  {:else}
-                    <span class="eq-core-band-badge" title="Primary rack-linked EQ bands cannot be deleted">
-                      🔒 Core Band
-                    </span>
-                  {/if}
                 </div>
               </div>
             </div>
@@ -10336,11 +10347,40 @@
     border-radius: 50%;
   }
 
+  .eq-deck-top-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding-bottom: 2px;
+  }
+
+  .eq-node-pills-row {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    flex: 1;
+    align-items: center;
+  }
+
+  .eq-deck-top-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
   .eq-node-controls-grid {
     display: grid;
-    grid-template-columns: 180px 1fr 1fr 1fr 120px;
-    gap: 10px;
+    grid-template-columns: 190px 1fr 1fr 1fr;
+    gap: 14px;
     align-items: center;
+  }
+
+  .eq-disabled-slider-placeholder {
+    height: 16px;
+    opacity: 0.2;
+    border-bottom: 1px dashed #555562;
   }
 
   .eq-ctrl-group {
