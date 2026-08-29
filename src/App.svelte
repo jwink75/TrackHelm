@@ -6,6 +6,9 @@
   import * as pdfjsLib from "pdfjs-dist";
   import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
+  import { parseSetlistCsv, resolveSetlistLocal, type ScannedAsset, type ResolvedSetlistItem } from "./lib/setlistResolver";
+  import { analyzePlaylistHealth, type PlaylistItemHealth } from "./lib/playlistRepair";
+
   pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
   const openDialog = open;
 
@@ -276,6 +279,13 @@
   interface PlaylistItem {
     name: string;
     path: string;
+    isPlaceholder?: boolean;
+    missingAudio?: boolean;
+    alternatePath?: string;
+    pdfPath?: string;
+    singers?: string;
+    keyNote?: string;
+    notesMarkdown?: string;
   }
   let playlistItems: PlaylistItem[] = [];
   let selectedPlaylistIndex = -1;
@@ -797,12 +807,31 @@
 
   // Application Preferences & Display Settings (Cmd+,)
   type PdfDefaultTheme = "light" | "dark" | "system";
+  type AiProvider = "builtin" | "ollama" | "openai" | "anthropic" | "gemini";
+
   let prefPdfDefaultTheme: PdfDefaultTheme = "system";
   let prefFolderAac: string = "";
   let prefFolderHiRes: string = "";
   let prefFolderOrig: string = "";
   let prefFolderPdf: string = "";
+  let prefAiProvider: AiProvider = "builtin";
+  let prefAiApiKey: string = "";
+  let prefAiModel: string = "";
+  let prefOllamaUrl: string = "http://localhost:11434";
   let showPreferencesModal: boolean = false;
+
+  // Setlist CSV Importer Modal State
+  let showSetlistModal: boolean = false;
+  let rawCsvText: string = "";
+  let isResolvingSetlist: boolean = false;
+  let resolvedSetlist: ResolvedSetlistItem[] = [];
+  let setlistResolveError: string = "";
+
+  // Playlist Repair & Missing Files State
+  let showRepairModal: boolean = false;
+  let isScanningHealth: boolean = false;
+  let playlistHealth: PlaylistItemHealth[] = [];
+  let missingTracksCount: number = 0;
 
   function loadAppPreferences() {
     try {
@@ -814,6 +843,14 @@
       prefFolderHiRes = localStorage.getItem("th_pref_folder_hires") || "";
       prefFolderOrig = localStorage.getItem("th_pref_folder_orig") || "";
       prefFolderPdf = localStorage.getItem("th_pref_folder_pdf") || "";
+
+      const savedAi = localStorage.getItem("th_pref_ai_provider");
+      if (savedAi === "builtin" || savedAi === "ollama" || savedAi === "openai" || savedAi === "anthropic" || savedAi === "gemini") {
+        prefAiProvider = savedAi;
+      }
+      prefAiApiKey = localStorage.getItem("th_pref_ai_api_key") || "";
+      prefAiModel = localStorage.getItem("th_pref_ai_model") || "";
+      prefOllamaUrl = localStorage.getItem("th_pref_ollama_url") || "http://localhost:11434";
     } catch (e) {}
   }
 
@@ -824,6 +861,10 @@
       localStorage.setItem("th_pref_folder_hires", prefFolderHiRes);
       localStorage.setItem("th_pref_folder_orig", prefFolderOrig);
       localStorage.setItem("th_pref_folder_pdf", prefFolderPdf);
+      localStorage.setItem("th_pref_ai_provider", prefAiProvider);
+      localStorage.setItem("th_pref_ai_api_key", prefAiApiKey);
+      localStorage.setItem("th_pref_ai_model", prefAiModel);
+      localStorage.setItem("th_pref_ollama_url", prefOllamaUrl);
     } catch (e) {}
   }
 
@@ -867,6 +908,232 @@
 
   function closePreferencesModal() {
     showPreferencesModal = false;
+  }
+
+  async function scanLibraryAssets() {
+    let aacFiles: ScannedAsset[] = [];
+    let hiresFiles: ScannedAsset[] = [];
+    let origFiles: ScannedAsset[] = [];
+    let pdfFiles: ScannedAsset[] = [];
+
+    try {
+      if (prefFolderAac) {
+        aacFiles = await invoke("scan_library_folder", {
+          folderPath: prefFolderAac,
+          extensions: ["m4a", "aac", "mp3", "wav"]
+        });
+      }
+      if (prefFolderHiRes) {
+        hiresFiles = await invoke("scan_library_folder", {
+          folderPath: prefFolderHiRes,
+          extensions: ["wav", "flac", "aiff"]
+        });
+      }
+      if (prefFolderOrig) {
+        origFiles = await invoke("scan_library_folder", {
+          folderPath: prefFolderOrig,
+          extensions: ["mp3", "m4a", "wav", "flac", "aiff", "ogg"]
+        });
+      }
+      if (prefFolderPdf) {
+        pdfFiles = await invoke("scan_library_folder", {
+          folderPath: prefFolderPdf,
+          extensions: ["pdf"]
+        });
+      }
+    } catch (e) {
+      console.error("Failed to scan library assets:", e);
+    }
+
+    return { aacFiles, hiresFiles, origFiles, pdfFiles };
+  }
+
+  async function openSetlistModal() {
+    showSetlistModal = true;
+    if (rawCsvText && resolvedSetlist.length === 0) {
+      await handleResolveSetlist();
+    }
+  }
+
+  async function handleResolveSetlist() {
+    if (!rawCsvText.trim()) return;
+    isResolvingSetlist = true;
+    setlistResolveError = "";
+
+    try {
+      const rows = parseSetlistCsv(rawCsvText);
+      if (rows.length === 0) {
+        setlistResolveError = "No valid song rows detected in the pasted text.";
+        isResolvingSetlist = false;
+        return;
+      }
+
+      const libraries = await scanLibraryAssets();
+      resolvedSetlist = resolveSetlistLocal(rows, libraries);
+    } catch (err: any) {
+      setlistResolveError = err?.message || String(err);
+    } finally {
+      isResolvingSetlist = false;
+    }
+  }
+
+  function applyImportedSetlist() {
+    if (resolvedSetlist.length === 0) return;
+
+    const newItems: PlaylistItem[] = resolvedSetlist.map(item => ({
+      name: item.title,
+      path: item.mainAacPath || (item.isPlaceholder ? `[unlinked]:${item.title}` : ""),
+      isPlaceholder: item.isPlaceholder,
+      missingAudio: item.isPlaceholder,
+      alternatePath: item.fullResWavPath || item.originalPath,
+      pdfPath: item.pdfPath,
+      singers: item.singers,
+      keyNote: item.keyNote,
+      notesMarkdown: item.notesMarkdown
+    }));
+
+    playlistItems = newItems;
+    localStorage.setItem("th_playlist", JSON.stringify(playlistItems));
+
+    // Save project profiles with notes and associated files for each song
+    resolvedSetlist.forEach(item => {
+      const targetPath = item.mainAacPath || `[unlinked]:${item.title}`;
+      const assoc: AssociatedFileItem[] = [];
+      if (item.pdfPath && item.pdfName) {
+        assoc.push({ id: "pdf-1", name: item.pdfName, path: item.pdfPath, fileType: "pdf" });
+      }
+      if (item.fullResWavPath && item.fullResWavName) {
+        assoc.push({ id: "audio-hires", name: item.fullResWavName, path: item.fullResWavPath, fileType: "audio" });
+      }
+      if (item.originalPath && item.originalName) {
+        assoc.push({ id: "audio-orig", name: item.originalName, path: item.originalPath, fileType: "audio" });
+      }
+
+      const profile: TrackProfile = {
+        filePath: targetPath,
+        dbVolume: 0,
+        speed: 1.0,
+        pitch: 0,
+        pitchCents: 0,
+        eqBass: 0,
+        eqTreble: 0,
+        isEqBypassed: false,
+        isCompressorBypassed: false,
+        compThresholdDb: 0,
+        compRatio: 1.0,
+        compAttackMs: 30,
+        compReleaseMs: 300,
+        compMakeupDb: 0,
+        markers: [],
+        regions: [],
+        associatedVersions: [],
+        pdfChartPath: item.pdfPath || "",
+        pdfChartName: item.pdfName || "",
+        associatedFiles: assoc,
+        songNotes: item.notesMarkdown,
+        songLyrics: "",
+        notesViewMode: "preview",
+        lyricsViewMode: "edit",
+        eqNodes: [
+          { id: "node-1", name: "Low Shelf", filterType: "LowShelf", freq: 100, gainDb: 0, q: 0.707, enabled: true, color: "#3b99fc" },
+          { id: "node-2", name: "Mid Bell", filterType: "Peaking", freq: 1000, gainDb: 0, q: 1.0, enabled: true, color: "#30d158" },
+          { id: "node-3", name: "High Shelf", filterType: "HighShelf", freq: 8000, gainDb: 0, q: 0.707, enabled: true, color: "#ff9500" }
+        ],
+        compStage1: { ...compStage1 },
+        compStage2: { ...compStage2 },
+        compRouting: "Series",
+        compParallelBlend: 0.5,
+        updatedAt: Date.now()
+      };
+      cachedProfilesStore[targetPath] = profile;
+    });
+
+    try {
+      localStorage.setItem("th_track_profiles_v1", JSON.stringify(cachedProfilesStore));
+    } catch (e) {}
+
+    // Load first track if available
+    if (newItems.length > 0 && newItems[0].path && !newItems[0].isPlaceholder) {
+      loadAudioPath(newItems[0].path, "main", true);
+    }
+
+    checkPlaylistHealthStatus();
+    showSetlistModal = false;
+  }
+
+  async function checkPlaylistHealthStatus() {
+    if (playlistItems.length === 0) {
+      missingTracksCount = 0;
+      return;
+    }
+    try {
+      const realPaths = playlistItems.map(p => p.path || "");
+      const existsList: boolean[] = await invoke("check_files_exist", { paths: realPaths });
+      let missingCount = 0;
+      existsList.forEach((ex, idx) => {
+        const item = playlistItems[idx];
+        if (!ex || item.isPlaceholder || !item.path || item.path.startsWith("[unlinked]")) {
+          item.missingAudio = true;
+          missingCount++;
+        } else {
+          item.missingAudio = false;
+        }
+      });
+      playlistItems = [...playlistItems];
+      missingTracksCount = missingCount;
+    } catch (e) {
+      console.error("Health check error:", e);
+    }
+  }
+
+  async function openRepairModal() {
+    showRepairModal = true;
+    isScanningHealth = true;
+    try {
+      const realPaths = playlistItems.map(p => p.path || "");
+      const existsList: boolean[] = await invoke("check_files_exist", { paths: realPaths });
+      const libraries = await scanLibraryAssets();
+      const allAudio = [...libraries.aacFiles, ...libraries.hiresFiles, ...libraries.origFiles];
+      playlistHealth = analyzePlaylistHealth(playlistItems, existsList, allAudio);
+    } catch (e) {
+      console.error("Repair check error:", e);
+    } finally {
+      isScanningHealth = false;
+    }
+  }
+
+  function applyRepairs() {
+    playlistHealth.forEach(h => {
+      if (h.suggestedReplacement && (!h.exists || h.isPlaceholder)) {
+        const item = playlistItems[h.index];
+        if (item) {
+          const oldPath = item.path;
+          const newPath = h.suggestedReplacement.path;
+          item.path = newPath;
+          item.name = h.suggestedReplacement.name;
+          item.isPlaceholder = false;
+          item.missingAudio = false;
+
+          // Migrate cached profile if present
+          if (cachedProfilesStore[oldPath]) {
+            cachedProfilesStore[newPath] = {
+              ...cachedProfilesStore[oldPath],
+              filePath: newPath,
+              updatedAt: Date.now()
+            };
+          }
+        }
+      }
+    });
+
+    playlistItems = [...playlistItems];
+    localStorage.setItem("th_playlist", JSON.stringify(playlistItems));
+    try {
+      localStorage.setItem("th_track_profiles_v1", JSON.stringify(cachedProfilesStore));
+    } catch (e) {}
+
+    checkPlaylistHealthStatus();
+    showRepairModal = false;
   }
 
   // Crossfade Editor Modal State
@@ -3391,6 +3658,22 @@
         case "toggle_cut":
           handleCutHotkey();
           break;
+        case "load_playlist":
+          if (Array.isArray(data.items)) {
+            playlistItems = data.items;
+            localStorage.setItem("th_playlist", JSON.stringify(playlistItems));
+            if (playlistItems.length > 0 && playlistItems[0].path && !playlistItems[0].isPlaceholder) {
+              loadAudioPath(playlistItems[0].path, "main", true);
+            }
+            checkPlaylistHealthStatus();
+          }
+          break;
+        case "open_setlist_importer":
+          showSetlistModal = true;
+          break;
+        case "open_repair_modal":
+          openRepairModal();
+          break;
         default:
           break;
       }
@@ -5236,6 +5519,7 @@
                 class:highlighted={selectedPlaylistIndex === idx}
                 class:dragging={draggedPlaylistIndex === idx}
                 class:drag-over={dragOverPlaylistIndex === idx}
+                class:is-unlinked={item.isPlaceholder || item.missingAudio}
                 draggable="true"
                 on:dragstart={(e) => handlePlaylistDragStart(e, idx)}
                 on:dragover={(e) => handlePlaylistDragOver(e, idx)}
@@ -5245,15 +5529,29 @@
                 on:click={() => { selectedPlaylistIndex = idx; }}
                 on:dblclick={() => {
                   selectedPlaylistIndex = idx;
-                  loadAudioPath(item.path, "main", true).then(async () => {
-                    await invoke("play");
-                    isPlaying = true;
-                  });
+                  if (item.path && !item.isPlaceholder && !item.missingAudio) {
+                    loadAudioPath(item.path, "main", true).then(async () => {
+                      await invoke("play");
+                      isPlaying = true;
+                    });
+                  } else {
+                    openRepairModal();
+                  }
                 }}
               >
                 <span class="playlist-drag-handle" title="Drag to reorder">⋮⋮</span>
-                <span class="item-icon">🎵</span>
-                <span class="item-name" title={item.name}>{item.name}</span>
+                <span class="item-icon">{item.isPlaceholder || item.missingAudio ? "⚠️" : "🎵"}</span>
+                <div class="playlist-item-text-stack">
+                  <div class="playlist-item-title-row">
+                    <span class="item-name" title={item.name}>{item.name}</span>
+                    {#if item.isPlaceholder || item.missingAudio}
+                      <span class="unlinked-pill" title="Audio file missing or unlinked">Unlinked</span>
+                    {/if}
+                  </div>
+                  {#if item.singers}
+                    <span class="item-singer-subhead" title="Singer(s)">🎤 {item.singers}</span>
+                  {/if}
+                </div>
                 <div class="playlist-item-actions">
                   <button class="reorder-item-btn" disabled={idx === 0} on:click|stopPropagation={() => movePlaylistItem(idx, idx - 1)} title="Move Up (Option+Up)">▲</button>
                   <button class="reorder-item-btn" disabled={idx === playlistItems.length - 1} on:click|stopPropagation={() => movePlaylistItem(idx, idx + 1)} title="Move Down (Option+Down)">▼</button>
@@ -5265,6 +5563,12 @@
         </div>
 
         <div class="playlist-controls-sidebar">
+          <button class="action-btn setlist-ai-btn" on:click={openSetlistModal} title="Import Setlist from CSV table or clipboard">
+            🪄 Setlist...
+          </button>
+          <button class="action-btn repair-btn" on:click={openRepairModal} title="Verify playlist health and repair missing files / upgraded mixes">
+            🔄 Repair {#if missingTracksCount > 0}<span class="missing-count-badge">({missingTracksCount})</span>{/if}
+          </button>
           <button class="action-btn file-btn" on:click={selectPlaylistFiles} title="Add audio files to playlist">
             + Add
           </button>
@@ -7653,22 +7957,271 @@
                 </button>
               </div>
             </div>
+          </div>
 
-            <p class="prefs-theme-explanation">
-              {#if prefPdfDefaultTheme === 'light'}
-                Standard white background for all newly opened PDF sheet music documents.
-              {:else if prefPdfDefaultTheme === 'dark'}
-                High-contrast inverted dark mode for low-light stage reading.
-              {:else}
-                Automatically switches between Light and Dark mode based on your macOS System Appearance.
-              {/if}
+          <!-- AI & LLM Setlist Matcher Provider Settings -->
+          <div class="export-section">
+            <div class="export-section-title">AI & LLM SETLIST ASSISTANT</div>
+            <p class="prefs-section-hint">
+              Select your AI provider for resolving ambiguous song titles, singer assignment cues, and upgraded mix detection.
             </p>
+
+            <div class="prefs-field-row">
+              <span class="prefs-field-label">AI Engine Provider:</span>
+              <select class="export-select" bind:value={prefAiProvider} on:change={saveAppPreferences}>
+                <option value="builtin">⚡ Built-in Fast Fuzzy Engine (100% Free & Offline)</option>
+                <option value="ollama">🦙 Local Ollama (Offline LLM on localhost:11434)</option>
+                <option value="openai">✨ OpenAI (GPT-4o / GPT-4o-mini)</option>
+                <option value="anthropic">🧠 Anthropic Claude (Claude 3.5 Sonnet)</option>
+                <option value="gemini">♊ Google Gemini (Gemini 1.5 Flash / Pro)</option>
+              </select>
+            </div>
+
+            {#if prefAiProvider === "ollama"}
+              <div class="prefs-field-row" style="margin-top: 8px;">
+                <span class="prefs-field-label">Ollama Host URL:</span>
+                <input 
+                  type="text" 
+                  class="folder-path-input" 
+                  placeholder="http://localhost:11434" 
+                  bind:value={prefOllamaUrl} 
+                  on:change={saveAppPreferences}
+                />
+              </div>
+              <div class="prefs-field-row" style="margin-top: 8px;">
+                <span class="prefs-field-label">Model Name:</span>
+                <input 
+                  type="text" 
+                  class="folder-path-input" 
+                  placeholder="llama3.2 (or mistral, qwen2.5)" 
+                  bind:value={prefAiModel} 
+                  on:change={saveAppPreferences}
+                />
+              </div>
+            {:else if prefAiProvider === "openai" || prefAiProvider === "anthropic" || prefAiProvider === "gemini"}
+              <div class="prefs-field-row" style="margin-top: 8px;">
+                <span class="prefs-field-label">API Key:</span>
+                <input 
+                  type="password" 
+                  class="folder-path-input" 
+                  placeholder="Enter API Key (saved securely on this Mac)..." 
+                  bind:value={prefAiApiKey} 
+                  on:change={saveAppPreferences}
+                />
+              </div>
+              <div class="prefs-field-row" style="margin-top: 8px;">
+                <span class="prefs-field-label">Custom Model (Optional):</span>
+                <input 
+                  type="text" 
+                  class="folder-path-input" 
+                  placeholder="Default: {prefAiProvider === 'openai' ? 'gpt-4o-mini' : prefAiProvider === 'anthropic' ? 'claude-3-5-sonnet-latest' : 'gemini-1.5-flash'}" 
+                  bind:value={prefAiModel} 
+                  on:change={saveAppPreferences}
+                />
+              </div>
+            {/if}
           </div>
         </div>
 
         <div class="modal-footer">
           <span class="footer-hint">Keyboard Shortcut: ⌘,</span>
           <button class="modal-action-btn" on:click={closePreferencesModal}>Done</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- AI Setlist CSV Importer Modal -->
+  {#if showSetlistModal}
+    <!-- svelte-ignore a11y-click-events-have-key-events -->
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div class="modal-backdrop" on:click={() => showSetlistModal = false}>
+      <div class="inspector-modal setlist-modal-card" on:click|stopPropagation>
+        <div class="modal-header">
+          <div class="modal-title-row">
+            <span class="modal-badge ai-badge">AI SETLIST</span>
+            <h3>Import Setlist from CSV / Clipboard</h3>
+            <span class="stage-subhead">Automated Rehearsal Package Generator</span>
+          </div>
+          <button class="modal-close-btn" on:click={() => showSetlistModal = false}>×</button>
+        </div>
+
+        <div class="modal-body setlist-modal-body">
+          <div class="setlist-input-section">
+            <div class="setlist-input-header">
+              <span class="export-section-title">PASTE SETLIST CSV / TSV TEXT</span>
+              <button 
+                class="mini-sample-btn" 
+                on:click={() => {
+                  rawCsvText = `Title,Singer,Key,Notes\nSuperstition,Sarah Jenkins,Ebm,Horn intro; vamp on outro\nI Wish,Marcus Vance,Ebm,Full band hit at bar 9\nSir Duke,Alex & Sarah,B,Horn soli at bridge\nIsn't She Lovely,Marcus Vance,E,Acoustic breakdown verse 2\nLiving for the City,Sarah Jenkins,F#,Key change to G# on last chorus\nNew Commissioned Ballad,Sarah Jenkins,Ab,Track in progress (Unlinked)`;
+                  handleResolveSetlist();
+                }}
+              >
+                📋 Load Sample Setlist
+              </button>
+            </div>
+            <p class="prefs-section-hint">
+              Paste your setlist table from Excel, Google Sheets, or CSV. Supports columns for <strong>Song Title</strong>, <strong>Singer(s)</strong>, <strong>Key</strong>, and <strong>Arrangement Notes</strong>.
+            </p>
+            <textarea 
+              class="setlist-csv-textarea" 
+              placeholder="Title, Singer, Key, Notes&#10;Superstition, Sarah, Ebm, Horn intro&#10;I Wish, Marcus, Ebm, Band hit bar 9..."
+              bind:value={rawCsvText}
+            ></textarea>
+
+            <div class="setlist-action-row">
+              <button class="modal-action-btn resolve-btn" disabled={!rawCsvText.trim() || isResolvingSetlist} on:click={handleResolveSetlist}>
+                {#if isResolvingSetlist}
+                  ⏳ Resolving Library Assets...
+                {:else}
+                  🪄 Match & Resolve Library Assets
+                {/if}
+              </button>
+            </div>
+          </div>
+
+          {#if setlistResolveError}
+            <div class="setlist-error-banner">⚠️ {setlistResolveError}</div>
+          {/if}
+
+          <!-- Resolved Preview Table -->
+          {#if resolvedSetlist.length > 0}
+            <div class="setlist-results-section">
+              <div class="export-section-title">RESOLVED SETLIST PREVIEW ({resolvedSetlist.length} TRACKS)</div>
+              <div class="setlist-table-scroll">
+                <table class="setlist-preview-table">
+                  <thead>
+                    <tr>
+                      <th style="width: 36px;">#</th>
+                      <th>Song Title</th>
+                      <th>Singer(s)</th>
+                      <th style="width: 60px;">Key</th>
+                      <th>Main Audio (AAC/M4A)</th>
+                      <th>Full-Res WAV</th>
+                      <th>PDF Sheet Music</th>
+                      <th style="width: 90px;">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {#each resolvedSetlist as item}
+                      <tr class:row-unlinked={item.isPlaceholder}>
+                        <td class="order-cell">{item.order}</td>
+                        <td class="title-cell"><strong>{item.title}</strong></td>
+                        <td class="singer-cell">{item.singers || "—"}</td>
+                        <td class="key-cell">{item.keyNote || "—"}</td>
+                        <td class="file-match-cell" title={item.mainAacPath || "Unlinked"}>
+                          {item.mainAacName || "⚠️ No file (Placeholder)"}
+                        </td>
+                        <td class="file-match-cell" title={item.fullResWavPath || "None"}>
+                          {item.fullResWavName || "—"}
+                        </td>
+                        <td class="file-match-cell" title={item.pdfPath || "None"}>
+                          {item.pdfName || "—"}
+                        </td>
+                        <td class="status-cell">
+                          {#if item.confidence === "exact" || item.confidence === "high"}
+                            <span class="match-badge match-ok">Matched</span>
+                          {:else if item.confidence === "fuzzy"}
+                            <span class="match-badge match-fuzzy">Fuzzy</span>
+                          {:else}
+                            <span class="match-badge match-unlinked">Unlinked</span>
+                          {/if}
+                        </td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          {/if}
+        </div>
+
+        <div class="modal-footer">
+          <button class="modal-cancel-btn" on:click={() => showSetlistModal = false}>Cancel</button>
+          <button class="modal-action-btn" disabled={resolvedSetlist.length === 0} on:click={applyImportedSetlist}>
+            🚀 Import & Load Setlist ({resolvedSetlist.length})
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Playlist Health & Asset Repair Modal -->
+  {#if showRepairModal}
+    <!-- svelte-ignore a11y-click-events-have-key-events -->
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div class="modal-backdrop" on:click={() => showRepairModal = false}>
+      <div class="inspector-modal repair-modal-card" on:click|stopPropagation>
+        <div class="modal-header">
+          <div class="modal-title-row">
+            <span class="modal-badge repair-badge">REPAIR</span>
+            <h3>Verify & Repair Playlist Assets</h3>
+            <span class="stage-subhead">Detect Missing Files and Upgrade Mix Versions</span>
+          </div>
+          <button class="modal-close-btn" on:click={() => showRepairModal = false}>×</button>
+        </div>
+
+        <div class="modal-body repair-modal-body">
+          <p class="prefs-section-hint">
+            Scans all items in the active playlist. When older mix files are deleted or replaced by newer takes (e.g. <code>_v2.m4a</code>), TrackHelm automatically discovers the best candidate and updates your playlist while preserving all your cue markers, regions, and notes.
+          </p>
+
+          {#if isScanningHealth}
+            <div class="repair-loading-state">
+              <span>⏳ Scanning playlist files and library folders...</span>
+            </div>
+          {:else if playlistHealth.length === 0}
+            <div class="repair-empty-state">Playlist is currently empty.</div>
+          {:else}
+            <div class="repair-items-list">
+              {#each playlistHealth as h}
+                <div class="repair-item-row" class:has-issue={!h.exists || h.isPlaceholder}>
+                  <div class="repair-item-left">
+                    <span class="repair-status-icon">
+                      {#if h.exists && !h.isPlaceholder}
+                        ✅
+                      {:else if h.suggestedReplacement}
+                        🪄
+                      {:else}
+                        ⚠️
+                      {/if}
+                    </span>
+                    <div class="repair-item-details">
+                      <span class="repair-track-name">{h.originalName}</span>
+                      <span class="repair-track-path" title={h.originalPath}>{h.originalPath}</span>
+                      {#if h.suggestedReplacement && (!h.exists || h.isPlaceholder)}
+                        <div class="repair-suggestion-box">
+                          <span class="suggest-label">Suggested Replacement / New Mix:</span>
+                          <span class="suggest-name">{h.suggestedReplacement.name}</span>
+                          <span class="suggest-conf">({h.replacementConfidence} confidence)</span>
+                        </div>
+                      {/if}
+                    </div>
+                  </div>
+                  <div class="repair-item-badge-wrap">
+                    {#if h.exists && !h.isPlaceholder}
+                      <span class="health-badge health-ok">Active</span>
+                    {:else if h.suggestedReplacement}
+                      <span class="health-badge health-upgrade">Upgrade Ready</span>
+                    {:else}
+                      <span class="health-badge health-missing">Missing Audio</span>
+                    {/if}
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        <div class="modal-footer">
+          <button class="modal-cancel-btn" on:click={() => showRepairModal = false}>Close</button>
+          <button 
+            class="modal-action-btn" 
+            disabled={!playlistHealth.some(h => h.suggestedReplacement && (!h.exists || h.isPlaceholder))} 
+            on:click={applyRepairs}
+          >
+            🪄 Apply All Repairs
+          </button>
         </div>
       </div>
     </div>
@@ -11608,5 +12161,371 @@
 
   :global(.md-table tr:hover) {
     background-color: rgba(100, 210, 255, 0.04);
+  }
+
+  /* Playlist Sidebar Enhancements (Unlinked / Singer Subheads / Toolbar) */
+  .playlist-item-sidebar.is-unlinked {
+    border-left: 2px solid #ff9500;
+    opacity: 0.85;
+  }
+
+  .playlist-item-text-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .playlist-item-title-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .unlinked-pill {
+    background: rgba(255, 149, 0, 0.2);
+    border: 1px solid #ff9500;
+    color: #ff9500;
+    font-size: 0.6rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    padding: 1px 4px;
+    border-radius: 3px;
+    letter-spacing: 0.03em;
+  }
+
+  .item-singer-subhead {
+    font-size: 0.68rem;
+    color: #a1a1aa;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .setlist-ai-btn {
+    background: linear-gradient(135deg, #2c1a4d, #1c1c28);
+    border-color: #bf5af2;
+    color: #e599f7;
+    font-weight: 700;
+  }
+
+  .setlist-ai-btn:hover {
+    background: linear-gradient(135deg, #442277, #282838);
+    color: #ffffff;
+    border-color: #d0bfff;
+  }
+
+  .repair-btn {
+    background: #242430;
+    border-color: #4a4a58;
+    color: #64d2ff;
+  }
+
+  .repair-btn:hover {
+    background: #343444;
+    color: #ffffff;
+  }
+
+  .missing-count-badge {
+    color: #ff453a;
+    font-weight: 800;
+  }
+
+  /* Setlist Importer Modal */
+  .setlist-modal-card {
+    width: 820px;
+    max-width: 95vw;
+    max-height: 90vh;
+  }
+
+  .ai-badge {
+    background: #bf5af2;
+    color: #ffffff;
+  }
+
+  .setlist-modal-body {
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    overflow-y: auto;
+  }
+
+  .setlist-input-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+  }
+
+  .mini-sample-btn {
+    background: #2a2a34;
+    border: 1px solid #3e3e4e;
+    color: #64d2ff;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.12s ease;
+  }
+
+  .mini-sample-btn:hover {
+    background: #383848;
+    color: #ffffff;
+  }
+
+  .setlist-csv-textarea {
+    width: 100%;
+    height: 110px;
+    box-sizing: border-box;
+    background: #141418;
+    border: 1px solid #33333d;
+    border-radius: 5px;
+    color: #e4e4e7;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Mono", monospace;
+    font-size: 0.76rem;
+    padding: 8px 10px;
+    resize: vertical;
+    outline: none;
+    transition: border-color 0.12s ease;
+  }
+
+  .setlist-csv-textarea:focus {
+    border-color: #bf5af2;
+    box-shadow: 0 0 0 1px rgba(191, 90, 242, 0.3);
+  }
+
+  .setlist-action-row {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 8px;
+  }
+
+  .resolve-btn {
+    background: #bf5af2;
+    color: #ffffff;
+    font-weight: 700;
+  }
+
+  .resolve-btn:hover:not(:disabled) {
+    background: #cf70fa;
+  }
+
+  .setlist-error-banner {
+    background: rgba(255, 69, 58, 0.15);
+    border: 1px solid #ff453a;
+    color: #ff453a;
+    padding: 8px 12px;
+    border-radius: 4px;
+    font-size: 0.78rem;
+  }
+
+  .setlist-table-scroll {
+    max-height: 280px;
+    overflow-y: auto;
+    border: 1px solid #2e2e38;
+    border-radius: 5px;
+    background: #15151a;
+  }
+
+  .setlist-preview-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.74rem;
+    text-align: left;
+  }
+
+  .setlist-preview-table th {
+    background: #202028;
+    color: #a1a1aa;
+    padding: 6px 10px;
+    font-weight: 700;
+    border-bottom: 1px solid #33333f;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+
+  .setlist-preview-table td {
+    padding: 6px 10px;
+    border-bottom: 1px solid #22222b;
+    color: #d1d1d6;
+  }
+
+  .setlist-preview-table tr.row-unlinked {
+    background: rgba(255, 149, 0, 0.04);
+  }
+
+  .file-match-cell {
+    max-width: 130px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Mono", monospace;
+    font-size: 0.7rem;
+    color: #64d2ff;
+  }
+
+  .match-badge {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+
+  .match-ok {
+    background: rgba(48, 209, 88, 0.2);
+    color: #30d158;
+    border: 1px solid #30d158;
+  }
+
+  .match-fuzzy {
+    background: rgba(255, 214, 10, 0.2);
+    color: #ffd60a;
+    border: 1px solid #ffd60a;
+  }
+
+  .match-unlinked {
+    background: rgba(255, 149, 0, 0.2);
+    color: #ff9500;
+    border: 1px solid #ff9500;
+  }
+
+  /* Playlist Repair Modal */
+  .repair-modal-card {
+    width: 680px;
+    max-width: 95vw;
+    max-height: 85vh;
+  }
+
+  .repair-badge {
+    background: #ff9500;
+    color: #ffffff;
+  }
+
+  .repair-modal-body {
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    overflow-y: auto;
+  }
+
+  .repair-items-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-height: 380px;
+    overflow-y: auto;
+  }
+
+  .repair-item-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: #191920;
+    border: 1px solid #2c2c36;
+    border-radius: 6px;
+  }
+
+  .repair-item-row.has-issue {
+    border-color: #ff9500;
+    background: #201a14;
+  }
+
+  .repair-item-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .repair-status-icon {
+    font-size: 1.1rem;
+  }
+
+  .repair-item-details {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .repair-track-name {
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: #f2f2f7;
+  }
+
+  .repair-track-path {
+    font-size: 0.68rem;
+    color: #8e8e93;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Mono", monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .repair-suggestion-box {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 4px;
+    padding: 3px 6px;
+    background: rgba(100, 210, 255, 0.1);
+    border: 1px solid rgba(100, 210, 255, 0.3);
+    border-radius: 4px;
+    font-size: 0.72rem;
+  }
+
+  .suggest-label {
+    color: #64d2ff;
+    font-weight: 600;
+  }
+
+  .suggest-name {
+    color: #ffffff;
+    font-weight: 700;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Mono", monospace;
+  }
+
+  .suggest-conf {
+    color: #a1a1aa;
+    font-size: 0.66rem;
+  }
+
+  .health-badge {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .health-ok {
+    background: rgba(48, 209, 88, 0.2);
+    color: #30d158;
+    border: 1px solid #30d158;
+  }
+
+  .health-upgrade {
+    background: rgba(100, 210, 255, 0.2);
+    color: #64d2ff;
+    border: 1px solid #64d2ff;
+  }
+
+  .health-missing {
+    background: rgba(255, 69, 58, 0.2);
+    color: #ff453a;
+    border: 1px solid #ff453a;
   }
 </style>

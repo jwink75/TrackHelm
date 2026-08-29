@@ -26,7 +26,15 @@ fn main() {
                         "open_file_external",
                         "read_audio_metadata",
                         "save_audio_metadata",
-                        "read_file_bytes"
+                        "read_file_bytes",
+                        "export_audio_file",
+                        "save_playlist_file",
+                        "load_playlist_file",
+                        "broadcast_remote_state",
+                        "list_midi_devices",
+                        "connect_midi_device",
+                        "scan_library_folder",
+                        "check_files_exist"
                     ])
             )
     ).expect("failed to run tauri-build");

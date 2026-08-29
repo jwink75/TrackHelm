@@ -29,6 +29,14 @@
     "allow-open-file-external",
     "allow-read-audio-metadata",
     "allow-save-audio-metadata",
-    "allow-read-file-bytes"
+    "allow-read-file-bytes",
+    "allow-export-audio-file",
+    "allow-save-playlist-file",
+    "allow-load-playlist-file",
+    "allow-broadcast-remote-state",
+    "allow-list-midi-devices",
+    "allow-connect-midi-device",
+    "allow-scan-library-folder",
+    "allow-check-files-exist"
   ]
 }

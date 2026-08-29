@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-broadcast-remote-state"
+description = "Enables the broadcast_remote_state command without any pre-configured scope."
+commands.allow = ["broadcast_remote_state"]
+
+[[permission]]
+identifier = "deny-broadcast-remote-state"
+description = "Denies the broadcast_remote_state command without any pre-configured scope."
+commands.deny = ["broadcast_remote_state"]

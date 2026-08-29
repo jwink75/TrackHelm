@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-save-playlist-file"
+description = "Enables the save_playlist_file command without any pre-configured scope."
+commands.allow = ["save_playlist_file"]
+
+[[permission]]
+identifier = "deny-save-playlist-file"
+description = "Denies the save_playlist_file command without any pre-configured scope."
+commands.deny = ["save_playlist_file"]

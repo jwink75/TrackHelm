@@ -9,6 +9,7 @@ use lofty::prelude::*;
 
 mod control;
 
+use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 
 #[derive(Clone, serde::Serialize)]
@@ -293,6 +294,103 @@ fn get_cloud_folders() -> Result<Vec<DirEntry>, String> {
     }
 
     Ok(folders)
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AssetFileInfo {
+    pub name: String,
+    pub path: String,
+    pub relative_path: String,
+    pub extension: String,
+    pub size_bytes: u64,
+    pub mtime_ms: u64,
+}
+
+#[tauri::command]
+fn scan_library_folder(folder_path: String, extensions: Option<Vec<String>>) -> Result<Vec<AssetFileInfo>, String> {
+    use std::path::PathBuf;
+    use std::time::UNIX_EPOCH;
+
+    let target = PathBuf::from(&folder_path);
+    if !target.exists() || !target.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let exts: Option<Vec<String>> = extensions.map(|list| {
+        list.iter()
+            .map(|e| e.to_lowercase().trim_start_matches('.').to_string())
+            .collect()
+    });
+
+    let mut results = Vec::new();
+    let mut stack = vec![(target.clone(), String::new())];
+
+    while let Some((dir, rel_prefix)) = stack.pop() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let file_name = entry.file_name().to_string_lossy().to_string();
+
+                if file_name.starts_with('.') {
+                    continue;
+                }
+
+                let rel_path = if rel_prefix.is_empty() {
+                    file_name.clone()
+                } else {
+                    format!("{}/{}", rel_prefix, file_name)
+                };
+
+                if path.is_dir() {
+                    stack.push((path, rel_path));
+                } else if path.is_file() {
+                    let ext = path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .map(|e| e.to_lowercase())
+                        .unwrap_or_default();
+
+                    let matches = match &exts {
+                        Some(allowed) => allowed.contains(&ext),
+                        None => true,
+                    };
+
+                    if matches {
+                        let metadata = entry.metadata().ok();
+                        let size_bytes = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+                        let mtime_ms = metadata
+                            .and_then(|m| m.modified().ok())
+                            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0);
+
+                        results.push(AssetFileInfo {
+                            name: file_name,
+                            path: path.to_string_lossy().to_string(),
+                            relative_path: rel_path,
+                            extension: ext,
+                            size_bytes,
+                            mtime_ms,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    results.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(results)
+}
+
+#[tauri::command]
+fn check_files_exist(paths: Vec<String>) -> Result<Vec<bool>, String> {
+    use std::path::Path;
+    let mut results = Vec::with_capacity(paths.len());
+    for p in paths {
+        let exists = Path::new(&p).exists();
+        results.push(exists);
+    }
+    Ok(results)
 }
 
 #[tauri::command]
@@ -1199,7 +1297,9 @@ fn main() {
             load_playlist_file,
             broadcast_remote_state,
             list_midi_devices,
-            connect_midi_device
+            connect_midi_device,
+            scan_library_folder,
+            check_files_exist
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

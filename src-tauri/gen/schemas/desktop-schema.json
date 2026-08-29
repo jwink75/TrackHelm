@@ -177,6 +177,30 @@
       "description": "Permission identifier",
       "oneOf": [
         {
+          "description": "Enables the broadcast_remote_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-broadcast-remote-state",
+          "markdownDescription": "Enables the broadcast_remote_state command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the check_files_exist command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-check-files-exist",
+          "markdownDescription": "Enables the check_files_exist command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the connect_midi_device command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-connect-midi-device",
+          "markdownDescription": "Enables the connect_midi_device command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the export_audio_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-export-audio-file",
+          "markdownDescription": "Enables the export_audio_file command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_cloud_folders command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-cloud-folders",
@@ -199,6 +223,18 @@
           "type": "string",
           "const": "allow-get-waveform-slice",
           "markdownDescription": "Enables the get_waveform_slice command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_midi_devices command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-midi-devices",
+          "markdownDescription": "Enables the list_midi_devices command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the load_playlist_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-load-playlist-file",
+          "markdownDescription": "Enables the load_playlist_file command without any pre-configured scope."
         },
         {
           "description": "Enables the load_track command without any pre-configured scope.",
@@ -253,6 +289,18 @@
           "type": "string",
           "const": "allow-save-audio-metadata",
           "markdownDescription": "Enables the save_audio_metadata command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_playlist_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-playlist-file",
+          "markdownDescription": "Enables the save_playlist_file command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the scan_library_folder command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-scan-library-folder",
+          "markdownDescription": "Enables the scan_library_folder command without any pre-configured scope."
         },
         {
           "description": "Enables the seek command without any pre-configured scope.",
@@ -315,6 +363,30 @@
           "markdownDescription": "Enables the stop command without any pre-configured scope."
         },
         {
+          "description": "Denies the broadcast_remote_state command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-broadcast-remote-state",
+          "markdownDescription": "Denies the broadcast_remote_state command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the check_files_exist command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-check-files-exist",
+          "markdownDescription": "Denies the check_files_exist command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the connect_midi_device command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-connect-midi-device",
+          "markdownDescription": "Denies the connect_midi_device command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the export_audio_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-export-audio-file",
+          "markdownDescription": "Denies the export_audio_file command without any pre-configured scope."
+        },
+        {
           "description": "Denies the get_cloud_folders command without any pre-configured scope.",
           "type": "string",
           "const": "deny-get-cloud-folders",
@@ -337,6 +409,18 @@
           "type": "string",
           "const": "deny-get-waveform-slice",
           "markdownDescription": "Denies the get_waveform_slice command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_midi_devices command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-midi-devices",
+          "markdownDescription": "Denies the list_midi_devices command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the load_playlist_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-load-playlist-file",
+          "markdownDescription": "Denies the load_playlist_file command without any pre-configured scope."
         },
         {
           "description": "Denies the load_track command without any pre-configured scope.",
@@ -391,6 +475,18 @@
           "type": "string",
           "const": "deny-save-audio-metadata",
           "markdownDescription": "Denies the save_audio_metadata command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_playlist_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-playlist-file",
+          "markdownDescription": "Denies the save_playlist_file command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the scan_library_folder command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-scan-library-folder",
+          "markdownDescription": "Denies the scan_library_folder command without any pre-configured scope."
         },
         {
           "description": "Denies the seek command without any pre-configured scope.",
