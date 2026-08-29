@@ -477,9 +477,18 @@
     return path;
   }
 
+  function isCoreEqNode(nodeId: string): boolean {
+    return nodeId === "node-1" || nodeId === "node-2" || nodeId === "node-3";
+  }
+
+  $: sortedEqNodes = [...eqNodes].sort((a, b) => a.freq - b.freq);
+
   // Kirchhoff Interactive EQ Node Dragging & Mousewheel State
   let isDraggingEqNode = false;
   let draggedEqNodeId: string | null = null;
+  let isDraggingEqWidth = false;
+  let draggedEqWidthNodeId: string | null = null;
+  let draggedEqWidthSide: "left" | "right" = "right";
   let eqSvgElement: SVGSVGElement | null = null;
 
   function handleEqNodeMousedown(e: MouseEvent, nodeId: string) {
@@ -487,6 +496,15 @@
     e.stopPropagation();
     isDraggingEqNode = true;
     draggedEqNodeId = nodeId;
+    selectedEqNodeId = nodeId;
+  }
+
+  function handleEqWidthHandleMousedown(e: MouseEvent, nodeId: string, side: "left" | "right") {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    isDraggingEqWidth = true;
+    draggedEqWidthNodeId = nodeId;
+    draggedEqWidthSide = side;
     selectedEqNodeId = nodeId;
   }
 
@@ -549,35 +567,56 @@
   }
 
   function handleEqSvgMousemove(e: MouseEvent) {
-    if (!isDraggingEqNode || !draggedEqNodeId || !eqSvgElement) return;
-    const node = eqNodes.find(n => n.id === draggedEqNodeId);
-    if (!node) return;
-
+    if (!eqSvgElement) return;
     const rect = eqSvgElement.getBoundingClientRect();
     const scaleX = 600 / rect.width;
     const scaleY = 240 / rect.height;
     const svgX = (e.clientX - rect.left) * scaleX;
     const svgY = (e.clientY - rect.top) * scaleY;
 
-    const clampedX = Math.max(20, Math.min(580, svgX));
-    const clampedY = Math.max(20, Math.min(220, svgY));
-
-    const normX = (clampedX - 20) / 560.0;
-    const freq = Math.round(Math.pow(10, 1.30103 + normX * 3.0));
-    node.freq = Math.max(20, Math.min(20000, freq));
-
-    if (node.filterType === 'Peaking' || node.filterType === 'LowShelf' || node.filterType === 'HighShelf') {
-      node.gainDb = parseFloat(Math.max(-24, Math.min(24, (120 - clampedY) / (100 / 24))).toFixed(1));
+    // Handle width / Q dragging
+    if (isDraggingEqWidth && draggedEqWidthNodeId) {
+      const node = eqNodes.find(n => n.id === draggedEqWidthNodeId);
+      if (!node) return;
+      const nx = 20 + ((Math.log10(Math.max(20, Math.min(20000, node.freq))) - 1.30103) / 3.0) * 560;
+      const dist = Math.abs(svgX - nx);
+      // Q is inversely proportional to bandwidth width: q = 60 / dist
+      const newQ = parseFloat(Math.max(0.1, Math.min(10.0, 60.0 / Math.max(6.0, dist))).toFixed(2));
+      node.q = newQ;
+      eqNodes = [...eqNodes];
+      updateEqEngine();
+      return;
     }
 
-    eqNodes = [...eqNodes];
-    updateEqEngine();
+    // Handle center node dragging (frequency & gain)
+    if (isDraggingEqNode && draggedEqNodeId) {
+      const node = eqNodes.find(n => n.id === draggedEqNodeId);
+      if (!node) return;
+
+      const clampedX = Math.max(20, Math.min(580, svgX));
+      const clampedY = Math.max(20, Math.min(220, svgY));
+
+      const normX = (clampedX - 20) / 560.0;
+      const freq = Math.round(Math.pow(10, 1.30103 + normX * 3.0));
+      node.freq = Math.max(20, Math.min(20000, freq));
+
+      if (node.filterType === 'Peaking' || node.filterType === 'LowShelf' || node.filterType === 'HighShelf') {
+        node.gainDb = parseFloat(Math.max(-24, Math.min(24, (120 - clampedY) / (100 / 24))).toFixed(1));
+      }
+
+      eqNodes = [...eqNodes];
+      updateEqEngine();
+    }
   }
 
   function handleEqSvgMouseup() {
     if (isDraggingEqNode) {
       isDraggingEqNode = false;
       draggedEqNodeId = null;
+    }
+    if (isDraggingEqWidth) {
+      isDraggingEqWidth = false;
+      draggedEqWidthNodeId = null;
     }
   }
 
@@ -6763,14 +6802,38 @@
                 {@const isSel = selectedEqNodeId === node.id}
                 {@const qWidth = Math.max(15, 60 / node.q)}
 
-                <!-- Selected Node Q Bandwidth Wings -->
+                <!-- Selected Node Q Bandwidth Wings & Interactive Grab Handles -->
                 {#if isSel}
                   <line x1={nx - qWidth} y1={ny} x2={nx + qWidth} y2={ny} stroke={node.color} stroke-width="2" stroke-dasharray="2 2" />
-                  <circle cx={nx - qWidth} cy={ny} r="3.5" fill={node.color} />
-                  <circle cx={nx + qWidth} cy={ny} r="3.5" fill={node.color} />
+                  <!-- svelte-ignore a11y-click-events-have-key-events -->
+                  <circle 
+                    cx={nx - qWidth} 
+                    cy={ny} 
+                    r="5.5" 
+                    fill={node.color} 
+                    stroke="#ffffff" 
+                    stroke-width="1.5" 
+                    class="eq-width-handle"
+                    style="cursor: ew-resize;"
+                    title="Drag horizontally to adjust bandwidth / Q"
+                    on:mousedown={(e) => handleEqWidthHandleMousedown(e, node.id, "left")}
+                  />
+                  <!-- svelte-ignore a11y-click-events-have-key-events -->
+                  <circle 
+                    cx={nx + qWidth} 
+                    cy={ny} 
+                    r="5.5" 
+                    fill={node.color} 
+                    stroke="#ffffff" 
+                    stroke-width="1.5" 
+                    class="eq-width-handle"
+                    style="cursor: ew-resize;"
+                    title="Drag horizontally to adjust bandwidth / Q"
+                    on:mousedown={(e) => handleEqWidthHandleMousedown(e, node.id, "right")}
+                  />
                 {/if}
 
-                <!-- Draggable Node Circle -->
+                <!-- Draggable Center Node Circle -->
                 <!-- svelte-ignore a11y-click-events-have-key-events -->
                 <circle 
                   cx={nx} 
@@ -6816,14 +6879,16 @@
           <!-- Bottom Parameter Deck for Selected Node -->
           {#if selEqNode}
             <div class="selected-eq-node-deck">
-              <!-- Node Tabs Selector -->
+              <!-- Node Tabs Selector (Sorted by frequency with core band visual distinction) -->
               <div class="eq-node-pills-row">
-                {#each eqNodes as node, idx}
+                {#each sortedEqNodes as node, idx}
                   <button 
                     class="eq-node-pill-btn" 
                     class:active={selectedEqNodeId === node.id}
+                    class:core-node-pill={isCoreEqNode(node.id)}
                     style="--node-color: {node.color};"
                     on:click={() => selectedEqNodeId = node.id}
+                    title={isCoreEqNode(node.id) ? "Primary Rack-Linked EQ Band (Permanent)" : "Custom Parametric EQ Band"}
                   >
                     <span class="pill-dot" style="background-color: {node.color};"></span>
                     <span>{idx + 1}. {node.name}</span>
@@ -6851,11 +6916,29 @@
                   </select>
                 </div>
 
-                <!-- Frequency (Logarithmically Mapped Slider) -->
+                <!-- Frequency (Direct Number Input & Logarithmic Slider) -->
                 <div class="eq-ctrl-group">
                   <div class="eq-label-val-row">
                     <label class="eq-ctrl-label" for="eq-freq-input">Frequency</label>
-                    <span class="eq-val-badge">{selEqNode.freq >= 1000 ? (selEqNode.freq / 1000).toFixed(2) + " kHz" : selEqNode.freq.toFixed(0) + " Hz"}</span>
+                    <div class="eq-number-input-wrapper">
+                      <input 
+                        type="number" 
+                        min="20" 
+                        max="20000" 
+                        step="1"
+                        value={Math.round(selEqNode.freq)}
+                        on:change={(e) => {
+                          const val = parseFloat(e.currentTarget.value);
+                          if (!isNaN(val)) {
+                            selEqNode.freq = Math.max(20, Math.min(20000, Math.round(val)));
+                            updateEqEngine();
+                          }
+                        }}
+                        class="eq-direct-num-input"
+                        title="Type exact frequency (20 - 20000 Hz)"
+                      />
+                      <span class="eq-unit-suffix">Hz</span>
+                    </div>
                   </div>
                   <input 
                     id="eq-freq-input"
@@ -6878,7 +6961,25 @@
                   <div class="eq-ctrl-group">
                     <div class="eq-label-val-row">
                       <label class="eq-ctrl-label" for="eq-gain-input">Gain</label>
-                      <span class="eq-val-badge">{selEqNode.gainDb > 0 ? "+" : ""}{selEqNode.gainDb.toFixed(1)} dB</span>
+                      <div class="eq-number-input-wrapper">
+                        <input 
+                          type="number" 
+                          min="-24.0" 
+                          max="24.0" 
+                          step="0.1"
+                          value={selEqNode.gainDb}
+                          on:change={(e) => {
+                            const val = parseFloat(e.currentTarget.value);
+                            if (!isNaN(val)) {
+                              selEqNode.gainDb = parseFloat(Math.max(-24.0, Math.min(24.0, val)).toFixed(1));
+                              updateEqEngine();
+                            }
+                          }}
+                          class="eq-direct-num-input"
+                          title="Type exact gain (-24 to +24 dB)"
+                        />
+                        <span class="eq-unit-suffix">dB</span>
+                      </div>
                     </div>
                     <input 
                       id="eq-gain-input"
@@ -6897,7 +6998,25 @@
                 <div class="eq-ctrl-group">
                   <div class="eq-label-val-row">
                     <label class="eq-ctrl-label" for="eq-q-input">Q (Bandwidth)</label>
-                    <span class="eq-val-badge">Q: {selEqNode.q.toFixed(2)}</span>
+                    <div class="eq-number-input-wrapper">
+                      <input 
+                        type="number" 
+                        min="0.1" 
+                        max="10.0" 
+                        step="0.05"
+                        value={selEqNode.q}
+                        on:change={(e) => {
+                          const val = parseFloat(e.currentTarget.value);
+                          if (!isNaN(val)) {
+                            selEqNode.q = parseFloat(Math.max(0.1, Math.min(10.0, val)).toFixed(2));
+                            updateEqEngine();
+                          }
+                        }}
+                        class="eq-direct-num-input"
+                        title="Type exact Q bandwidth factor (0.10 - 10.00)"
+                      />
+                      <span class="eq-unit-suffix">Q</span>
+                    </div>
                   </div>
                   <input 
                     id="eq-q-input"
@@ -6911,7 +7030,7 @@
                   />
                 </div>
 
-                <!-- Actions: Enable / Delete -->
+                <!-- Actions: Enable / Delete (Protected for Core Bands) -->
                 <div class="eq-ctrl-group actions-group">
                   <button 
                     class="eq-node-power-btn" 
@@ -6921,7 +7040,7 @@
                     {selEqNode.enabled ? "ACTIVE" : "MUTED"}
                   </button>
 
-                  {#if eqNodes.length > 1}
+                  {#if !isCoreEqNode(selEqNode.id)}
                     <button 
                       class="eq-delete-node-btn" 
                       on:click={() => {
@@ -6933,6 +7052,10 @@
                     >
                       Delete Band
                     </button>
+                  {:else}
+                    <span class="eq-core-band-badge" title="Primary rack-linked EQ bands cannot be deleted">
+                      🔒 Core Band
+                    </span>
                   {/if}
                 </div>
               </div>
@@ -10124,6 +10247,16 @@
     r: 9;
   }
 
+  .eq-width-handle {
+    cursor: ew-resize;
+    transition: r 0.12s ease, stroke-width 0.12s ease;
+  }
+
+  .eq-width-handle:hover {
+    r: 7;
+    stroke-width: 2.5;
+  }
+
   .eq-freq-ruler {
     display: flex;
     justify-content: space-between;
@@ -10167,6 +10300,18 @@
     transition: all 0.12s ease;
   }
 
+  .eq-node-pill-btn.core-node-pill {
+    border: 1.5px solid #8e8e93;
+    background-color: #232328;
+    color: #e4e4e7;
+  }
+
+  .eq-node-pill-btn.core-node-pill:hover {
+    border-color: #d1d1d6;
+    background-color: #2e2e36;
+    color: #ffffff;
+  }
+
   .eq-node-pill-btn:hover {
     background-color: #282830;
     color: #ffffff;
@@ -10177,6 +10322,12 @@
     border-color: var(--node-color);
     color: #ffffff;
     font-weight: 700;
+    box-shadow: 0 0 0 1px var(--node-color);
+  }
+
+  .eq-node-pill-btn.core-node-pill.active {
+    border-color: var(--node-color);
+    box-shadow: 0 0 0 1.5px #8e8e93, 0 0 8px rgba(255, 255, 255, 0.15);
   }
 
   .pill-dot {
@@ -10220,17 +10371,67 @@
     align-items: center;
   }
 
-  .eq-val-badge {
-    font-size: 0.65rem;
-    font-family: monospace;
+  .eq-number-input-wrapper {
+    display: inline-flex;
+    align-items: center;
+    background-color: #161619;
+    border: 1px solid #383842;
+    border-radius: 4px;
+    padding: 1px 5px;
+    gap: 3px;
+    transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  }
+
+  .eq-number-input-wrapper:focus-within {
+    border-color: #64d2ff;
+    box-shadow: 0 0 0 1px rgba(100, 210, 255, 0.35);
+  }
+
+  .eq-direct-num-input {
+    background: transparent;
+    border: none;
+    outline: none;
     color: #64d2ff;
+    font-size: 0.68rem;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Mono", monospace;
     font-weight: 700;
+    width: 48px;
+    text-align: right;
+    padding: 0;
+    -moz-appearance: textfield;
+  }
+
+  .eq-direct-num-input::-webkit-outer-spin-button,
+  .eq-direct-num-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  .eq-unit-suffix {
+    font-size: 0.62rem;
+    font-weight: 600;
+    color: #8e8e96;
   }
 
   .actions-group {
     display: flex;
     flex-direction: row;
+    align-items: center;
     gap: 6px;
+  }
+
+  .eq-core-band-badge {
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: #8e8e96;
+    padding: 5px 8px;
+    background-color: rgba(255, 255, 255, 0.04);
+    border: 1px solid #383842;
+    border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
   }
 
   .eq-node-power-btn {
