@@ -18,6 +18,7 @@ fn main() {
                         "set_compressor",
                         "set_dual_compressor",
                         "set_regions",
+                        "set_volume_envelope",
                         "get_playback_status",
                         "read_dir",
                         "get_waveform_slice",
@@ -34,8 +35,12 @@ fn main() {
                         "list_midi_devices",
                         "connect_midi_device",
                         "scan_library_folder",
-                        "check_files_exist"
+                        "check_files_exist",
+                        "is_file_downloaded",
+                        "move_file_to_trash",
+                        "run_uvr_separation"
                     ])
+
             )
     ).expect("failed to run tauri-build");
 }

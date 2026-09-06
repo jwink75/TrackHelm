@@ -2,7 +2,7 @@
 
 **TrackHelm** is a high-performance music rehearsal, transcription, and playback workstation built for musicians, musical directors, sound designers, and audio engineers. 
 
-It combines real-time DSP pitch/time manipulation, instant deep-zoom waveform visualization, persistent per-song rehearsal profiles, dynamic multi-PDF sheet music & take tracking, interactive parametric EQ & dual-stage compression consoles, offline audio export, and low-latency native CoreAudio playback with comprehensive Stream Deck / MIDI / OSC show control integration.
+It combines real-time DSP pitch/time manipulation, instant deep-zoom waveform visualization, persistent per-song rehearsal profiles, dynamic multi-PDF sheet music & take tracking, interactive parametric EQ & dual-stage compression consoles, offline audio export, bi-directional song collections with live A/B compare, local AI stem separation (UVR), and low-latency native CoreAudio playback with comprehensive Stream Deck / MIDI / OSC show control and MCP integration.
 
 ---
 
@@ -14,7 +14,7 @@ It combines real-time DSP pitch/time manipulation, instant deep-zoom waveform vi
   * Dual independent compressor stages (`Stage 1` & `Stage 2`) switchable between **Series** and **Parallel** routing with wet/dry blend.
   * 4 analog & digital character models: **Vintage** (Tube), **Modern** (Clean VCA), **FET** (Ultra-Fast), and **Opto** (Smooth Optical).
   * Exact analytical soft-knee transfer function curve with **animated live signal tracing dot**, dual stereo input/output peak meters, vertical threshold/makeup sliders, and fast-decay gain reduction (GR) meter.
-* **Kirchhoff & AnyTune-Inspired Parametric Equalizer Console**:
+* **Precision Parametric Equalizer Console**:
   * Multi-filter cascaded biquad engine: **Parametric Bell (Peaking)**, **Low Shelf**, **High Shelf**, **Low Pass (High Cut)**, **High Pass (Low Cut)**, and **Notch (Band Stop)**.
   * Continuous logarithmic frequency spectrum graph ($20\text{ Hz} - 20\text{ kHz}$) with real-time 64-band animated Real-Time Analyzer (RTA) frequency spectrum and dynamic cumulative analytical EQ response curve.
   * **Interactive Node Dragging**: Click and drag filter nodes directly on the graph (horizontal for logarithmic frequency, vertical for gain $\pm 24\text{ dB}$).
@@ -27,104 +27,137 @@ It combines real-time DSP pitch/time manipulation, instant deep-zoom waveform vi
 
 ---
 
-### 🕹️ Stream Deck, MIDI & OSC Show Control (Milestone 8)
-* **Elgato Stream Deck Plugin (`com.trackhelm.controller.sdPlugin`)**:
-  * Pre-built 15-key and 32-key show control profiles with custom high-contrast retina LCD icons.
-  * **Real-Time Dynamic LCD Readouts**:
-    * **Song Info Display**: Active track name and live elapsed time (`MySong.wav\n01:24.50`).
-    * **Current Landmark Display**: Active marker name and cue timestamp (`⚐ Verse 1\n00:34.20`).
-    * **Pitch Up / Down**: Action and active semitones (`+1 Semi\n+2.0 st`).
-    * **Volume Up / Down**: Action and calibrated dB gain (`+1 dB\n-3.0 dB`).
-    * **Speed Up / Down**: Action and active tempo multiplier (`+5% Spd\n1.15x`).
-    * **Play / Pause**: Real-time state indicator and time (`▶ Play\n01:24.50`).
-    * **Rewind & Playlist Nav**: Current position and track counts (`Next ⏭\nTrk 2/8`).
-  * **Direct One-Click Installer**: Dedicated `Build Stream Deck Plugin.app` packages and installs the plugin directly into Stream Deck's application directory.
-* **WebSocket Control Server (`ws://0.0.0.0:4545`)**: Fast, non-terminating lag-tolerant two-way WebSocket broadcast server for custom remote apps and hardware controllers.
-* **OSC Integration (`/trackhelm/*`)**: UDP-based Open Sound Control endpoints for QLab, Bitfocus Companion, and digital mixing consoles.
-* **Hardware MIDI Integration (`midir`)**: Real-time MIDI hardware support with CC 7 Volume, CC 1 Speed modulation, and Note-on transport triggers.
+### 🔄 Bi-Directional Song Collections & Live A/B Compare
+* **Peer-to-Peer Song Bundles**:
+  * File associations are true bi-directional peers: if `Song.m4a` is associated with `Original.mp3` and `Chart.pdf`, opening `Original.mp3` directly from the File Browser automatically loads all sibling tracks, charts, and rehearsal markers.
+  * Automatic collection discovery scans profiles on load to resolve the default track and synchronize stems across all members.
+* **Live Synchronized A/B Compare (`⇄ A/B` & Hotkey `T`)**:
+  * Audition stems, alternate takes, or reference mixes against the primary master mix on-the-fly.
+  * Preserves exact playhead time and active playback seamlessly without interrupting audio or resetting playhead to 0:00.
+  * Illuminated transport bar toggle button and instant hotkey `T`.
 
 ---
 
-### 💾 High-Fidelity Audio Export Engine (Milestone 9)
+### 📁 Streamlined Files Hub & Local AI Stem Separation (UVR)
+* **Space-Efficient Single-Line Table (`FILES` Tab)**:
+  * Compact horizontal rows (~32px height) displaying 10–12+ files without scrolling.
+  * Role and format badges: `[DEFAULT]`, `[ORIGINAL]`, `[VOCALS]`, `[LEAD]`, `[BACKINGS]`, `[FULL-RES]`, `M4A`, `MP3`, `WAV`, `PDF`.
+  * **Active Track Always Visible**: Highlights currently loaded file with a glowing `● ACTIVE` badge and `✓ Loaded` button state.
+* **Local Headless Stem Separation**:
+  * **4-Model Ensemble Vocal Isolation**: Blends Kim Vocal 2, MDX23C-InstVoc HQ, UVR-MDX-NET-Voc_FT, and Demucs v4 via `uvr_max_spec` to isolate master vocals.
+  * **5HP Karaoke Lead vs. Backing Split**: Splits isolated vocals into discrete Lead Vocals and Backing Harmonies stems.
+  * **Direct Active Track Triggering**: Run `✨ Isolate Vocals` directly on whatever track is loaded (e.g. original artist reference track) without switching files.
+  * Renders high-quality AAC `.m4a` directly into the song's `Vocals Only/` subfolder with real-time inline progress meter.
+* **Safe macOS Trash Integration**:
+  * Move unwanted stems or charts to macOS Finder Trash (`🗑️`) with confirmation modals, preserving native "Put Back" capability.
+
+---
+
+### ⚡ Smooth Type-to-Jump / Typeahead Engine
+* **Instant Keyboard Navigation**:
+  * Start typing in the File Browser or Playlist to jump and smoothly scroll to the matching song or folder.
+  * **Immediate Character Refinement**: Typing `B` jumps immediately to the first "B" song; typing `E` within the 750ms typing window immediately jumps to the first `BE...` song (never jumping away to "E").
+  * **Same-Character Cycling**: Repeatedly pressing the same letter (e.g. `B` ... `B` ... `B`) cycles through all tracks starting with that letter.
+  * **Smart Track Number & Article Stripping**: Ignores leading track numbers (e.g. `01 - `, `02. `, `1-01 `) and `The `, so typing `B` matches `01 Beat It.mp3` or `The Beatles`.
+  * **Floating Visual Badge**: Discreet `🔤 Jump: [query]` indicator displays current buffer and fades out after rest period.
+  * **Context-Aware Hotkey Protection**: DAW hotkeys (`M`, `R`, `X`, `L`, `T`) are preserved when working on the waveform, while routing to search queries when typing in the sidebar.
+
+---
+
+### 📋 Setlist AI CSV Importer & Playlist Health Repair
+* **AI Setlist CSV Importer (`🪄 Setlist...`)**:
+  * Import setlists directly from CSV tables, spreadsheets, or clipboard text.
+  * Fuzzy matching automatically maps song titles and artists to local audio library files.
+* **Playlist Health & Upgraded Mix Repair (`🔄 Repair`)**:
+  * Detects missing audio files or cloud placeholders (`⚠️ Missing Audio`).
+  * Suggests upgraded lossless or replacement mixes with confidence scoring.
+  * Migrates markers, regions, and rehearsal notes to newly relinked files.
+* **Playlist Formats**: Save and load `.thset` (native TrackHelm setlist), `.m3u8`, `.m3u`, and `.json`.
+
+---
+
+### ⚙️ Preferences & Library Management (`Cmd+,`)
+* **Default Directory Designations**: Configure dedicated library folders for AAC/Standard audio, Hi-Res Lossless masters, Original Artist recordings, and PDF Sheet Music.
+* **Prefer High-Res Audio Toggle**: When enabled, automatically loads the lossless audio file as main track if downloaded locally on your Mac.
+* **Cloud Placeholder Detection**: Accurately detects online-only dataless cloud files on APFS / iCloud / Dropbox / OneDrive.
+
+---
+
+### 🕹️ Stream Deck, MIDI, OSC & MCP Show Control
+* **Elgato Stream Deck Plugin (`com.trackhelm.controller.sdPlugin`)**:
+  * Pre-built 15-key and 32-key show control profiles with custom high-contrast retina LCD icons.
+  * Real-time dynamic LCD readouts: Track Name, Elapsed Time, Landmark Marker Cues, Pitch Transposition, Volume dB, Speed Multiplier, and Play/Pause State.
+  * Automated installation via `npm run build:streamdeck`.
+* **WebSocket Control Server (`ws://0.0.0.0:4545`)**: Fast, non-terminating lag-tolerant two-way WebSocket broadcast server for custom remote apps and hardware controllers.
+* **OSC Integration (`/trackhelm/*`)**: UDP-based Open Sound Control endpoints for QLab, Bitfocus Companion, and digital mixing consoles.
+* **Hardware MIDI Integration (`midir`)**: Real-time MIDI hardware support with CC 7 Volume, CC 1 Speed modulation, and Note-on transport triggers.
+* **Model Context Protocol (MCP) Server**: Integrated MCP server allowing AI coding assistants and agents to inspect playback state, set markers, and trigger transport controls.
+
+---
+
+### 💾 High-Fidelity Audio Export Engine
 * **Non-Destructive Offline DSP Render (`Cmd+Shift+E`)**:
   * Offline multi-threaded audio renderer baking all active DSP parameters into pristine audio files.
-  * **Configurable Export Options**:
-    * Range Selection: Full Song, Active Time Selection, or Selected Region.
-    * Bit Depth Formats: 16-bit WAV (CD Standard), 24-bit WAV (Studio Master), or 32-bit Float WAV.
-    * Optional DSP Bakes: Speed / Tempo multiplier, Pitch transposition semitones, EQ cascade, and Dual-Stage Compressor.
-    * Region Cut Bakes: Automatically removes cut spans with smooth equal-power crossfading.
-    * Metadata Tag Copying: Preserves ID3v2 / Vorbis tags and cover art in rendered output.
+  * Configurable ranges: Full Song, Active Time Selection, or Selected Region.
+  * Formats: 16-bit WAV (CD Standard), 24-bit WAV (Studio Master), or 32-bit Float WAV.
+  * Bakes pitch, speed, EQ cascade, compression stages, and smooth splice crossfades.
+  * Preserves full ID3v2 / Vorbis metadata tags and album artwork.
 
 ---
 
 ### 📝 Rehearsal Deck: Dynamic Multi-PDFs & Markdown Notes/Lyrics
-* **Rehearsal Files Hub (`FILES` Tab)**: Central manager for all associated sheet music, chord charts, alternate takes, guide tracks, and stems with one-click opening and loading.
 * **Dynamic Multi-PDF Tabs**: Opening associated PDFs automatically spawns dedicated dynamic tabs (e.g. `📄 Chart.pdf ×`) with independent page scroll tracking, close buttons, and **Negative Invert** dark mode for stage readability.
 * **Obsidian-Style Markdown Notes & Lyrics**: Rich formatting for song notes, arrangement guides, and lyrics with Edit, Preview, and Side-by-Side Split view modes.
 * **Automatic Rehearsal Chord Badge Parsing**: Parses chords (e.g. `[Am7]`, `[G/B]`, `[Cadd9]`) into glowing high-contrast badges optimized for live performance reading.
+* **Audio Tag Metadata Inspector**: View and edit ID3v1/v2, Vorbis, MP4/M4A, and FLAC tags in-place via Lofty.
 
 ---
 
 ### ⚡ Instant Loading & Deep Waveform Visualization
-* **Zero-Delay Playback Readiness ($< 1\text{ms}$)**: Single-click background pre-decoding (`preload_track`) and SIMD/NEON compiler optimizations (`opt-level = 3`) ensure songs start playing instantaneously.
+* **Zero-Delay Playback Readiness ($< 1\text{ms}$)**: Single-click background pre-decoding (`preload_track`) and SIMD/NEON compiler optimizations (`opt-level = 3`).
 * **Continuous Unbroken Oscillating Waveform**: Single-sample continuous line rendering at all zoom levels, eliminating sawtooth min/max ramp gaps.
 * **Progressive Sample Node Squares (RX Style)**: Visualizes individual audio sample points with adaptive bordered node boxes when zoomed in ($\le 400$ samples down to 9 samples).
 * **Dotted Compressor Threshold Overlay**: Yellow dotted boundary lines mark threshold level on the waveform as it is brought down below $0\text{ dB}$.
-* **Ghost Uncompressed vs. Compressed Waveform**: Visualizes original waveform as a translucent white ghost while rendering the compressed waveform in full vibrant theme color.
-* **Dual-View Waveform System**: Resizable zoomed main waveform display with synchronized overview scrubber bars for both Main and Alternate audio tracks.
-* **Smart Centered Playhead**: Locks playhead to the center when zoomed in for continuous tracking; smoothly sweeps edge-to-edge when zoomed out.
+* **Dual-View Waveform System**: Resizable zoomed main waveform display with synchronized overview scrubber bars.
 
 ---
 
 ### 📍 Rehearsal Markers & Timeline Regions
 * **Interactive Color Palette**: Assign and cycle through vibrant rehearsal colors (🟠 Amber, 🔵 Cyan, 🟢 Green, 🟣 Purple, 🔴 Red, 🟡 Yellow).
-* **Multi-Marker Selection**: Hold `Shift` while clicking markers in the sidebar or along the top ruler to select pairs.
-* **Selection Edge Grab Handles**: Shift-drag to create selection spans; grab left or right edges ($\pm 8\text{px}$) to adjust boundaries before committing.
 * **Interactive Timeline Regions**:
   * **Loop / Vamp Mode 🔁 (`L`)**: Green highlighted span with boundary brackets; native audio engine seamlessly cycles playback back to start.
   * **Cut / Skip Mode ✕ (`X`)**: Grayed-out hazard hatch overlay; native engine automatically jumps over cut spans during playback with zero gap or silence latency.
   * **Splice Crossfade Control**: Direct click-to-edit crossfade badge (`✕ 5ms`) adjusts splice transition smoothing ($0 - 100\text{ ms}$).
   * **Region Edge Dragging**: Post-commit draggable handles adjust region boundaries in real-time.
   * **Inline Renaming**: Double-click any marker or region in the sidebar, click `✏️`, or right-click to rename.
-* **Decoupled Keyboard & Remote Navigation**: Arrow keys highlight items in the playlist without interrupting playback; `Return`/`Enter` or Rewind triggers file loading.
-
----
-
-### 📂 Per-Track Persistent Project Profiles (AnyTune Style)
-* **Automatic State Preservation**: Every song maintains an independent persistent profile (`TrackProfile`):
-  * Speed & Pitch knob settings (including Fine Tune $\pm 100\text{ ct}$)
-  * Volume & Master Gain (`dbVolume`)
-  * EQ cascade bands (Peaking/Shelves/Filters) and Dual Compressor parameters
-  * Bypass flags (`isEqBypassed`, `isCompressorBypassed`)
-  * Markers and Regions (timestamps, names, colors, loop/cut modes, crossfades)
-  * Associated files list, dynamic PDF tabs, and notes/lyrics markdown text with view modes
-* Hot-swappable Main and Alternate audio track modes.
 
 ---
 
 ## ⌨️ Keyboard Shortcuts
 
-| Shortcut | Action |
-| :--- | :--- |
-| **`Space`** | Play / Pause toggle |
-| **`Return` / `Enter`** | Load & Play highlighted track (or Rewind to 0:00 if playing) |
-| **`ArrowUp` / `ArrowDown`** | Navigate Playlist / Browser tracks (without auto-loading) |
-| **`ArrowLeft`** | Jump to Previous Marker (or rewind to 0:00) |
-| **`ArrowRight`** | Jump to Next Marker |
-| **`M`** | Drop a new Marker at current playhead position |
-| **`R`** | Create a Region from active selection or selected markers |
-| **`L`** | Create / Toggle **Loop / Vamp Mode 🔁** for selection or selected region |
-| **`X`** | Create / Toggle **Cut / Skip Mode ✕** for selection or selected region |
-| **`Cmd + Shift + E`** | Open Offline Audio Export dialog |
-| **`Cmd + Shift + R`** | Open Remote Show Control & MIDI settings |
-| **`Cmd + Q`** | Quit TrackHelm |
-| **`Shift + Drag`** | Create interactive time selection on waveform |
-| **`Shift + Click` (Markers)** | Select two markers to form a time selection span |
-| **`Drag Edge Handles`** | Resize time selection or region boundaries |
-| **`Double Click` (EQ Canvas)** | Add a new EQ filter band at clicked frequency and gain |
-| **`Mouse Wheel` (EQ Node)** | Adjust EQ filter band $Q$ / bandwidth |
-| **`Double Click` (Knob / Slider)** | Reset parameter to default unity / zero |
-| **`Double Click` (Marker / Region)** | Inline rename marker or region |
+| Shortcut | Context | Action |
+| :--- | :--- | :--- |
+| **`Space`** | Global | Play / Pause toggle for active audio track |
+| **`Return` / `Enter`** | Global | Load & Play highlighted track (or Stop & Rewind to 0:00) |
+| **`ArrowUp` / `ArrowDown`** | Sidebar | Navigate Playlist / Browser tracks |
+| **`Alt + ArrowUp` / `Down`** | Playlist | Reorder highlighted song up/down in playlist |
+| **`ArrowLeft` / `ArrowRight`**| Global | Jump to Previous / Next Marker |
+| **`T`** | Global | Toggle **⇄ A/B Compare** (Audition Stem vs Default Mix) |
+| **`M`** | Waveform | Drop a new Marker at current playhead position |
+| **`R`** | Waveform | Create a Region from active selection or selected markers |
+| **`L`** | Waveform | Create / Toggle **Loop / Vamp Mode 🔁** |
+| **`X`** | Waveform | Create / Toggle **Cut / Skip Mode ✕** |
+| **`Type Alphanumeric`** | Sidebar | **Type-to-Jump**: Immediately jump to song matching prefix |
+| **`Cmd + Shift + E`** | Global | Open Offline Audio Export dialog |
+| **`Cmd + Shift + R`** | Global | Open Remote Show Control & MIDI settings |
+| **`Cmd + ,`** | Global | Open Preferences dialog |
+| **`Cmd + Q`** | Global | Quit TrackHelm |
+| **`Shift + Drag`** | Waveform | Create interactive time selection span |
+| **`Shift + Click`** | Markers | Select two markers to form a time selection span |
+| **`Double Click` (EQ)** | EQ Graph | Add a new EQ filter band at clicked frequency and gain |
+| **`Mouse Wheel` (EQ Node)**| EQ Graph | Adjust EQ filter band $Q$ / bandwidth |
+| **`Double Click` (Knob)** | Controls | Reset parameter to default unity / zero |
+| **`Escape`** | Global | Cancel typeahead, close menus, stop all tracks |
 
 ---
 
@@ -138,6 +171,7 @@ graph TD
     Engine <-->|Native C++ FFI| Stretch[Signalsmith Stretch DSP]
     Core <-->|WebSocket ws://:4545| StreamDeck[Elgato Stream Deck Plugin]
     Core <-->|OSC UDP / MIDI midir| ShowControl[QLab / Companion / MIDI]
+    Core <-->|Async Subprocess| UVR[UVR Python Stem Worker]
     Core <-->|Symphonia + MediaStream| Decoder[Decoder Pipeline]
     Core <-->|In-Memory Arc Cache| TrackCache[Track Cache]
     UI <-->|JSON Storage| Storage[(Local State / TrackProfile)]
@@ -152,14 +186,15 @@ graph TD
   * Cascaded RBJ 64-bit Biquad Filters (Peaking, Shelves, High/Low Pass, Notch)
   * Dual-Stage Feedforward Soft-Knee Compressor (Vintage, Modern, FET, Opto)
 * **Decoders & Tags**: Symphonia with $128\text{KB}$ streaming buffers + Lofty ID3v2/Vorbis tag engine
-* **External Control**: Custom Elgato Stream Deck Plugin + `tokio-tungstenite` WebSocket server + `midir` + `rosc`
+* **AI Stems**: Ultimate Vocal Remover models via headless Python runner (`audio-separator`) + native AAC encoding
+* **External Control**: Custom Elgato Stream Deck Plugin + `tokio-tungstenite` WebSocket server + `midir` + `rosc` + MCP Server
 
 ---
 
 ## Getting Started
 
 ### Prerequisites
-* macOS with Apple Silicon or Intel CPU
+* macOS with Apple Silicon or Intel CPU (Windows support in progress)
 * [Rust](https://rustup.rs/) (edition 2021+)
 * [Node.js](https://nodejs.org/) (v18+)
 
@@ -178,7 +213,6 @@ make dev
 ```
 
 ### Building the Stream Deck Plugin
-Double-click **`Build Stream Deck Plugin.app`** in the repository root, or run:
 ```bash
 npm run build:streamdeck
 ```
@@ -187,10 +221,11 @@ npm run build:streamdeck
 ```bash
 make app
 ```
-The compiled `TrackHelm.app` will be created in the workspace root and can be dragged directly to `/Applications` or the macOS Dock.
+The compiled `TrackHelm.app` will be created in `build/TrackHelm.app` and can be dragged directly to `/Applications` or the macOS Dock.
 
 ---
 
 ## Documentation
 * [Project Bible](Project%20Bible.md) — Comprehensive technical design document, architecture decisions (ADRs), and feature specifications.
+* [Windows Implementation Guide](TrackHelm%20Windows%20Implementation.md) — Architectural roadmap and step-by-step instructions for porting and building TrackHelm on Windows.
 * [Agent Rules](GEMINI.md) — Workspace coding guidelines and paired programming rules.

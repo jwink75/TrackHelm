@@ -686,6 +686,19 @@ fn set_regions(state: State<'_, AppState>, regions: Vec<trackhelm_engine::comman
 }
 
 #[tauri::command]
+fn set_volume_envelope(
+    state: State<'_, AppState>,
+    nodes: Vec<trackhelm_engine::EnvelopeNode>,
+) -> Result<(), String> {
+    let mut fixed_nodes = [trackhelm_engine::EnvelopeNode::default(); trackhelm_engine::MAX_ENVELOPE_NODES];
+    let count = std::cmp::min(nodes.len(), trackhelm_engine::MAX_ENVELOPE_NODES);
+    for (i, node) in nodes.iter().take(count).enumerate() {
+        fixed_nodes[i] = *node;
+    }
+    state.command_bus.send(Command::SetVolumeEnvelope(fixed_nodes, count))
+}
+
+#[tauri::command]
 fn get_playback_status(state: State<'_, AppState>) -> PlaybackStatus {
     let is_playing = state.shared_engine_state.is_playing.load(std::sync::atomic::Ordering::SeqCst);
     let current_frame = state.shared_engine_state.current_frame.load(std::sync::atomic::Ordering::SeqCst);
@@ -935,12 +948,16 @@ pub struct ExportAudioRequest {
     pub bake_eq: bool,
     pub bake_compressor: bool,
     pub bake_cuts: bool,
+    #[serde(default)]
+    pub bake_envelope: bool,
     pub eq_bands: Vec<trackhelm_engine::command::EqBand>,
     pub comp_stage1: trackhelm_engine::dsp::CompStageParams,
     pub comp_stage2: trackhelm_engine::dsp::CompStageParams,
     pub comp_routing: trackhelm_engine::dsp::CompRouting,
     pub comp_parallel_blend: f32,
     pub regions: Vec<trackhelm_engine::command::EngineRegion>,
+    #[serde(default)]
+    pub envelope_nodes: Vec<trackhelm_engine::EnvelopeNode>,
     pub copy_metadata: bool,
 }
 
@@ -989,12 +1006,14 @@ async fn export_audio_file(
         bake_eq: request.bake_eq,
         bake_compressor: request.bake_compressor,
         bake_cuts: request.bake_cuts,
+        bake_envelope: request.bake_envelope,
         eq_bands: request.eq_bands,
         comp_stage1: request.comp_stage1,
         comp_stage2: request.comp_stage2,
         comp_routing: request.comp_routing,
         comp_parallel_blend: request.comp_parallel_blend,
         regions: request.regions,
+        envelope_nodes: request.envelope_nodes,
     };
 
     // 2. Run offline DSP render & encoding on blocking thread
@@ -1133,6 +1152,256 @@ fn list_midi_devices(state: State<'_, AppState>) -> Vec<String> {
 fn connect_midi_device(device_name: String, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<String, String> {
     state.midi_manager.connect_port(app, &device_name)
 }
+
+#[derive(Clone, Serialize, Deserialize)]
+struct GeneratedStemItem {
+    name: String,
+    path: String,
+    role: String,
+    #[serde(rename = "fileType")]
+    file_type: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct UvrSeparationResult {
+    success: bool,
+    files: Vec<GeneratedStemItem>,
+    error: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct UvrProgressEvent {
+    percent: u32,
+    stage: String,
+}
+
+#[tauri::command]
+fn is_file_downloaded(path: String) -> bool {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return false;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::darwin::fs::MetadataExt as DarwinMetadataExt;
+        use std::os::unix::fs::MetadataExt as UnixMetadataExt;
+        if let Ok(meta) = p.metadata() {
+            let flags = DarwinMetadataExt::st_flags(&meta);
+            // UF_DATALESS = 0x40000000 indicates an online-only cloud placeholder on APFS / FileProvider
+            const UF_DATALESS: u32 = 0x4000_0000;
+            if (flags & UF_DATALESS) != 0 {
+                return false;
+            }
+            // If file is non-empty but has 0 blocks allocated, it is not downloaded
+            if meta.len() > 0 && UnixMetadataExt::blocks(&meta) == 0 {
+                return false;
+            }
+            return true;
+        }
+        false
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        p.exists()
+    }
+}
+
+#[tauri::command]
+fn move_file_to_trash(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(format!("File does not exist: {}", path));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let escaped = path.replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!(r#"tell application "Finder" to delete POSIX file "{}""#, escaped);
+        let output = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(&script)
+            .output()
+            .map_err(|e| format!("Failed to execute osascript: {}", e))?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        // Fallback: Move to ~/.Trash directly
+        if let Some(home) = dirs::home_dir() {
+            if let Some(file_name) = p.file_name() {
+                let trash_dest = home.join(".Trash").join(file_name);
+                if let Ok(_) = std::fs::rename(p, &trash_dest) {
+                    return Ok(());
+                }
+            }
+        }
+
+        let err_msg = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Trash error: {}", err_msg));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        std::fs::remove_file(p).map_err(|e| format!("Failed to delete file: {}", e))
+    }
+}
+
+#[tauri::command]
+async fn run_uvr_separation(
+    track_path: String,
+    mode: String,
+    output_dir: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<UvrSeparationResult, String> {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command as StdCommand, Stdio};
+
+    let (script_path, python_path, project_dir) = {
+        let mut candidate_roots = Vec::new();
+
+        // 1. Current working directory and its parent
+        if let Ok(cwd) = std::env::current_dir() {
+            candidate_roots.push(cwd.clone());
+            if let Some(p) = cwd.parent() {
+                candidate_roots.push(p.to_path_buf());
+            }
+        }
+
+        // 2. Known project directory
+        candidate_roots.push(std::path::PathBuf::from("/Users/winkler/Library/CloudStorage/Dropbox-Personal/Programming/TrackHelm"));
+
+        // 3. Current executable ancestors
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(exe_dir) = exe.parent() {
+                candidate_roots.push(exe_dir.to_path_buf());
+                if let Some(p1) = exe_dir.parent() {
+                    candidate_roots.push(p1.to_path_buf());
+                    if let Some(p2) = p1.parent() {
+                        candidate_roots.push(p2.to_path_buf());
+                        if let Some(p3) = p2.parent() {
+                            candidate_roots.push(p3.to_path_buf());
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut found_script = None;
+        let mut found_project = None;
+        for root in &candidate_roots {
+            let candidate = root.join("scripts/uvr_separator.py");
+            if candidate.exists() {
+                found_script = Some(candidate);
+                found_project = Some(root.clone());
+                break;
+            }
+        }
+
+        let script = found_script.ok_or_else(|| {
+            "Separation worker script not found in TrackHelm project directory".to_string()
+        })?;
+        let proj = found_project.unwrap_or_else(|| {
+            script.parent().and_then(|p| p.parent()).map(|p| p.to_path_buf()).unwrap_or_else(|| std::path::PathBuf::from("."))
+        });
+
+        let mut found_py = None;
+        for root in &[&proj, &std::path::PathBuf::from("/Users/winkler/Library/CloudStorage/Dropbox-Personal/Programming/TrackHelm")] {
+            let venv_py = root.join(".venv/bin/python");
+            if venv_py.exists() {
+                found_py = Some(venv_py);
+                break;
+            }
+            let venv_py3 = root.join(".venv/bin/python3");
+            if venv_py3.exists() {
+                found_py = Some(venv_py3);
+                break;
+            }
+        }
+
+        let py = found_py.unwrap_or_else(|| std::path::PathBuf::from("python3"));
+        (script, py, proj)
+    };
+
+    let mut cmd = StdCommand::new(&python_path);
+    cmd.current_dir(&project_dir);
+    cmd.arg(&script_path);
+    cmd.arg("--input").arg(&track_path);
+    cmd.arg("--mode").arg(&mode);
+
+    if let Some(ref out) = output_dir {
+        cmd.arg("--output-dir").arg(out);
+    }
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn separator: {}", e))?;
+    let stdout = child.stdout.take().ok_or_else(|| "Failed to open stdout".to_string())?;
+
+    let app_handle = app.clone();
+    let reader = BufReader::new(stdout);
+
+    let mut result = UvrSeparationResult {
+        success: false,
+        files: Vec::new(),
+        error: None,
+    };
+
+    for line in reader.lines() {
+        if let Ok(line_str) = line {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line_str) {
+                if let Some(t) = val.get("type").and_then(|v| v.as_str()) {
+                    match t {
+                        "progress" => {
+                            let percent = val.get("percent").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                            let stage = val.get("stage").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let _ = app_handle.emit("uvr-progress", UvrProgressEvent { percent, stage });
+                        }
+                        "complete" => {
+                            if let Some(files_val) = val.get("files").and_then(|v| v.as_array()) {
+                                for f in files_val {
+                                    let name = f.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                    let path = f.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                    let role = f.get("role").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                    let file_type = f.get("fileType").and_then(|v| v.as_str()).unwrap_or("audio").to_string();
+                                    result.files.push(GeneratedStemItem {
+                                        name,
+                                        path,
+                                        role,
+                                        file_type,
+                                    });
+                                }
+                            }
+                            result.success = val.get("success").and_then(|v| v.as_bool()).unwrap_or(true);
+                        }
+                        "error" => {
+                            let msg = val.get("message").and_then(|v| v.as_str()).unwrap_or("Unknown error").to_string();
+                            result.error = Some(msg);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    let status = child.wait().map_err(|e| format!("Child wait error: {}", e))?;
+    if !status.success() && result.error.is_none() {
+        result.error = Some(format!("Separation process exited with code {:?}", status.code()));
+    }
+
+    if result.success {
+        let _ = app.emit("uvr-complete", &result);
+        Ok(result)
+    } else {
+        let err = result.error.clone().unwrap_or_else(|| "Separation failed".to_string());
+        let _ = app.emit("uvr-error", &err);
+        Err(err)
+    }
+}
+
 
 fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
     let app_menu = Submenu::with_items(
@@ -1283,6 +1552,7 @@ fn main() {
             set_compressor,
             set_dual_compressor,
             set_regions,
+            set_volume_envelope,
             get_playback_status,
             read_dir,
             get_waveform_slice,
@@ -1299,8 +1569,12 @@ fn main() {
             list_midi_devices,
             connect_midi_device,
             scan_library_folder,
-            check_files_exist
+            check_files_exist,
+            is_file_downloaded,
+            move_file_to_trash,
+            run_uvr_separation
         ])
+
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

@@ -1,6 +1,6 @@
 # TrackHelm Project Bible v1.0
 
-TrackHelm is a professional music rehearsal and playback workstation with non-destructive audio editing capabilities layered on top of rehearsal tools.
+TrackHelm is a professional music rehearsal, transcription, and playback workstation with non-destructive audio editing capabilities layered on top of rehearsal tools.
 
 ---
 
@@ -11,20 +11,20 @@ The primary user story for TrackHelm is:
 
 It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized for fast, zero-latency playback, legibility in low-light stage environments, and flexible external control.
 
-**Target Environment:** macOS-native dark-mode desktop application.
+**Target Environments:** macOS-native dark-mode desktop application (Primary), with cross-platform Windows workstation support (In Progress).
 
 ---
 
 ## 2. Core Architecture Decisions (ADRs)
 
 ### 2.1 Authoritative Audio Engine
-* **Decision:** Native Rust real-time audio thread using `cpal` for low-latency CoreAudio backend integration.
-* **Rationale:** Tauri's webview runs in a sandbox and cannot natively host third-party VST/AU plugins (a long-term project requirement). The UI acts as a thin client communicating with the native Rust engine.
+* **Decision:** Native Rust real-time audio thread using `cpal` for low-latency backend integration (CoreAudio on macOS, WASAPI on Windows).
+* **Rationale:** Tauri's webview runs in a sandbox and cannot natively host real-time DSP with deterministic low latency or third-party VST/AU plugins. The UI acts as a thin client communicating with the native Rust engine.
 * **Communication:** Lock-free, thread-safe ring buffers handle audio data passing, and lightweight channel-based queues route controls from the main thread.
 
 ### 2.2 Time/Pitch Shifting Engine
 * **Decision:** Native C++ compilation of `Signalsmith Stretch` linked directly to the Rust engine via FFI bindings.
-* **Rationale:** Avoids the latency and sandbox constraints of WASM-in-webview solutions. Compiling C++ natively as a static library during Rust build time (`cc` crate) provides optimal performance and integration.
+* **Rationale:** Avoids the latency and sandbox constraints of WASM-in-webview solutions. Compiling C++ natively as a static library during Rust build time (`cc` crate) provides optimal performance and SIMD vectorization.
 
 ### 2.3 Audio Decode Library
 * **Decision:** `symphonia` (pure Rust decoder).
@@ -32,8 +32,8 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
 
 ### 2.4 Persistence Architecture
 * **Decision:** Hybrid approach:
-  * **Structured Data:** SQLite via `rusqlite` on the Rust backend. Stores projects, playlists, markers, notes, associations, and MIDI/OSC mappings.
-  * **Derived Binary Cache (Waveform Peaks):** Multi-resolution min/max decibel values stored as flat binary `.peak` files in the user cache directory (`~/Library/Caches/TrackHelm/peaks/`). Files are indexed by fingerprint/hash of the media to survive file renames and moves.
+  * **Structured Data:** SQLite via `rusqlite` on the Rust backend combined with debounced in-memory JSON profiles (`TrackProfile`) in the frontend. Stores projects, playlists, markers, notes, associations, and MIDI/OSC mappings.
+  * **Derived Binary Cache (Waveform Peaks):** Multi-resolution min/max decibel values stored as flat binary `.peak` files in the user cache directory (`~/Library/Caches/TrackHelm/peaks/` on macOS, `%LOCALAPPDATA%\TrackHelm\peaks` on Windows). Files are indexed by fingerprint/hash of the media to survive file renames and moves.
 
 ### 2.5 Plugin Hosting Feasibility Path
 * **Decision:** The audio engine will process audio via a modular node-based routing graph (`AudioGraph`).
@@ -48,9 +48,9 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
 * **Decision:** Embedded PDF viewer in the Tauri webview using `pdfjs-dist` (Mozilla PDF.js).
 * **Rationale:** Keeps the heavy rendering visual workload in the frontend webview (rendering directly to HTML5 Canvas) without bloating the Rust backend. Allows easy canvas layering for annotations.
 
-### 2.8 macOS App Bundle Packaging
-* **Decision:** Tauri's built-in bundler will generate a standard macOS `.app` bundle.
-* **Convenience:** A Makefile target `make app` will trigger the build and link the generated `TrackHelm.app` to the root workspace folder so it can be dragged to the macOS Dock for testing.
+### 2.8 macOS App Bundle & Packaging
+* **Decision:** Tauri's built-in bundler generates a standard macOS `.app` bundle.
+* **Convenience:** A Makefile target `make app` triggers the build and links the generated `TrackHelm.app` to the root workspace folder so it can be dragged to the macOS Dock for testing.
 
 ### 2.9 Instant Waveform Rendering & Deep Zoom Architecture
 * **Decision:** Multi-resolution precomputed single-sample peak pyramid with on-demand sample cache.
@@ -92,6 +92,7 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
   * `isEqBypassed`, `isCompressorBypassed`
   * `markers` (IDs, names, timestamps, colors, and PDF anchors)
   * `regions` (IDs, names, start/end times, loop/cut flags, crossfadeMs)
+  * `primarySongTrackPath`: canonical root mix identifier
   * `pdfChartPath`, `pdfChartName`, `openPdfTabs`, active dynamic PDF state
   * `associatedVersions` (alternate backing tracks, stems, guide tracks)
   * `notesMarkdown`, `lyricsMarkdown`, markdown view modes
@@ -143,7 +144,7 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
 * **Real-time Meters & Live Tracing:**
   * Dual L/R peak meters, fast-decay Gain Reduction (GR) meter, and animated green signal dot tracing input level along the curve in real time.
 
-### 2.18 Advanced Parametric Equalizer Console (Kirchhoff & AnyTune Inspired)
+### 2.18 Advanced Precision Parametric Equalizer Console
 * **Multi-Filter RBJ Biquad Cascade Engine:**
   * Real-time audio thread cascaded biquad vector supporting arbitrary numbers of simultaneous filter bands (Peaking Bell, Low Shelf, High Shelf, Low Pass, High Pass, Notch).
 * **Interactive Node Dragging & Mousewheel Q Control:**
@@ -166,7 +167,7 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
     * Tempo speed multiplier (+5% / -5% speed).
     * Play/Pause indicator with live time.
     * Rewind and playlist progression (`Trk 2/8`).
-  * Automated packaging and direct installation via `Build Stream Deck Plugin.app`.
+  * Automated packaging and direct installation via `npm run build:streamdeck`.
 * **Lag-Tolerant WebSocket Server (`ws://0.0.0.0:4545`)**:
   * Outbound broadcast channel using `tokio::sync::broadcast` with `RecvError::Lagged` tolerance, ensuring continuous uninterrupted streaming to connected remotes.
 * **OSC & MIDI Infrastructure**:
@@ -179,6 +180,56 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
   * Bakes tempo stretch (Signalsmith), pitch shift, cascaded biquad EQ, dual-stage compression, and region cut splices into 16-bit, 24-bit, or 32-bit Float WAV files.
   * Configurable range export: Entire Song, Active Time Selection, or Selected Timeline Region.
   * Metadata preservation copying ID3v2/Vorbis tags and album artwork to exported files.
+
+### 2.21 AI Stem Separation (UVR) & Safe File Deletion Architecture (Milestone 10)
+* **Decision:** Headless execution of Ultimate Vocal Remover models via `python-audio-separator` running locally on Apple Silicon (MPS / CoreML) combined with native AAC encoding and OS-level Trash.
+* **4-Model Ensemble Mode:** Kim Vocal 2 (`Kim_Vocal_2.onnx`), MDX23C-InstVoc HQ (`MDX23C-8KFFT-InstVoc_HQ.ckpt`), UVR-MDX-NET-Voc_FT (`UVR-MDX-NET-Voc_FT.onnx`), and Demucs v4 (`htdemucs_ft.yaml`) blended via `uvr_max_spec` to isolate master vocal stems.
+* **Lead / Backing Vocals Separation:** VR Architecture `5_HP-Karaoke-UVR.pth` executed on isolated vocals to split lead vs. backing harmonies.
+* **Audio Encoding & Organization:** Renders stems directly into `[OriginalDir]/Vocals Only/[Track] (Vocals Ensemble).m4a` with zero quality loss.
+* **Safe OS Trash Deletion:** Associated files can be sent to macOS Trash (`~/.Trash`) via Finder AppleScript with user confirmation modal, preserving full macOS "Put Back" capability.
+
+### 2.22 Bi-Directional Song Collections & Multi-Peer Store Synchronization (Milestone 11)
+* **Decision:** True peer-to-peer song clusters rather than parent-child hierarchies.
+* **Implementation Details:**
+  * Storing `primarySongTrackPath` on each `TrackProfile`.
+  * Opening any stem, guide track, or alternate take directly from the File Browser discovers existing peer profiles in storage, links all sibling audio files and PDF charts, and synchronizes markers, regions, and notes bidirectionally across all peer profiles.
+  * Safe cleanup: Moving an audio track to Trash automatically prunes its path from all peer profiles.
+
+### 2.23 Live Sample-Accurate A/B Compare Engine (`⇄ A/B` & Hotkey `T`) (Milestone 11)
+* **Decision:** Dedicated A/B auditioning engine with zero-interruption playhead preservation.
+* **Implementation Details:**
+  * A dedicated `⇄ A/B` toggle button on the transport controls and global hotkey `T` flip between the designated default mix and any auditioned stem/alternate take.
+  * Preserves exact playhead timestamp ($t$) during active playback, allowing immediate direct auditioning during rehearsals.
+  * Dynamic watermark labels (`"VOCALS ONLY"`, `"LEAD VOCALS"`, `"BACKING VOCALS"`, `"HIGH-RES MASTER"`, `"ORIGINAL ARTIST"`, `"DEFAULT MIX"`) clearly identify the currently auditioned stream.
+
+### 2.24 Streamlined Single-Line Files Hub & Active Track Action Pipeline (Milestone 11)
+* **Decision:** Space-efficient single-line rows (~32px height) replacing bulky multi-line card tiles.
+* **Implementation Details:**
+  * Displays 10–12+ files without scrolling, displaying file icon, filename, format badge, role badges, and action buttons (`▶ Load`/`✓ Loaded`, UVR actions, `🗑️`, `×`).
+  * **Active Track Always Visible:** The currently loaded track is always present in the files list with a glowing `● ACTIVE` badge and `✓ Loaded` state.
+  * **Direct Stem Actions on Active Track:** Users can initiate `✨ Isolate Vocals` directly on whatever track is loaded (e.g. an original artist reference recording) without switching tracks.
+
+### 2.25 Smooth Debounced Type-to-Jump Engine with Smart Name Stripping (Milestone 12)
+* **Decision:** Immediate character & multi-character prefix matching with a 750ms typing window debounce.
+* **Implementation Details:**
+  * Supported across both File Browser and Playlist.
+  * Typing the first character (e.g. `B`) immediately jumps and smoothly scrolls to the first matching song/folder.
+  * Typing subsequent characters within the 750ms window (e.g. `E` -> `BE`) immediately jumps to the first matching `BE...` track (never treating `E` as an isolated keypress jumping to an "E" song).
+  * Tapping the same key repeatedly cycles through all tracks starting with that character.
+  * Intelligent regex stripping removes leading track numbering (`/^[0-9a-z]?\d+[\s\.\-_]+/`) and leading `The `, allowing intuitive matching.
+  * Context-aware hotkey safety: DAW hotkeys (`M`, `R`, `X`, `L`, `T`) are preserved when focus is in the waveform area.
+
+### 2.26 Setlist AI CSV Importer & Playlist Health Repair Engine (Milestone 12)
+* **Decision:** Fuzzy setlist import with automated missing file and upgraded mix detection.
+* **Implementation Details:**
+  * Imports setlists from CSV spreadsheets and clipboard text.
+  * Playlist Health & Repair (`🔄 Repair`) detects missing files and suggests upgraded lossless mixes with confidence scoring.
+  * Preserves markers, regions, and rehearsal notes across relinked tracks.
+
+### 2.27 Model Context Protocol (MCP) Server Integration (Milestone 13)
+* **Decision:** Embedded MCP server interface over stdio / WebSocket.
+* **Implementation Details:**
+  * Exposes TrackHelm workstation control tools (`trackhelm_play`, `trackhelm_pause`, `trackhelm_seek`, `trackhelm_set_speed`, `trackhelm_set_pitch`, `trackhelm_add_marker`, `trackhelm_get_state`) directly to AI coding assistants and automation sidecars.
 
 ---
 
@@ -200,15 +251,19 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
 
 ### 3.3 Library, Projects & Files
 * **Per-Song Persistent Project Profiles:** Preserves all DSP, markers, regions, PDF charts, metadata, and associated tracks.
-* Smart folders/playlists with fuzzy search and quick type-ahead jump.
-* **Associated Media System:** Link audio to alternate backing tracks, score PDFs, lyrics, video, or notes.
-* Preserved metadata tags via Lofty ID3v2/Vorbis editor.
+* **Bi-Directional Song Collections:** Peer-to-peer linking across all audio versions and charts.
+* **Live A/B Compare:** Instant seamless flipping between master and stems without playback interruption.
+* **Streamlined Single-Line Files Hub:** Space-efficient layout with active-track stem actions.
+* **Smooth Type-to-Jump:** Immediate prefix search with smart track number stripping.
+* **AI Setlist CSV Importer & Repair Engine:** Easy setlist loading with health verification.
+* **Integrated AI Stem Separation:** Headless 4-model ensemble vocal isolation and lead/backing harmony split.
 
 ### 3.4 Hardware & External Show Control
 * Dedicated Elgato Stream Deck plugin with dynamic LCD feedback.
 * WebSocket broadcast server on port `4545`.
 * Extensible OSC routing/mapping system with presets for QLab integration.
 * Hardware MIDI Learn interface with CC and Note mapping.
+* Model Context Protocol (MCP) server for autonomous agent integration.
 
 ### 3.5 High-Fidelity Export
 * Multi-format offline WAV export (16-bit, 24-bit, 32-bit float) baking DSP, cuts, tempo, pitch, and metadata.
@@ -216,10 +271,10 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
 ---
 
 ## 4. Phase 2 & Later (Future Roadmap)
+* **Cross-Platform Windows Release:** Native WASAPI audio thread, MSVC build pipeline, and Windows Recycle Bin integration (Active).
 * Elastic Alignment / Sync Anchors (piecewise time-stretch).
 * Practice Mode / Rehearsal Sequences (loop chaining with tempo ramps).
-* Command Palette (`Cmd+K`) and custom keyboard shortcuts.
-* A/B processing state comparison.
+* Command Palette (`Cmd+K` / `Ctrl+K`) and custom keyboard shortcuts.
 * Full VST/AU plugin hosting implementation (infrastructure stub only in MVP).
 
 ---
@@ -235,4 +290,8 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
 * **Milestone 7:** Library Management, Associated Media, and Metadata *(Completed)*
 * **Milestone 8:** Stream Deck, WebSocket, MIDI & OSC Show Control *(Completed)*
 * **Milestone 9:** High-Fidelity Offline Audio Export Engine *(Completed)*
-* **Milestone 10:** Practice Mode / Rehearsal Sequences *(Next Phase)*
+* **Milestone 10:** AI Stem Separation Engine & macOS Trash Safety *(Completed)*
+* **Milestone 11:** Bi-Directional Song Collections, Live A/B Compare & Streamlined Files Hub *(Completed)*
+* **Milestone 12:** Setlist CSV Importer, Library Repair Engine & Smooth Type-to-Jump *(Completed)*
+* **Milestone 13:** Model Context Protocol (MCP) Server & Automation Tools *(Completed)*
+* **Milestone 14:** Cross-Platform Windows Workstation Port *(Active Phase)*

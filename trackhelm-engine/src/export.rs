@@ -25,12 +25,14 @@ pub struct ExportAudioConfig {
     pub bake_eq: bool,
     pub bake_compressor: bool,
     pub bake_cuts: bool,
+    pub bake_envelope: bool,
     pub eq_bands: Vec<EqBand>,
     pub comp_stage1: CompStageParams,
     pub comp_stage2: CompStageParams,
     pub comp_routing: CompRouting,
     pub comp_parallel_blend: f32,
     pub regions: Vec<EngineRegion>,
+    pub envelope_nodes: Vec<crate::command::EnvelopeNode>,
 }
 
 pub fn render_audio_export(
@@ -173,7 +175,25 @@ pub fn render_audio_export(
     let final_frames = processed_channels[0].len();
     let mut final_data = processed_channels;
 
-    // 3. High-Quality Biquad EQ Filtering
+    // 3. Apply Base Track Volume & Interpolated Volume Envelope (PRE-EQ & PRE-COMPRESSOR)
+    let has_env = config.bake_envelope && !config.envelope_nodes.is_empty();
+    let vol = config.volume_multiplier;
+    if (vol - 1.0).abs() > 0.001 || has_env {
+        for frame_idx in 0..final_frames {
+            let t_sec = start_frame as f64 / sample_rate as f64 + (frame_idx as f64 / sample_rate as f64) * (if config.bake_speed { config.speed_multiplier as f64 } else { 1.0 });
+            let env_gain = if has_env {
+                crate::command::interpolate_envelope(&config.envelope_nodes, t_sec)
+            } else {
+                1.0
+            };
+            let total_pre_gain = vol * env_gain;
+            for c in 0..channels {
+                final_data[c][frame_idx] *= total_pre_gain;
+            }
+        }
+    }
+
+    // 4. High-Quality Biquad EQ Filtering
     if config.bake_eq && !config.eq_bands.is_empty() {
         let active_bands: Vec<&EqBand> = config.eq_bands.iter().filter(|b| b.enabled && (b.gain_db.abs() > 0.01 || matches!(b.filter_type, crate::dsp::FilterType::LowPass | crate::dsp::FilterType::HighPass | crate::dsp::FilterType::Notch))).collect();
         if !active_bands.is_empty() {
@@ -195,7 +215,7 @@ pub fn render_audio_export(
         }
     }
 
-    // 4. Dual-Stage Dynamic Compressor
+    // 5. Dual-Stage Dynamic Compressor
     if config.bake_compressor {
         let mut dual_compressor = DualCompressor::new(sample_rate as f64);
         dual_compressor.stage1.set_params(sample_rate as f64, config.comp_stage1);
@@ -212,16 +232,6 @@ pub fn render_audio_export(
                 if channels > 1 {
                     final_data[1][f] = r_out;
                 }
-            }
-        }
-    }
-
-    // 5. Volume Scaling
-    let vol = config.volume_multiplier;
-    if (vol - 1.0).abs() > 0.001 {
-        for c in 0..channels {
-            for s in &mut final_data[c] {
-                *s *= vol;
             }
         }
     }

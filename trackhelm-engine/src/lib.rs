@@ -7,7 +7,7 @@ pub mod dsp;
 pub mod export;
 
 // Re-export key components
-pub use command::{Command, CommandBus, EngineRegion};
+pub use command::{Command, CommandBus, EngineRegion, EnvelopeNode, EnvelopeCurve, MAX_ENVELOPE_NODES, interpolate_envelope};
 pub use engine::{AudioEngine, SharedEngineState};
 pub use graph::AudioGraph;
 pub use db::Database;

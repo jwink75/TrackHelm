@@ -225,6 +225,12 @@
           "markdownDescription": "Enables the get_waveform_slice command without any pre-configured scope."
         },
         {
+          "description": "Enables the is_file_downloaded command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-is-file-downloaded",
+          "markdownDescription": "Enables the is_file_downloaded command without any pre-configured scope."
+        },
+        {
           "description": "Enables the list_midi_devices command without any pre-configured scope.",
           "type": "string",
           "const": "allow-list-midi-devices",
@@ -241,6 +247,12 @@
           "type": "string",
           "const": "allow-load-track",
           "markdownDescription": "Enables the load_track command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the move_file_to_trash command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-move-file-to-trash",
+          "markdownDescription": "Enables the move_file_to_trash command without any pre-configured scope."
         },
         {
           "description": "Enables the open_file_external command without any pre-configured scope.",
@@ -283,6 +295,12 @@
           "type": "string",
           "const": "allow-read-file-bytes",
           "markdownDescription": "Enables the read_file_bytes command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the run_uvr_separation command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-run-uvr-separation",
+          "markdownDescription": "Enables the run_uvr_separation command without any pre-configured scope."
         },
         {
           "description": "Enables the save_audio_metadata command without any pre-configured scope.",
@@ -357,6 +375,12 @@
           "markdownDescription": "Enables the set_volume command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_volume_envelope command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-volume-envelope",
+          "markdownDescription": "Enables the set_volume_envelope command without any pre-configured scope."
+        },
+        {
           "description": "Enables the stop command without any pre-configured scope.",
           "type": "string",
           "const": "allow-stop",
@@ -411,6 +435,12 @@
           "markdownDescription": "Denies the get_waveform_slice command without any pre-configured scope."
         },
         {
+          "description": "Denies the is_file_downloaded command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-is-file-downloaded",
+          "markdownDescription": "Denies the is_file_downloaded command without any pre-configured scope."
+        },
+        {
           "description": "Denies the list_midi_devices command without any pre-configured scope.",
           "type": "string",
           "const": "deny-list-midi-devices",
@@ -427,6 +457,12 @@
           "type": "string",
           "const": "deny-load-track",
           "markdownDescription": "Denies the load_track command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the move_file_to_trash command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-move-file-to-trash",
+          "markdownDescription": "Denies the move_file_to_trash command without any pre-configured scope."
         },
         {
           "description": "Denies the open_file_external command without any pre-configured scope.",
@@ -469,6 +505,12 @@
           "type": "string",
           "const": "deny-read-file-bytes",
           "markdownDescription": "Denies the read_file_bytes command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the run_uvr_separation command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-run-uvr-separation",
+          "markdownDescription": "Denies the run_uvr_separation command without any pre-configured scope."
         },
         {
           "description": "Denies the save_audio_metadata command without any pre-configured scope.",
@@ -541,6 +583,12 @@
           "type": "string",
           "const": "deny-set-volume",
           "markdownDescription": "Denies the set_volume command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_volume_envelope command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-volume-envelope",
+          "markdownDescription": "Denies the set_volume_envelope command without any pre-configured scope."
         },
         {
           "description": "Denies the stop command without any pre-configured scope.",

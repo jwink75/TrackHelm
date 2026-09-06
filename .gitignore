@@ -30,3 +30,14 @@ Thumbs.db
 # Launchers and local build shortcuts
 /Start TrackHelm Dev.app/
 
+# Python Virtual Environments
+.venv/
+*.venv/
+.models_cache/
+
+# Session & temp files
+*.ses
+
+
+
+

@@ -21,6 +21,7 @@
     "allow-set-compressor",
     "allow-set-dual-compressor",
     "allow-set-regions",
+    "allow-set-volume-envelope",
     "allow-get-playback-status",
     "allow-read-dir",
     "allow-get-waveform-slice",
@@ -37,6 +38,10 @@
     "allow-list-midi-devices",
     "allow-connect-midi-device",
     "allow-scan-library-folder",
-    "allow-check-files-exist"
+    "allow-check-files-exist",
+    "allow-is-file-downloaded",
+    "allow-move-file-to-trash",
+    "allow-run-uvr-separation"
   ]
 }
+

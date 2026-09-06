@@ -103,6 +103,8 @@ impl AudioEngine {
             let mut dual_compressor = crate::dsp::DualCompressor::new(current_sample_rate);
             let mut active_regions: [crate::command::EngineRegion; crate::command::MAX_ENGINE_REGIONS] = [crate::command::EngineRegion::default(); crate::command::MAX_ENGINE_REGIONS];
             let mut active_region_count: usize = 0;
+            let mut envelope_nodes = [crate::command::EnvelopeNode::default(); crate::command::MAX_ENVELOPE_NODES];
+            let mut envelope_nodes_count: usize = 0;
 
             let shared_is_playing = shared_state.is_playing.clone();
             let shared_current_frame = shared_state.current_frame.clone();
@@ -134,6 +136,7 @@ impl AudioEngine {
                             let mut pending_eq_bands: Option<([crate::command::EqBand; crate::command::MAX_EQ_BANDS], usize)> = None;
                             let mut pending_dual_comp: Option<(crate::dsp::CompStageParams, crate::dsp::CompStageParams, crate::dsp::CompRouting, f32)> = None;
                             let mut pending_regions: Option<([crate::command::EngineRegion; crate::command::MAX_ENGINE_REGIONS], usize)> = None;
+                            let mut pending_envelope: Option<([crate::command::EnvelopeNode; crate::command::MAX_ENVELOPE_NODES], usize)> = None;
 
                             while let Ok(cmd) = command_receiver.try_recv() {
                                 match cmd {
@@ -193,7 +196,7 @@ impl AudioEngine {
                                                 filter_type: crate::dsp::FilterType::Peaking,
                                                 freq: 1000.0,
                                                 gain_db: mid_db as f64,
-                                                q: 0.707,
+                                                q: 1.0,
                                                 enabled: true,
                                             };
                                             count += 1;
@@ -235,6 +238,9 @@ impl AudioEngine {
                                     }
                                     Command::SetRegions(regs, count) => {
                                         pending_regions = Some((regs, count));
+                                    }
+                                    Command::SetVolumeEnvelope(nodes, count) => {
+                                        pending_envelope = Some((nodes, count));
                                     }
                                     Command::LoadAudio(audio) => {
                                         let total = audio.channel_samples[0].len();
@@ -291,6 +297,10 @@ impl AudioEngine {
                             if let Some((regs, count)) = pending_regions {
                                 active_regions = regs;
                                 active_region_count = count;
+                            }
+                            if let Some((nodes, count)) = pending_envelope {
+                                envelope_nodes = nodes;
+                                envelope_nodes_count = count;
                             }
 
                             // 2. Render samples
@@ -362,10 +372,19 @@ impl AudioEngine {
 
                                     stretch.process(&in_slices[..stretch_channels], &mut out_slices[..stretch_channels]);
 
+                                    // Apply track volume & interpolated volume envelope PRE-EQ and PRE-COMPRESSOR
                                     for frame_idx in 0..safe_out_frames {
+                                        let frame_time_sec = (playback_frame + ((frame_idx as f32 * current_speed) as usize)) as f64 / current_sample_rate;
+                                        let env_gain = if envelope_nodes_count > 0 {
+                                            crate::command::interpolate_envelope(&envelope_nodes[..envelope_nodes_count], frame_time_sec)
+                                        } else {
+                                            1.0
+                                        };
+                                        let total_pre_gain = volume * env_gain;
+
                                         for out_c in 0..output_channels {
                                             let in_c = out_c % stretch_channels;
-                                            data[frame_idx * output_channels + out_c] = out_channel_scratch[in_c][frame_idx] * volume;
+                                            data[frame_idx * output_channels + out_c] = out_channel_scratch[in_c][frame_idx] * total_pre_gain;
                                         }
                                     }
 

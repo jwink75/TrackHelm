@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-run-uvr-separation"
+description = "Enables the run_uvr_separation command without any pre-configured scope."
+commands.allow = ["run_uvr_separation"]
+
+[[permission]]
+identifier = "deny-run-uvr-separation"
+description = "Denies the run_uvr_separation command without any pre-configured scope."
+commands.deny = ["run_uvr_separation"]

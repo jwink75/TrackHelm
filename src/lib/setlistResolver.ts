@@ -83,32 +83,33 @@ export function parseSetlistCsv(rawText: string): SetlistRow[] {
     return result;
   };
 
-  const headers = parseLine(lines[0]).map(h => h.toLowerCase().trim());
+  const rawHeaders = parseLine(lines[0]);
+  const headersLower = rawHeaders.map(h => h.toLowerCase().trim());
 
   // Check if first line is a recognized header row
   const titleKeywords = ["song", "title", "name", "track", "piece", "tune"];
-  const singerKeywords = ["singer", "singers", "vocal", "vocals", "vocalist", "vocalists", "lead", "performer", "artist"];
-  const keyKeywords = ["key", "tonality", "pitch", "root"];
-  const notesKeywords = ["note", "notes", "cue", "cues", "arrangement", "info", "comment", "comments", "details"];
-  const orderKeywords = ["order", "#", "no", "no.", "num", "number", "index", "pos", "position"];
+  const isHeaderRow = headersLower.some(h => titleKeywords.some(k => h.includes(k)));
 
-  let titleCol = headers.findIndex(h => titleKeywords.some(k => h.includes(k)));
-  let singerCol = headers.findIndex(h => singerKeywords.some(k => h.includes(k)));
-  let keyCol = headers.findIndex(h => keyKeywords.some(k => h.includes(k)));
-  let notesCol = headers.findIndex(h => notesKeywords.some(k => h.includes(k)));
-  let orderCol = headers.findIndex(h => orderKeywords.some(k => h === k || h.startsWith("#")));
+  let titleCol = 0;
+  let headerNames: string[] = [];
+  let dataLines = lines;
 
-  let dataLines = lines.slice(1);
-
-  // If no header row detected, assume line 0 is data
-  if (titleCol === -1) {
+  if (isHeaderRow || lines.length > 1) {
+    const foundIdx = headersLower.findIndex(h => titleKeywords.some(k => h.includes(k)));
+    titleCol = foundIdx !== -1 ? foundIdx : 0;
+    headerNames = rawHeaders;
+    dataLines = lines.slice(1);
+  } else {
     titleCol = 0;
-    singerCol = headers.length > 1 ? 1 : -1;
-    keyCol = headers.length > 2 ? 2 : -1;
-    notesCol = headers.length > 3 ? 3 : -1;
-    orderCol = -1;
+    headerNames = rawHeaders.map((_, idx) => idx === 0 ? "Song Title" : `Column ${String.fromCharCode(65 + idx)}`);
     dataLines = lines;
   }
+
+  // Detect optional "Notes" column (to be placed after the table)
+  const notesColIdx = headerNames.findIndex(h => {
+    const clean = h.toLowerCase().trim();
+    return clean === "notes" || clean === "note" || clean === "comment" || clean === "comments";
+  });
 
   const rows: SetlistRow[] = [];
 
@@ -116,32 +117,55 @@ export function parseSetlistCsv(rawText: string): SetlistRow[] {
     const cols = parseLine(line);
     if (cols.length === 0 || cols.every(c => !c)) return;
 
-    const title = (titleCol !== -1 && cols[titleCol]) ? cols[titleCol] : cols[0] || `Track ${idx + 1}`;
+    const title = (titleCol !== -1 && cols[titleCol]) ? cols[titleCol].trim() : (cols[0]?.trim() || `Track ${idx + 1}`);
     if (!title) return;
-
-    const singers = singerCol !== -1 && cols[singerCol] ? cols[singerCol] : "";
-    const keyNote = keyCol !== -1 && cols[keyCol] ? cols[keyCol] : "";
-    const notes = notesCol !== -1 && cols[notesCol] ? cols[notesCol] : "";
-    const parsedOrder = orderCol !== -1 && cols[orderCol] ? parseInt(cols[orderCol], 10) : (idx + 1);
-    const order = isNaN(parsedOrder) ? (idx + 1) : parsedOrder;
 
     const rawRow: Record<string, string> = {};
     cols.forEach((val, cIdx) => {
-      const headerName = headers[cIdx] || `Col_${cIdx + 1}`;
+      const headerName = (headerNames[cIdx] && headerNames[cIdx].trim()) || `Col ${String.fromCharCode(65 + cIdx)}`;
       rawRow[headerName] = val;
     });
 
+    // 1 & 2. Build horizontal table: CSV Row 1 headers as table headers (excluding Title and Notes)
+    const tableHeaders: string[] = [];
+    const tableCells: string[] = [];
+
+    headerNames.forEach((headerName, cIdx) => {
+      if (cIdx === titleCol || cIdx === notesColIdx) return;
+      const cleanHeader = (headerName && headerName.trim()) || `Col ${String.fromCharCode(65 + cIdx)}`;
+      const rawVal = cols[cIdx] !== undefined ? cols[cIdx].trim() : "";
+      tableHeaders.push(cleanHeader.replace(/\|/g, "\\|"));
+      tableCells.push((rawVal || "—").replace(/\|/g, "\\|"));
+    });
+
+    let markdownOutput = "";
+    if (tableHeaders.length > 0) {
+      // Go straight to horizontal table without any heading/preamble
+      markdownOutput = `| ${tableHeaders.join(" | ")} |\n`;
+      markdownOutput += `| ${tableHeaders.map(() => ":---").join(" | ")} |\n`;
+      markdownOutput += `| ${tableCells.join(" | ")} |`;
+    }
+
+    // 3. IF there is a column called "Notes", take the contents and paste AFTER the table
+    if (notesColIdx !== -1 && cols[notesColIdx] && cols[notesColIdx].trim()) {
+      const notesContent = cols[notesColIdx].trim();
+      if (markdownOutput) {
+        markdownOutput += `\n\n${notesContent}`;
+      } else {
+        markdownOutput = notesContent;
+      }
+    }
+
     rows.push({
-      order,
+      order: idx + 1,
       title,
-      singers,
-      keyNote,
-      notes,
+      singers: "", // User directive: leave singer column blank in import section
+      keyNote: "", // User directive: ditch key column
+      notes: markdownOutput,
       rawRow
     });
   });
 
-  rows.sort((a, b) => a.order - b.order);
   return rows;
 }
 
@@ -170,7 +194,17 @@ export function calculateMatchScore(queryTitle: string, candidateFilename: strin
 
   if (!normQuery || !normCand) return 0;
   if (normQuery === normCand) return 1.0;
-  if (normCand.includes(normQuery) || normQuery.includes(normCand)) return 0.9;
+  if (normCand.includes(normQuery) || normQuery.includes(normCand)) return 0.95;
+
+  // Also check candidate segments split by dashes (e.g. "Artist - Title")
+  const parts = candidateFilename.split(/[\-_–—]/);
+  for (const part of parts) {
+    const normPart = normalizeSongTitle(part);
+    if (normPart) {
+      if (normPart === normQuery) return 0.98;
+      if (normPart.includes(normQuery) || normQuery.includes(normPart)) return 0.92;
+    }
+  }
 
   // Word token overlap
   const queryTokens = new Set(normQuery.split(" ").filter(w => w.length > 1));
@@ -246,22 +280,10 @@ export function findBestMatch(
  * Formats singer assignments, key, and arrangement details into a clean Markdown table.
  */
 export function generateSingerMarkdown(row: SetlistRow): string {
-  let md = `### Rehearsal & Performance Info\n\n`;
-  md += `| Attribute | Details |\n`;
-  md += `| :--- | :--- |\n`;
-  md += `| **Song Title** | ${row.title} |\n`;
-  if (row.singers) {
-    md += `| **Lead Singer(s)** | ${row.singers} |\n`;
-  }
-  if (row.keyNote) {
-    md += `| **Key / Pitch** | [${row.keyNote}] |\n`;
-  }
   if (row.notes) {
-    md += `| **Arrangement Cues** | ${row.notes} |\n`;
+    return row.notes;
   }
-  md += `| **Set Order** | Track #${row.order} |\n`;
-
-  return md;
+  return "";
 }
 
 /**

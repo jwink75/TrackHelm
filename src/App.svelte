@@ -263,6 +263,8 @@
   let typeToJumpBuffer = "";
   let typeToJumpTimeout: any = null;
   let jumpDebounceTimeout: any = null;
+  let showTypeaheadIndicator = false;
+  let lastFocusedPane: "sidebar" | "waveform" = "sidebar";
   
   // Browser Multi-selection
   let selectedFilePaths = new Set<string>();
@@ -270,10 +272,14 @@
 
   // Custom Context Menu State
   let showContextMenu = false;
-  let contextMenuType: "browser" | "waveform" = "browser";
+  let contextMenuType: "browser" | "waveform" | "assoc-file" = "browser";
   let contextMenuX = 0;
   let contextMenuY = 0;
   let contextMenuTargetFile: { name: string; path: string } | null = null;
+  let contextMenuTargetAssoc: AssociatedFileItem | null = null;
+  let preferHighResAudio: boolean = localStorage.getItem("th_prefer_high_res") === "true";
+  let primarySongTrackPath: string | null = null;
+  let abPreviousTrackPath: string | null = null;
 
   // Playlist State (saved in localStorage)
   interface PlaylistItem {
@@ -297,8 +303,65 @@
     name: string;
     path: string;
     fileType: "pdf" | "audio" | "other";
+    role?: string;
   }
   let associatedFiles: AssociatedFileItem[] = [];
+
+  // Reactive unified song files list including active filePath so its row and stem actions are always accessible
+  $: allSongFiles = (() => {
+    const list: AssociatedFileItem[] = [];
+    const seenPaths = new Set<string>();
+
+    // If we have an active track loaded, make sure it is in the list
+    if (filePath) {
+      const existing = associatedFiles.find(f => f.path === filePath);
+      if (existing) {
+        list.push({ ...existing });
+        seenPaths.add(filePath);
+      } else {
+        const isPrimary = filePath === primarySongTrackPath || !primarySongTrackPath;
+        const isOrig = filePath.toLowerCase().includes("original") || (fileName && fileName.toLowerCase().includes("original"));
+        const isVoc = filePath.toLowerCase().includes("vocals") || (fileName && fileName.toLowerCase().includes("vocals"));
+        const isLead = filePath.toLowerCase().includes("lead") || (fileName && fileName.toLowerCase().includes("lead"));
+        const isBacking = filePath.toLowerCase().includes("backing") || (fileName && fileName.toLowerCase().includes("backing"));
+        const role = isLead ? "lead" : isBacking ? "backings" : isVoc ? "vocals" : isOrig ? "orig" : isLosslessAudio(filePath) ? "hires" : isPrimary ? "main" : "assoc";
+
+        list.push({
+          id: "active-track-" + filePath.replace(/[^a-zA-Z0-9]/g, "_"),
+          name: fileName || filePath.split("/").pop() || filePath,
+          path: filePath,
+          fileType: "audio",
+          role
+        });
+        seenPaths.add(filePath);
+      }
+    }
+
+    // Append remaining associated files
+    for (const f of associatedFiles) {
+      if (f.path && !seenPaths.has(f.path)) {
+        list.push(f);
+        seenPaths.add(f.path);
+      }
+    }
+
+    return list;
+  })();
+
+  // UVR Stem Separation state
+  let uvrSeparating: boolean = false;
+  let uvrStage: string = "";
+  let uvrPercent: number = 0;
+  let uvrCurrentTarget: string = "";
+  let uvrErrorMessage: string | null = null;
+  let uvrSuccessMessage: string | null = null;
+
+  // Trash Deletion Confirmation Modal state
+  let showTrashModal: boolean = false;
+  let itemToTrash: AssociatedFileItem | null = null;
+  let trashLoading: boolean = false;
+  let trashErrorMessage: string | null = null;
+
 
   // Dynamic Open PDF Tabs
   interface OpenPdfTab {
@@ -317,6 +380,128 @@
   // Notes & Lyrics View Modes (edit, preview, split)
   let notesViewMode: "edit" | "preview" | "split" = "edit";
   let lyricsViewMode: "edit" | "preview" | "split" = "edit";
+
+  // Resizable Sidebars
+  let leftSidebarWidth: number = 240;
+  let rightSidebarWidth: number = 280;
+  let isResizingLeft: boolean = false;
+  let isResizingRight: boolean = false;
+
+  function startResizeLeft(e: MouseEvent) {
+    e.preventDefault();
+    isResizingLeft = true;
+    const startX = e.clientX;
+    const initialWidth = leftSidebarWidth;
+
+    function onMouseMove(moveEvent: MouseEvent) {
+      const delta = moveEvent.clientX - startX;
+      leftSidebarWidth = Math.max(160, Math.min(600, initialWidth + delta));
+    }
+
+    function onMouseUp() {
+      isResizingLeft = false;
+      try {
+        localStorage.setItem("th_left_sidebar_width", leftSidebarWidth.toString());
+      } catch {}
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    }
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }
+
+  function startResizeRight(e: MouseEvent) {
+    e.preventDefault();
+    isResizingRight = true;
+    const startX = e.clientX;
+    const initialWidth = rightSidebarWidth;
+
+    function onMouseMove(moveEvent: MouseEvent) {
+      const delta = startX - moveEvent.clientX;
+      rightSidebarWidth = Math.max(180, Math.min(700, initialWidth + delta));
+    }
+
+    function onMouseUp() {
+      isResizingRight = false;
+      try {
+        localStorage.setItem("th_right_sidebar_width", rightSidebarWidth.toString());
+      } catch {}
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    }
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }
+
+  // Resizable Setlist Import Modal
+  let setlistModalWidth: number = 960;
+  let setlistModalHeight: number = 720;
+  let isResizingSetlistModal: boolean = false;
+  let isSetlistModalMaximized: boolean = false;
+  let prevSetlistModalWidth: number = 960;
+  let prevSetlistModalHeight: number = 720;
+
+  function toggleMaximizeSetlistModal() {
+    if (isSetlistModalMaximized) {
+      setlistModalWidth = prevSetlistModalWidth;
+      setlistModalHeight = prevSetlistModalHeight;
+      isSetlistModalMaximized = false;
+    } else {
+      prevSetlistModalWidth = setlistModalWidth;
+      prevSetlistModalHeight = setlistModalHeight;
+      setlistModalWidth = Math.round(window.innerWidth * 0.95);
+      setlistModalHeight = Math.round(window.innerHeight * 0.92);
+      isSetlistModalMaximized = true;
+    }
+    try {
+      localStorage.setItem("th_setlist_modal_w", setlistModalWidth.toString());
+      localStorage.setItem("th_setlist_modal_h", setlistModalHeight.toString());
+    } catch {}
+  }
+
+  function startResizeSetlistModal(e: MouseEvent) {
+    e.preventDefault();
+    isResizingSetlistModal = true;
+    isSetlistModalMaximized = false;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const initialW = setlistModalWidth;
+    const initialH = setlistModalHeight;
+
+    function onMouseMove(me: MouseEvent) {
+      const deltaX = me.clientX - startX;
+      const deltaY = me.clientY - startY;
+      setlistModalWidth = Math.max(550, Math.min(window.innerWidth * 0.96, initialW + deltaX));
+      setlistModalHeight = Math.max(400, Math.min(window.innerHeight * 0.94, initialH + deltaY));
+    }
+
+    function onMouseUp() {
+      isResizingSetlistModal = false;
+      try {
+        localStorage.setItem("th_setlist_modal_w", setlistModalWidth.toString());
+        localStorage.setItem("th_setlist_modal_h", setlistModalHeight.toString());
+      } catch {}
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    }
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }
+
+  function getFileExtension(pathOrName: string): string {
+    if (!pathOrName) return "";
+    const clean = pathOrName.split("?")[0].split("#")[0];
+    const dotIdx = clean.lastIndexOf(".");
+    return dotIdx !== -1 ? clean.substring(dotIdx + 1).toUpperCase() : "";
+  }
+
+  function isLosslessAudio(pathOrName: string): boolean {
+    const ext = getFileExtension(pathOrName).toLowerCase();
+    return ["wav", "aiff", "aif", "flac", "alac"].includes(ext);
+  }
 
   function renderMarkdown(md: string): string {
     if (!md || !md.trim()) return "<div class='markdown-empty-hint'>No notes recorded yet. Click <strong>Raw Text</strong> or <strong>Split</strong> to add rehearsal notes, singer tables, or chord cues...</div>";
@@ -407,7 +592,7 @@
   let isEqBypassed = false;
   let isCompressorBypassed = false;
 
-  // Multi-Node EQ State (Kirchhoff / AnyTune Inspired)
+  // Multi-Node EQ State (Precision Parametric EQ)
   interface EqNodeState {
     id: string;
     name: string;
@@ -540,7 +725,7 @@
 
   $: sortedEqNodes = [...eqNodes].sort((a, b) => a.freq - b.freq);
 
-  // Kirchhoff Interactive EQ Node Dragging & Mousewheel State
+  // Interactive EQ Node Dragging & Mousewheel State
   let isDraggingEqNode = false;
   let draggedEqNodeId: string | null = null;
   let isDraggingEqWidth = false;
@@ -787,6 +972,128 @@
     return { x: liveDotX, y: liveDotY };
   }
 
+  // Volume Envelope State (+12dB Max, Multiple Curves, Pre-Dynamics)
+  type EnvelopeCurve = "linear" | "curve_up" | "curve_down" | "sine";
+
+  interface VolumeEnvelopeNode {
+    id: string;
+    timeSeconds: number;
+    gainDb: number; // -60.0 to +12.0 dB
+    curve: EnvelopeCurve;
+  }
+
+  let volumeEnvelopeNodes: VolumeEnvelopeNode[] = [];
+  let isEnvelopeEnabled: boolean = true;
+  let isEnvelopeOverlayVisible: boolean = true;
+  let selectedEnvelopeNodeId: string | null = null;
+  let hoveredEnvelopeNodeId: string | null = null;
+  let isDraggingEnvelopeNode: boolean = false;
+  let draggedEnvelopeNodeId: string | null = null;
+  let exportBakeEnvelope: boolean = true;
+
+  // Selective Migration Options for Upgraded Mixes
+  let repairMigrateMarkers: boolean = true;
+  let repairMigrateRegions: boolean = true;
+  let repairMigrateNotes: boolean = true;
+  let repairMigrateVolume: boolean = false;
+  let repairMigrateEnvelope: boolean = false;
+  let repairMigrateEq: boolean = false;
+  let repairMigrateComp: boolean = false;
+
+  function calcEnvelopeGainDbAt(tSec: number): number {
+    if (!isEnvelopeEnabled || volumeEnvelopeNodes.length === 0) return 0.0;
+    const sorted = [...volumeEnvelopeNodes].sort((a, b) => a.timeSeconds - b.timeSeconds);
+    if (tSec <= sorted[0].timeSeconds) return sorted[0].gainDb;
+    const last = sorted[sorted.length - 1];
+    if (tSec >= last.timeSeconds) return last.gainDb;
+
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const a = sorted[i];
+      const b = sorted[i + 1];
+      if (tSec >= a.timeSeconds && tSec <= b.timeSeconds) {
+        const segLen = Math.max(1e-6, b.timeSeconds - a.timeSeconds);
+        const normT = Math.max(0, Math.min(1, (tSec - a.timeSeconds) / segLen));
+        let shapedT = normT;
+        if (a.curve === "curve_up") shapedT = normT * normT;
+        else if (a.curve === "curve_down") shapedT = 1.0 - (1.0 - normT) * (1.0 - normT);
+        else if (a.curve === "sine") shapedT = 0.5 * (1.0 - Math.cos(Math.PI * normT));
+        return a.gainDb + (b.gainDb - a.gainDb) * shapedT;
+      }
+    }
+    return 0.0;
+  }
+
+  function calcEnvelopeLinearGainAt(tSec: number): number {
+    const db = calcEnvelopeGainDbAt(tSec);
+    if (db <= -59.5) return 0.0;
+    return Math.pow(10, db / 20.0);
+  }
+
+  async function updateVolumeEnvelopeEngine() {
+    const nodes = isEnvelopeEnabled ? [...volumeEnvelopeNodes].sort((a, b) => a.timeSeconds - b.timeSeconds) : [];
+    await invoke("set_volume_envelope", {
+      nodes: nodes.map(n => ({
+        timeSeconds: n.timeSeconds,
+        gainDb: n.gainDb,
+        curve: n.curve
+      }))
+    });
+    saveCurrentTrackProfile(filePath);
+    drawMainWaveform();
+  }
+
+  function resetVolumeEnvelope() {
+    volumeEnvelopeNodes = [];
+    selectedEnvelopeNodeId = null;
+    updateVolumeEnvelopeEngine();
+  }
+
+  function addVolumeEnvelopeNodeAt(timeSec: number, gainDb = 0.0, curve: EnvelopeCurve = "linear") {
+    const clampedTime = Math.max(0, Math.min(duration || 0, timeSec));
+    const clampedGain = Math.max(-60, Math.min(12, gainDb));
+    const id = "env-" + Date.now() + "-" + Math.random().toString(36).substring(2, 5);
+    volumeEnvelopeNodes = [...volumeEnvelopeNodes, {
+      id,
+      timeSeconds: clampedTime,
+      gainDb: clampedGain,
+      curve
+    }].sort((a, b) => a.timeSeconds - b.timeSeconds);
+    selectedEnvelopeNodeId = id;
+    updateVolumeEnvelopeEngine();
+  }
+
+  function removeVolumeEnvelopeNode(id: string) {
+    volumeEnvelopeNodes = volumeEnvelopeNodes.filter(n => n.id !== id);
+    if (selectedEnvelopeNodeId === id) selectedEnvelopeNodeId = null;
+    updateVolumeEnvelopeEngine();
+  }
+
+  function setEnvelopeNodeCurve(nodeId: string, curve: EnvelopeCurve) {
+    const node = volumeEnvelopeNodes.find(n => n.id === nodeId);
+    if (!node) return;
+    node.curve = curve;
+    volumeEnvelopeNodes = [...volumeEnvelopeNodes];
+    updateVolumeEnvelopeEngine();
+  }
+
+  function updateEnvelopeNodeGain(nodeId: string, gainDb: number) {
+    const node = volumeEnvelopeNodes.find(n => n.id === nodeId);
+    if (!node) return;
+    node.gainDb = Math.max(-60, Math.min(12, gainDb));
+    volumeEnvelopeNodes = [...volumeEnvelopeNodes];
+    updateVolumeEnvelopeEngine();
+  }
+
+  function cycleEnvelopeNodeCurve(nodeId: string) {
+    const node = volumeEnvelopeNodes.find(n => n.id === nodeId);
+    if (!node) return;
+    const curves: EnvelopeCurve[] = ["linear", "curve_up", "curve_down", "sine"];
+    const curIdx = curves.indexOf(node.curve);
+    node.curve = curves[(curIdx + 1) % curves.length];
+    volumeEnvelopeNodes = [...volumeEnvelopeNodes];
+    updateVolumeEnvelopeEngine();
+  }
+
   // Real-time Visual Meter Values
   let liveInputPeakL: number = -60.0;
   let liveInputPeakR: number = -60.0;
@@ -920,19 +1227,19 @@
       if (prefFolderAac) {
         aacFiles = await invoke("scan_library_folder", {
           folderPath: prefFolderAac,
-          extensions: ["m4a", "aac", "mp3", "wav"]
+          extensions: ["m4a", "aac", "mp3", "wav", "aiff", "aif"]
         });
       }
       if (prefFolderHiRes) {
         hiresFiles = await invoke("scan_library_folder", {
           folderPath: prefFolderHiRes,
-          extensions: ["wav", "flac", "aiff"]
+          extensions: ["wav", "flac", "aiff", "aif"]
         });
       }
       if (prefFolderOrig) {
         origFiles = await invoke("scan_library_folder", {
           folderPath: prefFolderOrig,
-          extensions: ["mp3", "m4a", "wav", "flac", "aiff", "ogg"]
+          extensions: ["mp3", "m4a", "wav", "flac", "aiff", "aif", "ogg"]
         });
       }
       if (prefFolderPdf) {
@@ -952,6 +1259,30 @@
     showSetlistModal = true;
     if (rawCsvText && resolvedSetlist.length === 0) {
       await handleResolveSetlist();
+    }
+  }
+
+  async function loadSetlistCsvFile() {
+    try {
+      const selected = await open({
+        multiple: false,
+        title: "Select Setlist CSV / TSV / Text File",
+        filters: [
+          { name: "Delimited Text (*.csv, *.tsv, *.txt)", extensions: ["csv", "tsv", "txt"] }
+        ]
+      });
+      if (!selected || typeof selected !== "string") return;
+
+      const bytes: number[] = await invoke("read_file_bytes", { path: selected });
+      const decoder = new TextDecoder("utf-8");
+      const text = decoder.decode(new Uint8Array(bytes));
+      if (text && text.trim()) {
+        rawCsvText = text;
+        await handleResolveSetlist();
+      }
+    } catch (err) {
+      console.error("Failed to load setlist file:", err);
+      setlistResolveError = "Failed to read file: " + err;
     }
   }
 
@@ -996,6 +1327,7 @@
     localStorage.setItem("th_playlist", JSON.stringify(playlistItems));
 
     // Save project profiles with notes and associated files for each song
+    const store = getProfilesStore();
     resolvedSetlist.forEach(item => {
       const targetPath = item.mainAacPath || `[unlinked]:${item.title}`;
       const assoc: AssociatedFileItem[] = [];
@@ -1010,28 +1342,28 @@
       }
 
       const profile: TrackProfile = {
-        filePath: targetPath,
         dbVolume: 0,
         speed: 1.0,
         pitch: 0,
         pitchCents: 0,
         eqBass: 0,
+        eqMid: 0,
         eqTreble: 0,
         isEqBypassed: false,
         isCompressorBypassed: false,
-        compThresholdDb: 0,
-        compRatio: 1.0,
-        compAttackMs: 30,
-        compReleaseMs: 300,
-        compMakeupDb: 0,
+        compressorThreshold: 0,
+        compressorRatio: 1.0,
+        compressorMakeup: 0,
         markers: [],
+        nextMarkerId: 1,
         regions: [],
+        nextRegionId: 1,
         associatedVersions: [],
         pdfChartPath: item.pdfPath || "",
         pdfChartName: item.pdfName || "",
         associatedFiles: assoc,
-        songNotes: item.notesMarkdown,
-        songLyrics: "",
+        notes: item.notesMarkdown || "",
+        lyrics: "",
         notesViewMode: "preview",
         lyricsViewMode: "edit",
         eqNodes: [
@@ -1042,14 +1374,13 @@
         compStage1: { ...compStage1 },
         compStage2: { ...compStage2 },
         compRouting: "Series",
-        compParallelBlend: 0.5,
-        updatedAt: Date.now()
+        compParallelBlend: 0.5
       };
-      cachedProfilesStore[targetPath] = profile;
+      store[targetPath] = profile;
     });
 
     try {
-      localStorage.setItem("th_track_profiles_v1", JSON.stringify(cachedProfilesStore));
+      localStorage.setItem("th_track_profiles", JSON.stringify(store));
     } catch (e) {}
 
     // Load first track if available
@@ -1103,6 +1434,7 @@
   }
 
   function applyRepairs() {
+    const store = getProfilesStore();
     playlistHealth.forEach(h => {
       if (h.suggestedReplacement && (!h.exists || h.isPlaceholder)) {
         const item = playlistItems[h.index];
@@ -1114,13 +1446,30 @@
           item.isPlaceholder = false;
           item.missingAudio = false;
 
-          // Migrate cached profile if present
-          if (cachedProfilesStore[oldPath]) {
-            cachedProfilesStore[newPath] = {
-              ...cachedProfilesStore[oldPath],
-              filePath: newPath,
-              updatedAt: Date.now()
+          // Migrate cached profile if present according to selective options
+          const oldProfile = store[oldPath];
+          if (oldProfile) {
+            const newProfile: TrackProfile = {
+              ...oldProfile,
+              markers: repairMigrateMarkers ? (oldProfile.markers ? oldProfile.markers.map(m => ({ ...m })) : []) : [],
+              nextMarkerId: repairMigrateMarkers ? (oldProfile.nextMarkerId || 1) : 1,
+              regions: repairMigrateRegions ? (oldProfile.regions ? oldProfile.regions.map(r => ({ ...r })) : []) : [],
+              nextRegionId: repairMigrateRegions ? (oldProfile.nextRegionId || 1) : 1,
+              notes: repairMigrateNotes ? (oldProfile.notes || "") : "",
+              lyrics: repairMigrateNotes ? (oldProfile.lyrics || "") : "",
+              dbVolume: repairMigrateVolume ? (oldProfile.dbVolume ?? 0.0) : 0.0,
+              volumeEnvelopeNodes: repairMigrateEnvelope ? (oldProfile.volumeEnvelopeNodes ? oldProfile.volumeEnvelopeNodes.map(n => ({ ...n })) : []) : [],
+              isEnvelopeEnabled: repairMigrateEnvelope ? (oldProfile.isEnvelopeEnabled ?? true) : true,
+              isEqBypassed: repairMigrateEq ? (oldProfile.isEqBypassed ?? false) : false,
+              eqNodes: repairMigrateEq && oldProfile.eqNodes ? oldProfile.eqNodes.map(n => ({ ...n })) : undefined,
+              eqBass: repairMigrateEq ? (oldProfile.eqBass ?? 0) : 0,
+              eqMid: repairMigrateEq ? (oldProfile.eqMid ?? 0) : 0,
+              eqTreble: repairMigrateEq ? (oldProfile.eqTreble ?? 0) : 0,
+              isCompressorBypassed: repairMigrateComp ? (oldProfile.isCompressorBypassed ?? true) : true,
+              compStage1: repairMigrateComp && oldProfile.compStage1 ? { ...oldProfile.compStage1 } : undefined,
+              compStage2: repairMigrateComp && oldProfile.compStage2 ? { ...oldProfile.compStage2 } : undefined
             };
+            store[newPath] = newProfile;
           }
         }
       }
@@ -1128,9 +1477,7 @@
 
     playlistItems = [...playlistItems];
     localStorage.setItem("th_playlist", JSON.stringify(playlistItems));
-    try {
-      localStorage.setItem("th_track_profiles_v1", JSON.stringify(cachedProfilesStore));
-    } catch (e) {}
+    flushProfilesToLocalStorage();
 
     checkPlaylistHealthStatus();
     showRepairModal = false;
@@ -1231,6 +1578,9 @@
     nextMarkerId: number;
     regions?: Region[];
     nextRegionId?: number;
+    volumeEnvelopeNodes?: VolumeEnvelopeNode[];
+    isEnvelopeEnabled?: boolean;
+    primarySongTrackPath?: string | null;
     associatedFiles?: AssociatedFileItem[];
     pdfChartPath?: string;
     pdfChartName?: string;
@@ -1271,6 +1621,104 @@
     }
   }
 
+  /**
+   * Bi-directionally synchronizes a song collection across all member audio files.
+   * If File A associates File B and Doc C, then File B also has File A and Doc C as associated files,
+   * with shared rehearsal markers, notes, lyrics, and sheet music.
+   */
+  function syncBidirectionalCollection(activeTrackPath: string) {
+    if (!activeTrackPath) return;
+    const store = getProfilesStore();
+    const currentProfile = store[activeTrackPath];
+    if (!currentProfile) return;
+
+    const primaryPath = primarySongTrackPath || currentProfile.primarySongTrackPath || activeTrackPath;
+
+    // 1. Gather all unique files belonging to this song collection
+    const allFilesMap = new Map<string, AssociatedFileItem>();
+
+    // Non-audio files from active associatedFiles (e.g. PDFs, charts)
+    for (const f of associatedFiles) {
+      if (f.fileType !== 'audio' && f.path) {
+        allFilesMap.set(f.path, { ...f });
+      }
+    }
+
+    // Audio files currently in associatedFiles
+    for (const f of associatedFiles) {
+      if (f.fileType === 'audio' && f.path) {
+        allFilesMap.set(f.path, { ...f });
+      }
+    }
+
+    // Active track itself
+    if (!allFilesMap.has(activeTrackPath)) {
+      const isPrimary = activeTrackPath === primaryPath;
+      allFilesMap.set(activeTrackPath, {
+        id: "track-active-" + activeTrackPath.replace(/[^a-zA-Z0-9]/g, "_"),
+        name: activeTrackPath.split("/").pop() || activeTrackPath,
+        path: activeTrackPath,
+        fileType: "audio",
+        role: isPrimary ? "main" : (isLosslessAudio(activeTrackPath) ? "hires" : "orig")
+      });
+    }
+
+    // Primary default track (if different from activeTrackPath)
+    if (primaryPath && primaryPath !== activeTrackPath && !allFilesMap.has(primaryPath)) {
+      allFilesMap.set(primaryPath, {
+        id: "track-primary-" + primaryPath.replace(/[^a-zA-Z0-9]/g, "_"),
+        name: primaryPath.split("/").pop() || primaryPath,
+        path: primaryPath,
+        fileType: "audio",
+        role: isLosslessAudio(primaryPath) ? "hires" : "main"
+      });
+    }
+
+    const allAudioItems = Array.from(allFilesMap.values()).filter(f => f.fileType === 'audio');
+    const allNonAudioItems = Array.from(allFilesMap.values()).filter(f => f.fileType !== 'audio');
+
+    // If only 1 audio file and 0 non-audio files, nothing to synchronize to peers
+    if (allAudioItems.length <= 1 && allNonAudioItems.length === 0) {
+      currentProfile.primarySongTrackPath = primaryPath;
+      flushProfilesToLocalStorage();
+      return;
+    }
+
+    // Propagate to every audio file in the song collection
+    for (const audioMember of allAudioItems) {
+      if (audioMember.path === activeTrackPath) {
+        currentProfile.primarySongTrackPath = primaryPath;
+        continue;
+      }
+
+      // For peer audio member: its associatedFiles should be all other items in the collection
+      const peerAssociatedFiles: AssociatedFileItem[] = [
+        ...allNonAudioItems.map(f => ({ ...f })),
+        ...allAudioItems.filter(f => f.path !== audioMember.path).map(f => ({ ...f }))
+      ];
+
+      const peerProfile = store[audioMember.path] || ({} as TrackProfile);
+      store[audioMember.path] = {
+        ...peerProfile,
+        primarySongTrackPath: primaryPath,
+        associatedFiles: peerAssociatedFiles,
+        pdfChartPath: pdfChartPath || peerProfile.pdfChartPath || "",
+        pdfChartName: pdfChartName || peerProfile.pdfChartName || "",
+        markers: markers.map(m => ({ ...m })),
+        nextMarkerId,
+        regions: regions.map(r => ({ ...r })),
+        nextRegionId,
+        notes: songNotes || peerProfile.notes || "",
+        lyrics: songLyrics || peerProfile.lyrics || "",
+        notesViewMode,
+        lyricsViewMode,
+        lastCenterTab: activeCenterTab
+      };
+    }
+
+    flushProfilesToLocalStorage();
+  }
+
   let trackProfileDebounceTimer: any = null;
 
   function saveCurrentTrackProfile(trackPath: string | null, immediate = false) {
@@ -1285,10 +1733,11 @@
 
     const store = getProfilesStore();
     const existing = store[trackPath] || ({} as TrackProfile);
-    const isMain = activeTrackMode === "main" || trackPath === mainTrack?.path;
+    const primary = primarySongTrackPath || existing.primarySongTrackPath || trackPath;
 
     store[trackPath] = {
       ...existing,
+      primarySongTrackPath: primary,
       dbVolume,
       speed,
       pitch,
@@ -1310,19 +1759,22 @@
       nextMarkerId,
       regions: regions.map(r => ({ ...r })),
       nextRegionId,
-      associatedFiles: isMain ? associatedFiles.map(a => ({ ...a })) : (existing.associatedFiles || []),
-      pdfChartPath: isMain ? pdfChartPath : (existing.pdfChartPath || ""),
-      pdfChartName: isMain ? pdfChartName : (existing.pdfChartName || ""),
-      associatedVersions: isMain ? associatedVersions.map(v => ({ ...v })) : (existing.associatedVersions || []),
-      alternateTrackPath: isMain ? (alternateTrack ? alternateTrack.path : null) : (existing.alternateTrackPath || null),
-      notes: isMain ? songNotes : (existing.notes || ""),
-      lyrics: isMain ? songLyrics : (existing.lyrics || ""),
+      volumeEnvelopeNodes: volumeEnvelopeNodes.map(n => ({ ...n })),
+      isEnvelopeEnabled,
+      associatedFiles: associatedFiles.map(a => ({ ...a })),
+      pdfChartPath,
+      pdfChartName,
+      associatedVersions: associatedVersions.map(v => ({ ...v })),
+      alternateTrackPath: alternateTrack ? alternateTrack.path : null,
+      notes: songNotes,
+      lyrics: songLyrics,
       notesViewMode,
       lyricsViewMode,
       lastCenterTab: activeCenterTab
     };
 
-    flushProfilesToLocalStorage();
+    // Propagate bidirectional associations across all audio peers in this collection
+    syncBidirectionalCollection(trackPath);
   }
 
   async function updatePitchEngine() {
@@ -1474,9 +1926,285 @@
   }
 
   function unlinkAssociatedFile(id: string) {
+    const unlinkedItem = associatedFiles.find(f => f.id === id);
     associatedFiles = associatedFiles.filter(f => f.id !== id);
-    saveCurrentTrackProfile(filePath);
+    if (unlinkedItem && unlinkedItem.path) {
+      const store = getProfilesStore();
+      if (store[unlinkedItem.path]) {
+        store[unlinkedItem.path].associatedFiles = [];
+        store[unlinkedItem.path].primarySongTrackPath = null;
+      }
+    }
+    saveCurrentTrackProfile(filePath, true);
   }
+
+  function handleUvrSeparationComplete(files: Array<{ name: string; path: string; role: string; fileType: string }>) {
+    let newlyAdded = 0;
+    for (const file of files) {
+      if (!associatedFiles.some(f => f.path === file.path)) {
+        associatedFiles.push({
+          id: "uvr_" + Date.now() + "_" + Math.random().toString(36).substring(2, 6),
+          name: file.name,
+          path: file.path,
+          fileType: "audio",
+          role: file.role,
+        });
+        newlyAdded++;
+      }
+    }
+    if (newlyAdded > 0) {
+      associatedFiles = [...associatedFiles];
+      saveCurrentTrackProfile(filePath, true);
+      uvrSuccessMessage = `Separation complete! Added ${newlyAdded} stem${newlyAdded > 1 ? 's' : ''} to Associated Files.`;
+      setTimeout(() => {
+        uvrSuccessMessage = null;
+      }, 7000);
+    }
+  }
+
+  function getTrackWatermarkLabel(): string {
+    if (!filePath) return "";
+    const activeAssoc = associatedFiles.find(f => f.path === filePath);
+    if (activeAssoc) {
+      if (activeAssoc.role === 'lead' || activeAssoc.name.toLowerCase().includes('lead vocal')) return "LEAD VOCALS";
+      if (activeAssoc.role === 'backings' || activeAssoc.name.toLowerCase().includes('backing vocal')) return "BACKING VOCALS";
+      if (activeAssoc.role === 'vocals' || activeAssoc.name.toLowerCase().includes('vocals ensemble') || activeAssoc.name.toLowerCase().includes('(vocals)')) return "VOCALS ONLY";
+      if (isLosslessAudio(activeAssoc.path || activeAssoc.name)) return "HIGH-RES MASTER";
+      if (activeAssoc.id === 'audio-orig' || activeAssoc.name.toLowerCase().includes('original')) return "ORIGINAL ARTIST";
+      return activeAssoc.name.toUpperCase();
+    }
+    if (isLosslessAudio(filePath)) return "HIGH-RES MASTER";
+    return "DEFAULT MIX";
+  }
+
+  async function loadAudioVersion(path: string, preservePlayhead = true) {
+    if (!path) return;
+    if (filePath === path) return;
+
+    const wasPlaying = isPlaying;
+    const sourceTime = currentTime;
+
+    // Track A/B history
+    if (filePath) {
+      abPreviousTrackPath = filePath;
+    }
+
+    if (!primarySongTrackPath) {
+      primarySongTrackPath = filePath || path;
+    }
+
+    await loadAudioPath(path, "main", true);
+
+    // If preservePlayhead and we had playback time, seek to keep exact same time position
+    if (preservePlayhead && sourceTime > 0 && sourceTime < duration) {
+      currentTime = sourceTime;
+      progress = duration > 0 ? currentTime / duration : 0;
+      await invoke("seek", { seconds: sourceTime });
+    }
+
+    if (wasPlaying) {
+      await invoke("play");
+      isPlaying = true;
+    }
+
+    uvrSuccessMessage = `Loaded "${fileName}" into waveform`;
+    setTimeout(() => {
+      if (uvrSuccessMessage && uvrSuccessMessage.includes("Loaded")) uvrSuccessMessage = null;
+    }, 3500);
+  }
+
+  async function loadAssociatedTrackIntoActive(item: AssociatedFileItem) {
+    if (!item || item.fileType !== 'audio' || !item.path) return;
+    await loadAudioVersion(item.path, true);
+  }
+
+  async function triggerAbCompare() {
+    // Determine the A/B flip target
+    let targetPath: string | null = null;
+
+    if (primarySongTrackPath && filePath === primarySongTrackPath) {
+      // Currently on primary mix, flip to the previously used stem
+      targetPath = abPreviousTrackPath;
+    } else if (primarySongTrackPath && filePath !== primarySongTrackPath) {
+      // Currently on a stem, flip back to primary mix
+      targetPath = primarySongTrackPath;
+    } else if (abPreviousTrackPath && filePath !== abPreviousTrackPath) {
+      targetPath = abPreviousTrackPath;
+    }
+
+    // Fallback: if no flip target recorded yet, pick the first other associated audio file
+    if (!targetPath || targetPath === filePath) {
+      const candidate = associatedFiles.find(f => f.fileType === 'audio' && f.path !== filePath);
+      if (candidate) {
+        targetPath = candidate.path;
+      }
+    }
+
+    if (targetPath && targetPath !== filePath) {
+      await loadAudioVersion(targetPath, true);
+    }
+  }
+
+  function setDefaultSongTrack(item: AssociatedFileItem) {
+    if (!item || item.fileType !== 'audio' || !item.path) return;
+    primarySongTrackPath = item.path;
+
+    // Update playlist item path if this song is in the playlist
+    if (selectedPlaylistIndex >= 0 && selectedPlaylistIndex < playlistItems.length) {
+      playlistItems[selectedPlaylistIndex].path = item.path;
+      playlistItems = [...playlistItems];
+      localStorage.setItem("th_playlist", JSON.stringify(playlistItems));
+    }
+
+    saveCurrentTrackProfile(filePath, true);
+
+    uvrSuccessMessage = `Set "${item.name}" as Default Track for this song`;
+    setTimeout(() => {
+      if (uvrSuccessMessage && uvrSuccessMessage.includes("Set")) uvrSuccessMessage = null;
+    }, 4000);
+  }
+
+  function handleAssocFileContextMenu(e: MouseEvent, item: AssociatedFileItem) {
+    e.preventDefault();
+    e.stopPropagation();
+    contextMenuType = "assoc-file";
+    contextMenuTargetAssoc = item;
+    contextMenuX = e.clientX;
+    contextMenuY = e.clientY;
+    showContextMenu = true;
+  }
+
+  async function checkAndApplyHighResPreference(targetProfileAssocFiles?: AssociatedFileItem[]) {
+    if (!preferHighResAudio) return false;
+    const list = targetProfileAssocFiles || associatedFiles;
+    if (!list || list.length === 0) return false;
+
+    // Look for a lossless audio file
+    const hiresItem = list.find(f => f.fileType === 'audio' && (f.role === 'hires' || isLosslessAudio(f.path || f.name)));
+    if (!hiresItem || !hiresItem.path) return false;
+
+    try {
+      const isDownloaded: boolean = await invoke("is_file_downloaded", { path: hiresItem.path });
+      if (isDownloaded) {
+        if (filePath !== hiresItem.path) {
+          console.log("Preferring downloaded high-res track:", hiresItem.path);
+          await loadAudioPath(hiresItem.path, "main", true);
+          return true;
+        }
+      } else {
+        console.log("High-res file exists but is not downloaded locally:", hiresItem.path);
+      }
+    } catch (e) {
+      console.error("Failed to check high-res download status:", e);
+    }
+    return false;
+  }
+
+  async function togglePreferHighResAudio() {
+    preferHighResAudio = !preferHighResAudio;
+    localStorage.setItem("th_prefer_high_res", preferHighResAudio ? "true" : "false");
+    
+    if (preferHighResAudio) {
+      const applied = await checkAndApplyHighResPreference();
+      if (applied) {
+        uvrSuccessMessage = "Switched to downloaded High-Res Lossless audio!";
+        setTimeout(() => { if (uvrSuccessMessage?.includes("High-Res")) uvrSuccessMessage = null; }, 4000);
+      } else {
+        const hasLossless = associatedFiles.some(f => f.fileType === 'audio' && (f.role === 'hires' || isLosslessAudio(f.path || f.name)));
+        if (hasLossless) {
+          alert("High-Res audio found, but it is currently online-only in Dropbox and not downloaded to this Mac.");
+        } else {
+          uvrSuccessMessage = "Prefer High-Res enabled (will load high-res when available & downloaded).";
+          setTimeout(() => { if (uvrSuccessMessage?.includes("Prefer High-Res")) uvrSuccessMessage = null; }, 4000);
+        }
+      }
+    } else {
+      // If turned off, check if currently playing high-res and we have an AAC or other track to revert to
+      if (filePath && isLosslessAudio(filePath)) {
+        const standardVersion = associatedFiles.find(f => f.fileType === 'audio' && !isLosslessAudio(f.path || f.name) && (f.role === 'main' || !f.role || f.role === 'orig'));
+        if (standardVersion && standardVersion.path) {
+          await loadAudioPath(standardVersion.path, "main", true);
+        }
+      }
+      uvrSuccessMessage = "Prefer High-Res disabled. Using standard AAC main tracks.";
+      setTimeout(() => { if (uvrSuccessMessage?.includes("Prefer High-Res")) uvrSuccessMessage = null; }, 4000);
+    }
+  }
+
+  async function triggerUvrSeparation(mode: 'ensemble_vocals' | 'lead_backups', trackPath?: string) {
+    const target = trackPath || filePath;
+    if (!target) {
+      alert("Please select or load an audio track first.");
+      return;
+    }
+    uvrSeparating = true;
+    uvrPercent = 0;
+    uvrStage = mode === "ensemble_vocals" ? "Initializing 4-Model Ensemble..." : "Initializing 5HP Karaoke...";
+    uvrCurrentTarget = target.split("/").pop() || target;
+    uvrErrorMessage = null;
+    uvrSuccessMessage = null;
+
+    try {
+      const res: any = await invoke("run_uvr_separation", {
+        trackPath: target,
+        mode,
+        outputDir: null
+      });
+      if (res && res.files && res.files.length > 0) {
+        handleUvrSeparationComplete(res.files);
+      }
+    } catch (e: any) {
+      console.error("UVR separation failed:", e);
+      uvrErrorMessage = typeof e === "string" ? e : (e.message || "UVR separation error");
+    } finally {
+      uvrSeparating = false;
+    }
+  }
+
+  function requestMoveToTrash(item: AssociatedFileItem) {
+    itemToTrash = item;
+    trashErrorMessage = null;
+    showTrashModal = true;
+  }
+
+  async function executeMoveToTrash() {
+    if (!itemToTrash) return;
+    trashLoading = true;
+    trashErrorMessage = null;
+    try {
+      await invoke("move_file_to_trash", { path: itemToTrash.path });
+      const trashedPath = itemToTrash.path;
+      // Remove from associatedFiles
+      associatedFiles = associatedFiles.filter(f => f.id !== itemToTrash!.id);
+      if (trashedPath) {
+        const store = getProfilesStore();
+        if (store[trashedPath]) {
+          delete store[trashedPath];
+        }
+      }
+      if (trashedPath === filePath) {
+        const nextAudio = associatedFiles.find(f => f.fileType === 'audio');
+        if (nextAudio && nextAudio.path) {
+          await loadAudioPath(nextAudio.path, "main", true);
+        } else if (primarySongTrackPath && primarySongTrackPath !== trashedPath) {
+          await loadAudioPath(primarySongTrackPath, "main", true);
+        } else {
+          handleStop();
+          filePath = "";
+          fileName = "";
+        }
+      }
+      saveCurrentTrackProfile(filePath, true);
+      showTrashModal = false;
+      itemToTrash = null;
+    } catch (e: any) {
+      console.error("Move to trash failed:", e);
+      trashErrorMessage = typeof e === "string" ? e : (e.message || "Failed to move file to trash");
+    } finally {
+      trashLoading = false;
+    }
+  }
+
 
   function getActivePdfContainer(): HTMLElement | null {
     if (activeCenterTab.startsWith("pdf-")) {
@@ -2049,7 +2777,21 @@
 
   async function loadTrackProfile(trackPath: string, isMainSong = true) {
     const store = getProfilesStore();
-    const profile = store[trackPath];
+    let profile = store[trackPath];
+    let parentKey: string | null = null;
+
+    // Check if this track belongs to an existing collection in the store
+    // (If profile is missing OR its associatedFiles is empty, check if another profile has trackPath in its associatedFiles)
+    if (!profile || !profile.associatedFiles || profile.associatedFiles.length === 0) {
+      for (const [key, p] of Object.entries(store)) {
+        if (key !== trackPath && p.associatedFiles && p.associatedFiles.some(f => f.path === trackPath)) {
+          profile = p;
+          parentKey = key;
+          break;
+        }
+      }
+    }
+
     if (profile) {
       dbVolume = typeof profile.dbVolume === "number" ? profile.dbVolume : 0.0;
       speed = typeof profile.speed === "number" ? profile.speed : 1.0;
@@ -2113,13 +2855,28 @@
       nextMarkerId = typeof profile.nextMarkerId === "number" ? profile.nextMarkerId : (markers.length + 1);
       regions = Array.isArray(profile.regions) ? [...profile.regions] : [];
       nextRegionId = typeof profile.nextRegionId === "number" ? profile.nextRegionId : (regions.length + 1);
+      volumeEnvelopeNodes = Array.isArray(profile.volumeEnvelopeNodes) ? [...profile.volumeEnvelopeNodes] : [];
+      isEnvelopeEnabled = typeof profile.isEnvelopeEnabled === "boolean" ? profile.isEnvelopeEnabled : true;
+      selectedEnvelopeNodeId = null;
 
-      if (isMainSong) {
-        pdfChartPath = profile.pdfChartPath || "";
-        pdfChartName = profile.pdfChartName || (pdfChartPath ? (pdfChartPath.split("/").pop() || "") : "");
-        associatedVersions = Array.isArray(profile.associatedVersions) ? profile.associatedVersions : [];
-        
-        // Populate associatedFiles
+      pdfChartPath = profile.pdfChartPath || "";
+      pdfChartName = profile.pdfChartName || (pdfChartPath ? (pdfChartPath.split("/").pop() || "") : "");
+      associatedVersions = Array.isArray(profile.associatedVersions) ? profile.associatedVersions : [];
+      
+      // Populate bidirectional associatedFiles and primary track
+      if (parentKey) {
+        primarySongTrackPath = profile.primarySongTrackPath || parentKey;
+        const parentItem: AssociatedFileItem = {
+          id: "track-parent-" + parentKey.replace(/[^a-zA-Z0-9]/g, "_"),
+          name: parentKey.split("/").pop() || parentKey,
+          path: parentKey,
+          fileType: "audio",
+          role: parentKey === primarySongTrackPath ? "main" : (isLosslessAudio(parentKey) ? "hires" : "orig")
+        };
+        const siblingItems = (profile.associatedFiles || []).filter(f => f.path !== trackPath);
+        associatedFiles = [parentItem, ...siblingItems];
+      } else {
+        primarySongTrackPath = profile.primarySongTrackPath || trackPath;
         if (Array.isArray(profile.associatedFiles)) {
           associatedFiles = [...profile.associatedFiles];
         } else {
@@ -2132,32 +2889,32 @@
               fileType: "pdf"
             });
           }
-          for (const ver of associatedVersions) {
-            associatedFiles.push({
-              id: "track-" + ver.path,
-              name: ver.name,
-              path: ver.path,
-              fileType: "audio"
-            });
-          }
         }
+      }
 
-        songNotes = profile.notes || "";
-        songLyrics = profile.lyrics || "";
-        notesViewMode = profile.notesViewMode || "edit";
-        lyricsViewMode = profile.lyricsViewMode || "edit";
+      songNotes = profile.notes || "";
+      songLyrics = profile.lyrics || "";
+      notesViewMode = profile.notesViewMode || "edit";
+      lyricsViewMode = profile.lyricsViewMode || "edit";
 
-        if (profile.lastCenterTab) {
-          activeCenterTab = profile.lastCenterTab;
-        } else {
-          activeCenterTab = "notes";
-        }
-        
-        if (profile.alternateTrackPath && profile.alternateTrackPath !== trackPath) {
-          loadAudioPath(profile.alternateTrackPath, "alternate", false);
-        } else {
-          alternateTrack = null;
-        }
+      if (profile.lastCenterTab) {
+        activeCenterTab = profile.lastCenterTab;
+      } else {
+        activeCenterTab = "notes";
+      }
+      
+      if (profile.alternateTrackPath && profile.alternateTrackPath !== trackPath) {
+        loadAudioPath(profile.alternateTrackPath, "alternate", false);
+      } else {
+        alternateTrack = null;
+      }
+
+      // Sync and persist this track's profile in the collection
+      saveCurrentTrackProfile(trackPath, true);
+
+      // If Prefer High-Res is enabled, check if downloaded lossless version is available
+      if (preferHighResAudio && !isLosslessAudio(trackPath)) {
+        checkAndApplyHighResPreference(associatedFiles);
       }
     } else {
       // Default clean settings for newly loaded song or fresh alternate track
@@ -2208,22 +2965,25 @@
       nextMarkerId = 1;
       regions = [];
       nextRegionId = 1;
+      volumeEnvelopeNodes = [];
+      isEnvelopeEnabled = true;
+      selectedEnvelopeNodeId = null;
 
-      if (isMainSong) {
-        pdfChartPath = "";
-        pdfChartName = "";
-        associatedVersions = [];
-        associatedFiles = [];
-        songNotes = "";
-        songLyrics = "";
-        notesViewMode = "edit";
-        lyricsViewMode = "edit";
-        alternateTrack = null;
-        activeCenterTab = "notes";
-      }
+      primarySongTrackPath = trackPath;
+      pdfChartPath = "";
+      pdfChartName = "";
+      associatedVersions = [];
+      associatedFiles = [];
+      songNotes = "";
+      songLyrics = "";
+      notesViewMode = "edit";
+      lyricsViewMode = "edit";
+      alternateTrack = null;
+      activeCenterTab = "notes";
+      saveCurrentTrackProfile(trackPath, true);
     }
 
-    // Apply restored volume, speed, pitch, EQ, compressor, and regions directly to audio engine
+    // Apply restored volume, speed, pitch, EQ, compressor, regions, and volume envelope directly to audio engine
     const linearVol = dbVolume <= -59.5 ? 0 : Math.pow(10, dbVolume / 20);
     await invoke("set_volume", { volume: linearVol });
     await invoke("set_speed", { speed });
@@ -2232,6 +2992,7 @@
     await updateEqEngine();
     await updateCompressorEngine();
     await syncRegionsToEngine();
+    await updateVolumeEnvelopeEngine();
   }
 
   // Canvas elements & Offscreen static render caches
@@ -2274,6 +3035,30 @@
   onMount(() => {
     loadAppPreferences();
 
+    // Restore Sidebar Widths
+    const savedLeftWidth = localStorage.getItem("th_left_sidebar_width");
+    if (savedLeftWidth) {
+      const parsed = parseInt(savedLeftWidth, 10);
+      if (!isNaN(parsed) && parsed >= 160 && parsed <= 600) leftSidebarWidth = parsed;
+    }
+    const savedRightWidth = localStorage.getItem("th_right_sidebar_width");
+    if (savedRightWidth) {
+      const parsed = parseInt(savedRightWidth, 10);
+      if (!isNaN(parsed) && parsed >= 180 && parsed <= 700) rightSidebarWidth = parsed;
+    }
+
+    // Restore Setlist Import Modal Size
+    const savedModalW = localStorage.getItem("th_setlist_modal_w");
+    if (savedModalW) {
+      const parsed = parseInt(savedModalW, 10);
+      if (!isNaN(parsed) && parsed >= 550) setlistModalWidth = Math.min(parsed, window.innerWidth * 0.96);
+    }
+    const savedModalH = localStorage.getItem("th_setlist_modal_h");
+    if (savedModalH) {
+      const parsed = parseInt(savedModalH, 10);
+      if (!isNaN(parsed) && parsed >= 400) setlistModalHeight = Math.min(parsed, window.innerHeight * 0.94);
+    }
+
     // Initial folder load
     const lastDir = localStorage.getItem("th_last_dir");
     loadBrowser(lastDir);
@@ -2311,6 +3096,28 @@
 
     const savedVersions = localStorage.getItem("th_associated_versions");
     if (savedVersions) associatedVersions = JSON.parse(savedVersions);
+
+    // UVR Event Listeners
+    listen<{ percent: number; stage: string }>("uvr-progress", (event) => {
+      uvrSeparating = true;
+      uvrPercent = event.payload.percent;
+      uvrStage = event.payload.stage;
+    });
+
+    listen<{ success: boolean; files: Array<{ name: string; path: string; role: string; fileType: string }>; error?: string }>("uvr-complete", (event) => {
+      uvrSeparating = false;
+      uvrPercent = 100;
+      uvrStage = "Done!";
+      if (event.payload.files && event.payload.files.length > 0) {
+        handleUvrSeparationComplete(event.payload.files);
+      }
+    });
+
+    listen<string>("uvr-error", (event) => {
+      uvrSeparating = false;
+      uvrErrorMessage = event.payload;
+    });
+
 
     // Restore last loaded tracks and active state
     (async () => {
@@ -2525,23 +3332,16 @@
 
       if (e.code === "Space") {
         e.preventDefault();
-        
-        // Option 2: If actively navigating playlist and a different track is highlighted, load and immediately play!
-        if (activeTab === "playlist" && selectedPlaylistIndex >= 0 && selectedPlaylistIndex < playlistItems.length) {
-          const highlighted = playlistItems[selectedPlaylistIndex];
-          if (highlighted && highlighted.path !== filePath) {
-            loadAudioPath(highlighted.path, "main", true).then(async () => {
-              await invoke("play");
-              isPlaying = true;
-            });
-            return;
-          }
+        if (typeToJumpBuffer.length > 1) {
+          performTypeToJump(typeToJumpBuffer);
         }
-
-        // Standard Play/Pause toggle
+        clearTypeahead();
+        // Standard Play/Pause toggle for currently loaded track
         handlePlayPause();
+        return;
       } else if (e.code === "ArrowUp") {
         e.preventDefault();
+        clearTypeahead();
         if (e.altKey && activeTab === "playlist" && selectedPlaylistIndex >= 0) {
           movePlaylistItem(selectedPlaylistIndex, selectedPlaylistIndex - 1);
           scrollSelectedPlaylistItemIntoView();
@@ -2566,8 +3366,10 @@
             scrollSelectedBrowserItemIntoView();
           }
         }
+        return;
       } else if (e.code === "ArrowDown") {
         e.preventDefault();
+        clearTypeahead();
         if (e.altKey && activeTab === "playlist" && selectedPlaylistIndex >= 0) {
           movePlaylistItem(selectedPlaylistIndex, selectedPlaylistIndex + 1);
           scrollSelectedPlaylistItemIntoView();
@@ -2592,34 +3394,23 @@
             scrollSelectedBrowserItemIntoView();
           }
         }
-      } else if (e.code === "KeyM" || e.key === "m" || e.key === "M") {
-        if (!e.metaKey && !e.ctrlKey && !e.altKey) {
-          e.preventDefault();
-          addMarker();
-        }
-      } else if (e.code === "KeyR" || e.key === "r" || e.key === "R") {
-        if (!e.metaKey && !e.ctrlKey && !e.altKey) {
-          e.preventDefault();
-          createRegionFromSelectionOrMarkers();
-        }
-      } else if (e.code === "KeyX" || e.key === "x" || e.key === "X") {
-        if (!e.metaKey && !e.ctrlKey && !e.altKey) {
-          e.preventDefault();
-          handleCutHotkey();
-        }
-      } else if (e.code === "KeyL" || e.key === "l" || e.key === "L") {
-        if (!e.metaKey && !e.ctrlKey && !e.altKey) {
-          e.preventDefault();
-          handleLoopHotkey();
-        }
+        return;
       } else if (e.code === "ArrowLeft") {
         e.preventDefault();
+        clearTypeahead();
         jumpToPrevMarker();
+        return;
       } else if (e.code === "ArrowRight") {
         e.preventDefault();
+        clearTypeahead();
         jumpToNextMarker();
+        return;
       } else if (e.code === "Enter" || e.code === "NumpadEnter") {
         e.preventDefault();
+        if (typeToJumpBuffer.length > 1) {
+          performTypeToJump(typeToJumpBuffer);
+        }
+        clearTypeahead();
         if (activeTab === "browser" && lastSelectedEntry) {
           if (lastSelectedEntry.is_dir) {
             loadBrowser(lastSelectedEntry.path);
@@ -2642,15 +3433,96 @@
         } else {
           handleStop();
         }
+        return;
+      } else if (e.code === "Delete" || e.code === "Backspace") {
+        clearTypeahead();
+        if (selectedEnvelopeNodeId) {
+          e.preventDefault();
+          removeVolumeEnvelopeNode(selectedEnvelopeNodeId);
+          return;
+        }
+        return;
       } else if (e.code === "Escape") {
         e.preventDefault();
         showContextMenu = false;
         colorPaletteMarker = null;
         cancelRenameMarker();
+        selectedEnvelopeNodeId = null;
+        clearTypeahead();
         handleStop();
+        return;
+      }
+
+      // If active typeahead is buffering input, ANY printable character appends to the search buffer!
+      if (typeToJumpBuffer.length > 0 && e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        handleTypeaheadKey(e.key);
+        return;
+      }
+
+      // Hotkeys for audio waveform actions vs. typeahead in sidebar
+      const isSidebarFocused = lastFocusedPane === "sidebar";
+
+      if ((e.code === "KeyT" || e.key === "t" || e.key === "T") && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        if (isSidebarFocused) {
+          handleTypeaheadKey(e.key);
+        } else {
+          triggerAbCompare();
+        }
+        return;
+      }
+
+      if ((e.code === "KeyM" || e.key === "m" || e.key === "M") && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        if (isSidebarFocused) {
+          handleTypeaheadKey(e.key);
+        } else {
+          addMarker();
+        }
+        return;
+      }
+
+      if ((e.code === "KeyR" || e.key === "r" || e.key === "R") && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        if (isSidebarFocused) {
+          handleTypeaheadKey(e.key);
+        } else {
+          createRegionFromSelectionOrMarkers();
+        }
+        return;
+      }
+
+      if ((e.code === "KeyX" || e.key === "x" || e.key === "X") && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        if (isSidebarFocused) {
+          handleTypeaheadKey(e.key);
+        } else {
+          handleCutHotkey();
+        }
+        return;
+      }
+
+      if ((e.code === "KeyL" || e.key === "l" || e.key === "L") && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        if (isSidebarFocused) {
+          handleTypeaheadKey(e.key);
+        } else {
+          handleLoopHotkey();
+        }
+        return;
+      }
+
+      // Standard printable characters (letters, numbers, symbols) -> initiate type-to-jump in sidebar!
+      if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        lastFocusedPane = "sidebar";
+        handleTypeaheadKey(e.key);
+        return;
       }
     };
     window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("mousedown", handleContainerMousedown);
 
     return () => {
       clearInterval(statusInterval);
@@ -2660,6 +3532,7 @@
       unlistenRemote.then(fn => fn());
       unlistenMidi.then(fn => fn());
       window.removeEventListener("click", closeMenu);
+      window.removeEventListener("mousedown", handleContainerMousedown);
       window.removeEventListener("keydown", handleKeyDown);
     };
   });
@@ -3038,13 +3911,64 @@
     }
   }
 
-  function performTypeToJump() {
-    if (!typeToJumpBuffer) return;
-    
+  // Type-To-Jump & Typeahead Engine
+  const TYPEAHEAD_REST_PERIOD_MS = 750;
+
+  function cleanItemNameForSearch(name: string): string {
+    if (!name) return "";
+    const withoutExt = name.replace(/\.[a-zA-Z0-9]+$/, "");
+    const withoutTrackNum = withoutExt.replace(/^([a-zA-Z]?\d+[\s\.\-_]+)+/, "");
+    return withoutTrackNum.trim() || withoutExt.trim() || name.trim();
+  }
+
+  function matchesTypeahead(name: string, query: string): boolean {
+    if (!name || !query) return false;
+    const q = query.toLowerCase();
+    const raw = name.toLowerCase();
+    if (raw.startsWith(q)) return true;
+    const cleaned = cleanItemNameForSearch(name).toLowerCase();
+    if (cleaned.startsWith(q)) return true;
+    if (raw.replace(/^the[\s\._-]+/, "").startsWith(q)) return true;
+    if (cleaned.replace(/^the[\s\._-]+/, "").startsWith(q)) return true;
+    return false;
+  }
+
+  function findMatchingBrowserIndex(query: string, startIndex = 0): number {
+    if (!query || filteredEntries.length === 0) return -1;
+    for (let i = startIndex; i < filteredEntries.length; i++) {
+      if (matchesTypeahead(filteredEntries[i].name, query)) return i;
+    }
+    if (startIndex > 0) {
+      for (let i = 0; i < startIndex; i++) {
+        if (matchesTypeahead(filteredEntries[i].name, query)) return i;
+      }
+    }
+    return -1;
+  }
+
+  function findMatchingPlaylistIndex(query: string, startIndex = 0): number {
+    if (!query || playlistItems.length === 0) return -1;
+    for (let i = startIndex; i < playlistItems.length; i++) {
+      if (matchesTypeahead(playlistItems[i].name, query)) return i;
+    }
+    if (startIndex > 0) {
+      for (let i = 0; i < startIndex; i++) {
+        if (matchesTypeahead(playlistItems[i].name, query)) return i;
+      }
+    }
+    return -1;
+  }
+
+  function performTypeToJump(query: string, advanceIfSameChar = false) {
+    if (!query) return;
+
     if (activeTab === "playlist" && playlistItems.length > 0) {
-      const matchIdx = playlistItems.findIndex(entry => 
-        entry.name.toLowerCase().startsWith(typeToJumpBuffer.toLowerCase())
-      );
+      let currentIdx = selectedPlaylistIndex !== -1 ? selectedPlaylistIndex : playlistItems.findIndex(p => p.path === filePath);
+      let startIdx = 0;
+      if (advanceIfSameChar && currentIdx >= 0) {
+        startIdx = currentIdx + 1;
+      }
+      const matchIdx = findMatchingPlaylistIndex(query, startIdx);
       if (matchIdx !== -1) {
         selectedPlaylistIndex = matchIdx;
         scrollSelectedPlaylistItemIntoView();
@@ -3052,18 +3976,87 @@
       return;
     }
 
-    // Otherwise File Browser
-    const match = filteredEntries.find(entry => 
-      entry.name.toLowerCase().startsWith(typeToJumpBuffer.toLowerCase())
-    );
-
-    if (match) {
-      selectedFilePaths.clear();
-      selectedFilePaths.add(match.path);
-      selectedFilePaths = selectedFilePaths;
-      lastSelectedEntry = { name: match.name, path: match.path };
-      scrollSelectedBrowserItemIntoView();
+    if (activeTab === "browser" && filteredEntries.length > 0) {
+      let currentIdx = filteredEntries.findIndex(e => selectedFilePaths.has(e.path));
+      let startIdx = 0;
+      if (advanceIfSameChar && currentIdx >= 0) {
+        startIdx = currentIdx + 1;
+      }
+      const matchIdx = findMatchingBrowserIndex(query, startIdx);
+      if (matchIdx !== -1) {
+        const match = filteredEntries[matchIdx];
+        selectedFilePaths.clear();
+        selectedFilePaths.add(match.path);
+        selectedFilePaths = selectedFilePaths;
+        lastSelectedEntry = { name: match.name, path: match.path };
+        scrollSelectedBrowserItemIntoView();
+      }
     }
+  }
+
+  function handleTypeaheadKey(char: string) {
+    const isFirstChar = typeToJumpBuffer.length === 0;
+
+    if (isFirstChar) {
+      typeToJumpBuffer = char;
+      showTypeaheadIndicator = true;
+      // Immediate jump on first letter!
+      performTypeToJump(typeToJumpBuffer);
+
+      if (typeToJumpTimeout) clearTimeout(typeToJumpTimeout);
+      typeToJumpTimeout = setTimeout(() => {
+        onTypeaheadRestPeriodElapsed();
+      }, TYPEAHEAD_REST_PERIOD_MS);
+    } else {
+      // Within rest window:
+      if (typeToJumpTimeout) clearTimeout(typeToJumpTimeout);
+
+      // Check if user is repeating the same character (e.g. "B" then "B")
+      const isRepeatedSameChar = typeToJumpBuffer.split("").every(c => c.toLowerCase() === char.toLowerCase());
+
+      if (isRepeatedSameChar) {
+        const testBuffer = typeToJumpBuffer + char;
+        const hasMatchForRepeated = (activeTab === "playlist")
+          ? findMatchingPlaylistIndex(testBuffer) !== -1
+          : findMatchingBrowserIndex(testBuffer) !== -1;
+
+        if (hasMatchForRepeated) {
+          typeToJumpBuffer = testBuffer;
+          performTypeToJump(typeToJumpBuffer);
+        } else {
+          // Cycle to next song starting with that letter!
+          performTypeToJump(char, true);
+        }
+      } else {
+        // Multi-character input: e.g. "B" -> "BE" immediately jumps to first "BE" song!
+        typeToJumpBuffer += char;
+        performTypeToJump(typeToJumpBuffer);
+      }
+
+      // Reset the window timer so once the window passes, the next key starts fresh
+      typeToJumpTimeout = setTimeout(() => {
+        onTypeaheadRestPeriodElapsed();
+      }, TYPEAHEAD_REST_PERIOD_MS);
+    }
+  }
+
+  function onTypeaheadRestPeriodElapsed() {
+    // Window passed: clear buffer so subsequent typing starts fresh
+    typeToJumpBuffer = "";
+    showTypeaheadIndicator = false;
+    if (typeToJumpTimeout) {
+      clearTimeout(typeToJumpTimeout);
+      typeToJumpTimeout = null;
+    }
+  }
+
+  function clearTypeahead() {
+    if (typeToJumpTimeout) {
+      clearTimeout(typeToJumpTimeout);
+      typeToJumpTimeout = null;
+    }
+    typeToJumpBuffer = "";
+    showTypeaheadIndicator = false;
   }
 
   function scrollSelectedPlaylistItemIntoView() {
@@ -3396,6 +4389,7 @@
           bakeEq: exportBakeEq,
           bakeCompressor: exportBakeCompressor,
           bakeCuts: exportBakeCuts,
+          bakeEnvelope: exportBakeEnvelope,
           eqBands: eqNodes.map(n => ({
             filterType: n.filterType,
             freq: n.freq,
@@ -3420,6 +4414,11 @@
             isCut: r.isCut,
             crossfadeMs: r.crossfadeMs ?? 5.0
           })),
+          envelopeNodes: isEnvelopeEnabled ? volumeEnvelopeNodes.map(n => ({
+            timeSeconds: n.timeSeconds,
+            gainDb: n.gainDb,
+            curve: n.curve
+          })) : [],
           copyMetadata: exportCopyMetadata
         }
       });
@@ -4024,11 +5023,40 @@
   }
 
   function handleMainCanvasHover(e: MouseEvent) {
-    if (!mainCanvas || isPanning || isShiftSelecting || isDraggingMarker || isDraggingSelectionEdge || isDraggingRegionEdge) return;
+    if (!mainCanvas || isPanning || isShiftSelecting || isDraggingMarker || isDraggingSelectionEdge || isDraggingRegionEdge || isDraggingEnvelopeNode) return;
     const rect = mainCanvas.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
     const windowWidth = 1.0 / zoom;
     const startProgress = zoom > 1.001 ? Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2)) : 0;
+    const startTime = startProgress * duration;
+    const visibleSec = windowWidth * duration;
+
+    // Check envelope node hover
+    if (isEnvelopeOverlayVisible && volumeEnvelopeNodes.length > 0) {
+      const envTopY = 30;
+      const envBotY = rect.height - 10;
+      const envRangeDb = 72.0;
+      const dbToY = (db: number) => envTopY + ((12.0 - Math.max(-60, Math.min(12, db))) / envRangeDb) * (envBotY - envTopY);
+
+      let foundNodeId: string | null = null;
+      for (const node of volumeEnvelopeNodes) {
+        const nx = ((node.timeSeconds - startTime) / visibleSec) * rect.width;
+        const ny = dbToY(node.gainDb);
+        if (Math.hypot(clickX - nx, clickY - ny) <= 10) {
+          foundNodeId = node.id;
+          break;
+        }
+      }
+      if (foundNodeId !== hoveredEnvelopeNodeId) {
+        hoveredEnvelopeNodeId = foundNodeId;
+        drawMainWaveform();
+      }
+      if (foundNodeId) {
+        mainCanvas.style.cursor = "pointer";
+        return;
+      }
+    }
 
     const hovered = getHoveredEdge(clickX, rect.width, startProgress, windowWidth);
     if (hovered) {
@@ -4049,6 +5077,30 @@
     const windowWidth = 1.0 / zoom;
     const startProgress = zoom > 1.001 ? Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2)) : 0;
     const endProgress = startProgress + windowWidth;
+    const startTime = startProgress * duration;
+    const visibleSec = windowWidth * duration;
+
+    // Check if clicked near an envelope node
+    if (isEnvelopeOverlayVisible && volumeEnvelopeNodes.length > 0 && clickY > 20) {
+      const envTopY = 30;
+      const envBotY = rect.height - 10;
+      const envRangeDb = 72.0;
+      const dbToY = (db: number) => envTopY + ((12.0 - Math.max(-60, Math.min(12, db))) / envRangeDb) * (envBotY - envTopY);
+
+      for (const node of volumeEnvelopeNodes) {
+        const nx = ((node.timeSeconds - startTime) / visibleSec) * rect.width;
+        const ny = dbToY(node.gainDb);
+        if (Math.hypot(clickX - nx, clickY - ny) <= 12) {
+          selectedEnvelopeNodeId = node.id;
+          isDraggingEnvelopeNode = true;
+          draggedEnvelopeNodeId = node.id;
+          window.addEventListener("mousemove", handleMainMouseMove);
+          window.addEventListener("mouseup", handleMainMouseUp);
+          drawMainWaveform();
+          return;
+        }
+      }
+    }
 
     // Check if clicked near a marker flag in the top ruler area (top 24px)
     if (clickY <= 24) {
@@ -4110,8 +5162,12 @@
       return;
     }
 
-    // Normal click/pan: clear time selection if clicking plain waveform
+    // Normal click/pan: clear time selection and deselect envelope nodes if clicking plain waveform
     timeSelection = null;
+    if (selectedEnvelopeNodeId) {
+      selectedEnvelopeNodeId = null;
+      drawMainWaveform();
+    }
     
     // Select region if clicked inside its span
     const clickPct = Math.max(0, Math.min(1.0, clickX / rect.width));
@@ -4145,6 +5201,33 @@
       }
       drawMainWaveform();
       drawOverviewWaveform();
+      return;
+    }
+
+    if (isDraggingEnvelopeNode && draggedEnvelopeNodeId && mainCanvas) {
+      const rect = mainCanvas.getBoundingClientRect();
+      const clickX = e.clientX - rect.left;
+      const clickY = e.clientY - rect.top;
+      const windowWidth = 1.0 / zoom;
+      const startProgress = zoom > 1.001 ? Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2)) : 0;
+      const startTime = startProgress * duration;
+      const visibleSec = windowWidth * duration;
+
+      const envTopY = 30;
+      const envBotY = rect.height - 10;
+      const envRangeDb = 72.0;
+      const clampedY = Math.max(envTopY, Math.min(envBotY, clickY));
+      const norm = (clampedY - envTopY) / (envBotY - envTopY);
+      const newGainDb = Math.max(-60, Math.min(12, 12.0 - norm * envRangeDb));
+      const newTime = Math.max(0, Math.min(duration, startTime + (clickX / rect.width) * visibleSec));
+
+      const node = volumeEnvelopeNodes.find(n => n.id === draggedEnvelopeNodeId);
+      if (node) {
+        node.timeSeconds = newTime;
+        node.gainDb = Math.round(newGainDb * 10) / 10;
+        volumeEnvelopeNodes = [...volumeEnvelopeNodes].sort((a, b) => a.timeSeconds - b.timeSeconds);
+        updateVolumeEnvelopeEngine();
+      }
       return;
     }
 
@@ -4227,6 +5310,15 @@
   }
 
   async function handleMainMouseUp(e: MouseEvent) {
+    if (isDraggingEnvelopeNode) {
+      isDraggingEnvelopeNode = false;
+      draggedEnvelopeNodeId = null;
+      window.removeEventListener("mousemove", handleMainMouseMove);
+      window.removeEventListener("mouseup", handleMainMouseUp);
+      updateVolumeEnvelopeEngine();
+      return;
+    }
+
     if (isDraggingMarker) {
       isDraggingMarker = false;
       draggingMarkerId = null;
@@ -4305,6 +5397,29 @@
         await invoke("seek", { seconds: progress * duration });
       }
     }
+  }
+
+  function handleMainDblClick(e: MouseEvent) {
+    if (duration === 0 || !mainCanvas || !isEnvelopeOverlayVisible) return;
+    const rect = mainCanvas.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+    if (clickY <= 24) return; // Ignore top ruler area
+
+    const windowWidth = 1.0 / zoom;
+    const startProgress = zoom > 1.001 ? Math.max(0, Math.min(1.0 - windowWidth, progress - windowWidth / 2)) : 0;
+    const startTime = startProgress * duration;
+    const visibleSec = windowWidth * duration;
+    const clickTime = startTime + (clickX / rect.width) * visibleSec;
+
+    const envTopY = 30;
+    const envBotY = rect.height - 10;
+    const envRangeDb = 72.0;
+    const clampedY = Math.max(envTopY, Math.min(envBotY, clickY));
+    const norm = (clampedY - envTopY) / (envBotY - envTopY);
+    const gainDb = Math.max(-60, Math.min(12, 12.0 - norm * envRangeDb));
+
+    addVolumeEnvelopeNodeAt(clickTime, Math.round(gainDb * 10) / 10, "linear");
   }
 
   // Region Creation & Operations
@@ -5016,13 +6131,16 @@
       const isCompActive = compressorThreshold < -0.01 && compressorRatio > 1.01;
 
       if (isCompActive) {
-        // A. Draw original uncompressed waveform as translucent white ghost
+        // A. Draw original uncompressed waveform as translucent white ghost (scaled with envelope)
         ctx.strokeStyle = "rgba(255, 255, 255, 0.22)";
         ctx.lineWidth = 1.0;
         ctx.beginPath();
         for (let i = 0; i < numSamples; i++) {
+          const t_i = startTime + (i / (numSamples - 1 || 1)) * visibleSec;
+          const envLinear = calcEnvelopeLinearGainAt(t_i);
+          const rawAmp = visibleSamples[i] * envLinear;
           const x = i * step;
-          const y = halfHeight - visibleSamples[i] * maxAmplitude;
+          const y = halfHeight - rawAmp * maxAmplitude;
           if (i === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         }
@@ -5036,13 +6154,15 @@
         ctx.lineWidth = 1.5;
         ctx.beginPath();
         for (let i = 0; i < numSamples; i++) {
-          const rawAmp = visibleSamples[i];
+          const t_i = startTime + (i / (numSamples - 1 || 1)) * visibleSec;
+          const envLinear = calcEnvelopeLinearGainAt(t_i);
+          const rawAmp = visibleSamples[i] * envLinear;
           const absAmp = Math.abs(rawAmp);
           const sign = rawAmp >= 0 ? 1 : -1;
           
           let compAmp = absAmp;
           if (absAmp > threshLinear) {
-            const rawDb = 20.0 * Math.log10(absAmp);
+            const rawDb = 20.0 * Math.log10(Math.max(1e-6, absAmp));
             const excessDb = rawDb - compressorThreshold;
             const compressedDb = compressorThreshold + (excessDb / compressorRatio);
             compAmp = Math.pow(10, compressedDb / 20.0);
@@ -5055,13 +6175,16 @@
         }
         ctx.stroke();
       } else {
-        // Standard normal continuous waveform
+        // Standard normal continuous waveform scaled dynamically by volume envelope in real time!
         ctx.strokeStyle = "#3b99fc";
         ctx.lineWidth = 1.5;
         ctx.beginPath();
         for (let i = 0; i < numSamples; i++) {
+          const t_i = startTime + (i / (numSamples - 1 || 1)) * visibleSec;
+          const envLinear = calcEnvelopeLinearGainAt(t_i);
+          const rawAmp = visibleSamples[i] * envLinear;
           const x = i * step;
-          const y = halfHeight - visibleSamples[i] * maxAmplitude;
+          const y = halfHeight - rawAmp * maxAmplitude;
           if (i === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         }
@@ -5079,8 +6202,11 @@
 
         ctx.fillStyle = "#8fc4fa";
         for (let i = 0; i < numSamples; i++) {
+          const t_i = startTime + (i / (numSamples - 1 || 1)) * visibleSec;
+          const envLinear = calcEnvelopeLinearGainAt(t_i);
+          const rawAmp = visibleSamples[i] * envLinear;
           const x = i * step;
-          const y = halfHeight - visibleSamples[i] * maxAmplitude;
+          const y = halfHeight - rawAmp * maxAmplitude;
           ctx.fillRect(x - nodeSize / 2, y - nodeSize / 2, nodeSize, nodeSize);
           if (nodeSize >= 4) {
             ctx.strokeStyle = "#0c151e";
@@ -5089,6 +6215,90 @@
           }
         }
       }
+    }
+
+    // 6.5 Interactive Volume Envelope Overlay (+12 dB to -60 dB, Multi-curve nodes)
+    if (isEnvelopeOverlayVisible && duration > 0) {
+      const envTopY = rulerHeight + 10;
+      const envBotY = height - 10;
+      const envRangeDb = 72.0; // from +12dB to -60dB = 72dB range
+
+      const dbToY = (db: number) => {
+        const clamped = Math.max(-60, Math.min(12, db));
+        const norm = (12.0 - clamped) / envRangeDb;
+        return envTopY + norm * (envBotY - envTopY);
+      };
+
+      ctx.save();
+
+      // Reference Grid lines for Envelope (+12, +6, 0, -6, -12, -24, -60 dB)
+      const gridDbs = [12, 6, 0, -6, -12, -24, -60];
+      for (const gDb of gridDbs) {
+        const gy = dbToY(gDb);
+        const isUnity = gDb === 0;
+        ctx.strokeStyle = isUnity ? "rgba(255, 179, 64, 0.4)" : "rgba(255, 179, 64, 0.12)";
+        ctx.lineWidth = isUnity ? 1.0 : 0.75;
+        ctx.setLineDash(isUnity ? [4, 3] : [2, 4]);
+        ctx.beginPath();
+        ctx.moveTo(0, gy);
+        ctx.lineTo(width, gy);
+        ctx.stroke();
+
+        ctx.fillStyle = isUnity ? "rgba(255, 179, 64, 0.9)" : "rgba(255, 179, 64, 0.4)";
+        ctx.font = isUnity ? "bold 8px monospace" : "8px monospace";
+        ctx.fillText(`${gDb > 0 ? "+" : ""}${gDb} dB`, width - 36, gy - 2);
+      }
+      ctx.setLineDash([]);
+
+      // Stroke clean envelope curve line
+      const envSteps = Math.min(400, Math.max(50, Math.floor(width)));
+      ctx.beginPath();
+      for (let si = 0; si <= envSteps; si++) {
+        const sx = (si / envSteps) * width;
+        const st = startTime + (si / envSteps) * visibleSec;
+        const sDb = calcEnvelopeGainDbAt(st);
+        const sy = dbToY(sDb);
+        if (si === 0) ctx.moveTo(sx, sy);
+        else ctx.lineTo(sx, sy);
+      }
+      ctx.strokeStyle = "#ffb340";
+      ctx.lineWidth = 1.75;
+      ctx.stroke();
+
+      // Draw nodes
+      for (const node of volumeEnvelopeNodes) {
+        const nodePct = (node.timeSeconds - startTime) / visibleSec;
+        if (nodePct >= -0.05 && nodePct <= 1.05) {
+          const nx = nodePct * width;
+          const ny = dbToY(node.gainDb);
+          const isSelected = selectedEnvelopeNodeId === node.id;
+          const isHovered = hoveredEnvelopeNodeId === node.id;
+          const isDraggingThis = isDraggingEnvelopeNode && draggedEnvelopeNodeId === node.id;
+
+          ctx.fillStyle = isSelected ? "#ffffff" : (isHovered ? "#ffe066" : "#ffb340");
+          ctx.beginPath();
+          ctx.arc(nx, ny, isSelected ? 6 : 4.5, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.strokeStyle = isSelected ? "#ffb340" : "#08080a";
+          ctx.lineWidth = isSelected ? 2.0 : 1.2;
+          ctx.stroke();
+
+          // Only show floating badge on hover or during active drag to avoid clutter
+          if (isHovered || isDraggingThis) {
+            ctx.fillStyle = "rgba(18, 20, 26, 0.95)";
+            ctx.fillRect(nx + 8, ny - 16, 92, 20);
+            ctx.strokeStyle = "#ffb340";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(nx + 8, ny - 16, 92, 20);
+
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 9px monospace";
+            ctx.fillText(`${node.gainDb > 0 ? "+" : ""}${node.gainDb.toFixed(1)}dB [${node.curve.toUpperCase()}]`, nx + 12, ny - 3);
+          }
+        }
+      }
+      ctx.restore();
     }
 
     // 5. Markers & Regions
@@ -5437,10 +6647,25 @@
     const ms = Math.floor((secs % 1) * 100);
     return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}.${ms.toString().padStart(2, "0")}`;
   }
+
+  function handleContainerMousedown(e: MouseEvent) {
+    const target = e.target as HTMLElement | null;
+    const inSidebar = target?.closest(".sidebar-left");
+    if (inSidebar) {
+      lastFocusedPane = "sidebar";
+    } else {
+      lastFocusedPane = "waveform";
+      clearTypeahead();
+    }
+  }
 </script>
 
 <main class="app-container">
-  <div class="workspace-grid">
+  <div 
+    class="workspace-grid" 
+    class:resizing-active={isResizingLeft || isResizingRight}
+    style="grid-template-columns: {leftSidebarWidth}px 4px 1fr 4px {rightSidebarWidth}px;"
+  >
     
     <!-- LEFT SIDEBAR: Switchable Browser & Playlist -->
     <aside class="sidebar-left">
@@ -5495,7 +6720,11 @@
                 if (entry.is_dir) {
                   loadBrowser(entry.path);
                 } else {
-                  loadAudioPath(entry.path, "main");
+                  if (filePath && associatedFiles.some(f => f.path === entry.path)) {
+                    loadAudioVersion(entry.path, true);
+                  } else {
+                    loadAudioPath(entry.path, "main");
+                  }
                 }
               }}
             >
@@ -5548,9 +6777,6 @@
                       <span class="unlinked-pill" title="Audio file missing or unlinked">Unlinked</span>
                     {/if}
                   </div>
-                  {#if item.singers}
-                    <span class="item-singer-subhead" title="Singer(s)">🎤 {item.singers}</span>
-                  {/if}
                 </div>
                 <div class="playlist-item-actions">
                   <button class="reorder-item-btn" disabled={idx === 0} on:click|stopPropagation={() => movePlaylistItem(idx, idx - 1)} title="Move Up (Option+Up)">▲</button>
@@ -5599,7 +6825,24 @@
           <span class="val">{formatTime(Math.max(0, duration - currentTime))}</span>
         </div>
       </div>
+
+      <!-- Typeahead Jump Indicator Overlay -->
+      {#if showTypeaheadIndicator && typeToJumpBuffer}
+        <div class="typeahead-indicator">
+          <span class="typeahead-icon">🔤</span>
+          <span class="typeahead-text">Jump: <strong>{typeToJumpBuffer}</strong></span>
+        </div>
+      {/if}
     </aside>
+
+    <!-- LEFT SIDEBAR RESIZER HANDLE -->
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div 
+      class="resizer-handle resizer-left" 
+      class:active={isResizingLeft} 
+      on:mousedown={startResizeLeft} 
+      title="Drag to resize Left Sidebar"
+    ></div>
 
     <!-- CENTER AREA: Resizable Waveforms & Fixed Bottom controls -->
     <section class="center-content" bind:this={centerContentElement}>
@@ -5607,8 +6850,8 @@
       <!-- Current File info header (Single compact row) -->
       <div class="track-header">
         <div class="track-title-info">
-          <span class="track-badge" class:main-badge={activeTrackMode === "main"}>
-            {activeTrackMode.toUpperCase()}
+          <span class="track-badge" class:main-badge={filePath === primarySongTrackPath || !primarySongTrackPath}>
+            {getTrackWatermarkLabel()}
           </span>
           <span class="track-title-text" title={filePath}>
             {fileName || "Drag & Drop Audio file to begin"}
@@ -5660,8 +6903,12 @@
             class:active={activeCenterTab === "files"} 
             on:click={() => switchCenterTab("files")}
           >
-            FILES {#if associatedFiles.length > 0}<span class="files-badge-count">({associatedFiles.length})</span>{/if}
+            FILES {#if allSongFiles.length > 0}<span class="files-badge-count">({allSongFiles.length})</span>{/if}
+            {#if uvrSeparating}
+              <span class="uvr-tab-indicator" title="UVR Separation in progress">✨ {uvrPercent}%</span>
+            {/if}
           </button>
+
 
           <!-- Dynamic Open PDF Tabs -->
           {#each openPdfTabs as tab (tab.id)}
@@ -5749,16 +6996,60 @@
             <div class="tab-pane files-pane">
               <div class="files-pane-header">
                 <div class="files-header-left">
-                  <span class="files-pane-title">ASSOCIATED MEDIA & FILES</span>
-                  <span class="files-pane-subtitle">PDF sheet music, chord charts, backing tracks, stems, and alternate rehearsal takes</span>
+                  <span class="files-pane-title">
+                    ASSOCIATED FILES
+                    {#if allSongFiles.length > 0}
+                      <span class="files-count-pill">{allSongFiles.length}</span>
+                    {/if}
+                  </span>
                 </div>
-                <button class="add-assoc-file-btn" on:click={addAssociatedFilePicker}>
-                  + Add Associated File...
-                </button>
+                <div class="files-header-right">
+                  <button 
+                    class="prefer-hires-btn" 
+                    class:active={preferHighResAudio}
+                    on:click={togglePreferHighResAudio}
+                    title="When enabled, TrackHelm will automatically load the high-res lossless audio file as main track IF it is downloaded locally on your Mac"
+                  >
+                    ⚡ {preferHighResAudio ? "High-Res Preferred (Downloaded)" : "Prefer High-Res Audio"}
+                  </button>
+                  <button class="add-assoc-file-btn" on:click={addAssociatedFilePicker}>
+                    + Add Associated File...
+                  </button>
+                </div>
               </div>
 
+
+              <!-- UVR Separation Status Banner (Slim single-row) -->
+              {#if uvrSeparating}
+                <div class="uvr-status-bar">
+                  <span class="uvr-sparkle">✨</span>
+                  <span class="uvr-stage">{uvrStage}</span>
+                  {#if uvrCurrentTarget}
+                    <span class="uvr-target" title={uvrCurrentTarget}>({uvrCurrentTarget})</span>
+                  {/if}
+                  <div class="uvr-meter-track">
+                    <div class="uvr-meter-fill" style="width: {uvrPercent}%"></div>
+                  </div>
+                  <span class="uvr-pct">{uvrPercent}%</span>
+                </div>
+              {/if}
+
+              {#if uvrErrorMessage}
+                <div class="uvr-toast uvr-toast-error">
+                  <span>⚠️ {uvrErrorMessage}</span>
+                  <button class="uvr-dismiss-btn" on:click={() => uvrErrorMessage = null}>×</button>
+                </div>
+              {/if}
+
+              {#if uvrSuccessMessage}
+                <div class="uvr-toast uvr-toast-success">
+                  <span>✨ {uvrSuccessMessage}</span>
+                  <button class="uvr-dismiss-btn" on:click={() => uvrSuccessMessage = null}>×</button>
+                </div>
+              {/if}
+
               <div class="associated-files-list">
-                {#if associatedFiles.length === 0}
+                {#if allSongFiles.length === 0}
                   <div class="empty-files-card">
                     <span class="empty-icon">📁</span>
                     <h3>No Associated Files Linked Yet</h3>
@@ -5772,18 +7063,78 @@
                       </button>
                     </div>
                   </div>
+
                 {:else}
-                  <div class="assoc-files-grid">
-                    {#each associatedFiles as item (item.id)}
-                      <div class="assoc-card" class:pdf-card={item.fileType === 'pdf'} class:audio-card={item.fileType === 'audio'}>
-                        <div class="assoc-card-icon">
-                          {item.fileType === 'pdf' ? '📄' : '🎵'}
+                  <div class="assoc-files-table">
+                    {#each allSongFiles as item (item.id || item.path)}
+                      <!-- svelte-ignore a11y-no-static-element-interactions -->
+                      <div 
+                        class="assoc-file-row" 
+                        class:is-active-waveform={item.path === filePath}
+                        on:dblclick={() => {
+                          if (item.fileType === 'audio') {
+                            loadAssociatedTrackIntoActive(item);
+                          } else if (item.fileType === 'pdf') {
+                            openPdfTab(item.path, item.name);
+                          }
+                        }}
+                        on:contextmenu={(e) => handleAssocFileContextMenu(e, item)}
+                        title="{item.name}&#10;Double-click to load into waveform • Right-click for options&#10;Path: {item.path}"
+                      >
+                        <!-- Left Side: Icon + Name + Badges -->
+                        <div class="assoc-row-left">
+                          <span class="assoc-row-icon">
+                            {#if item.fileType === 'pdf'}
+                              📄
+                            {:else if item.role === 'lead' || item.name.toLowerCase().includes('lead vocal')}
+                              🎤
+                            {:else if item.role === 'backings' || item.name.toLowerCase().includes('backing vocal')}
+                              👥
+                            {:else if item.role === 'vocals' || item.name.toLowerCase().includes('vocals ensemble') || item.name.toLowerCase().includes('(vocals)')}
+                              ✨
+                            {:else if isLosslessAudio(item.path || item.name)}
+                              🎼
+                            {:else}
+                              🎵
+                            {/if}
+                          </span>
+
+                          <span class="assoc-row-name" title={item.path}>{item.name}</span>
+
+                          <div class="assoc-row-badges">
+                            <span 
+                              class="assoc-ext-badge" 
+                              class:badge-pdf={item.fileType === 'pdf'} 
+                              class:badge-lossless={item.fileType === 'audio' && isLosslessAudio(item.path || item.name)} 
+                              class:badge-lossy={item.fileType === 'audio' && !isLosslessAudio(item.path || item.name)}
+                            >
+                              {getFileExtension(item.path || item.name) || (item.fileType === 'pdf' ? 'PDF' : 'AUDIO')}
+                            </span>
+
+                            {#if item.path === filePath}
+                              <span class="assoc-role-badge badge-active-waveform" title="Currently loaded in the active waveform display">● ACTIVE</span>
+                            {/if}
+
+                            {#if item.path === primarySongTrackPath}
+                              <span class="assoc-role-badge badge-default-mix" title="Primary default track for this song">DEFAULT</span>
+                            {/if}
+
+                            {#if item.id === 'audio-orig' || (item.name && item.name.toLowerCase().includes('original')) || (item.path && item.path.toLowerCase().includes('original'))}
+                              <span class="assoc-role-badge badge-orig" title="Original Artist Reference Recording">ORIGINAL</span>
+                            {:else if item.role === 'lead' || item.name.toLowerCase().includes('lead vocal')}
+                              <span class="assoc-role-badge badge-lead" title="Lead Vocal Track (5HP Karaoke)">LEAD</span>
+                            {:else if item.role === 'backings' || item.name.toLowerCase().includes('backing vocal')}
+                              <span class="assoc-role-badge badge-backings" title="Backing Vocals Track (5HP Karaoke)">BACKINGS</span>
+                            {:else if item.role === 'vocals' || item.name.toLowerCase().includes('vocals ensemble') || item.name.toLowerCase().includes('(vocals)')}
+                              <span class="assoc-role-badge badge-vocals" title="Master Isolated Vocals (4-Model Ensemble)">VOCALS</span>
+                            {:else if item.id === 'audio-hires' || (item.fileType === 'audio' && isLosslessAudio(item.path || item.name))}
+                              <span class="assoc-role-badge badge-hires" title="Full Resolution Lossless Master Audio">FULL-RES</span>
+                            {/if}
+                          </div>
                         </div>
-                        <div class="assoc-card-info">
-                          <span class="assoc-card-name" title={item.name}>{item.name}</span>
-                          <span class="assoc-card-path" title={item.path}>{item.path}</span>
-                        </div>
-                        <div class="assoc-card-actions">
+
+                        <!-- Right Side: Action Buttons -->
+                        <div class="assoc-row-actions">
                           {#if item.fileType === 'pdf'}
                             <button 
                               class="assoc-action-btn open-pdf-action" 
@@ -5795,32 +7146,59 @@
                           {:else if item.fileType === 'audio'}
                             <button 
                               class="assoc-action-btn load-main-action" 
-                              on:click={() => loadAudioPath(item.path, 'main')}
-                              title="Load as Main Track"
+                              class:active-loaded={item.path === filePath}
+                              disabled={item.path === filePath}
+                              on:click={() => loadAudioVersion(item.path)}
+                              title={item.path === filePath ? "Currently loaded in waveform" : "Load into waveform display"}
                             >
-                              ▶ Load Main
+                              {item.path === filePath ? "✓ Loaded" : "▶ Load"}
                             </button>
+
+                            <!-- UVR Stem Separation Actions -->
+                            {#if item.role === 'vocals' || (item.name && (item.name.toLowerCase().includes('vocals') || item.name.toLowerCase().includes('ensemble')))}
+                              <button 
+                                class="assoc-action-btn uvr-action-btn uvr-karaoke-btn" 
+                                disabled={uvrSeparating}
+                                on:click={() => triggerUvrSeparation('lead_backups', item.path)}
+                                title="Split Vocals into Lead & Backing Tracks using 5HP Karaoke"
+                              >
+                                🎤 Lead/Backups
+                              </button>
+                            {:else if item.id === 'audio-orig' || (item.name && item.name.toLowerCase().includes('original')) || (item.path && item.path.toLowerCase().includes('original')) || (!item.name.toLowerCase().includes('lead') && !item.name.toLowerCase().includes('backing'))}
+                              <button 
+                                class="assoc-action-btn uvr-action-btn uvr-ensemble-btn" 
+                                disabled={uvrSeparating}
+                                on:click={() => triggerUvrSeparation('ensemble_vocals', item.path)}
+                                title="Run 4-Model Ensemble to Isolate Vocals to AAC"
+                              >
+                                ✨ Isolate Vocals
+                              </button>
+                            {/if}
+                          {/if}
+
+                          <button 
+                            class="assoc-action-btn trash-action-btn" 
+                            on:click={() => requestMoveToTrash(item)}
+                            title="Move file to macOS Trash"
+                          >
+                            🗑️
+                          </button>
+                          {#if item.path !== filePath && item.path !== primarySongTrackPath}
                             <button 
-                              class="assoc-action-btn load-alt-action" 
-                              on:click={() => loadAudioPath(item.path, 'alternate')}
-                              title="Load as Alternate Track"
+                              class="assoc-action-btn unlink-action" 
+                              on:click={() => unlinkAssociatedFile(item.id)}
+                              title="Unlink file from this project"
                             >
-                              ⌥ Load Alt
+                              ×
                             </button>
                           {/if}
-                          <button 
-                            class="assoc-action-btn unlink-action" 
-                            on:click={() => unlinkAssociatedFile(item.id)}
-                            title="Unlink file from this project"
-                          >
-                            ×
-                          </button>
                         </div>
                       </div>
                     {/each}
                   </div>
                 {/if}
               </div>
+
             </div>
           {:else if activeCenterTab === "metadata"}
             <!-- METADATA TAB -->
@@ -5972,8 +7350,8 @@
                       <span class="spec-val">{channels === 2 ? "Stereo (2 ch)" : channels === 1 ? "Mono (1 ch)" : `${channels} ch`}</span>
                     </div>
                     <div class="spec-row">
-                      <span class="spec-label">Active Slot:</span>
-                      <span class="spec-val active-slot">{activeTrackMode.toUpperCase()}</span>
+                      <span class="spec-label">Audio Version:</span>
+                      <span class="spec-val active-slot">{getTrackWatermarkLabel()}</span>
                     </div>
                     <div class="spec-row">
                       <span class="spec-label">Markers:</span>
@@ -6040,13 +7418,13 @@
       <!-- Waveforms (Single Overview 40px, Main Waveform 256px) -->
       <div class="waveforms-flexbox">
         <!-- Single Dynamic Overview Waveform (40px) -->
-        <div class="waveform-block block-overview" title="Right-click for Main / Alternate track options">
+        <div class="waveform-block block-overview" title="Right-click for audio versions & A/B options">
           <span 
             class="overview-watermark-tag" 
-            class:alt-tag={activeTrackMode === "alternate"} 
-            class:main-tag={activeTrackMode === "main"}
+            class:alt-tag={filePath !== primarySongTrackPath && primarySongTrackPath} 
+            class:main-tag={filePath === primarySongTrackPath || !primarySongTrackPath}
           >
-            {activeTrackMode.toUpperCase()}
+            {getTrackWatermarkLabel()}
           </span>
           <!-- svelte-ignore a11y-click-events-have-key-events -->
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
@@ -6061,7 +7439,7 @@
         <!-- Main Waveform Box (256px height) -->
         <div 
           class="waveform-block block-main-waveform" 
-          title="Right-click for Main / Alternate track options • Drop marker to place"
+          title="Right-click for audio versions & A/B options • Drop marker to place"
           on:dragover={(e) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = "copy"; }}
           on:drop={handleWaveformMarkerDrop}
         >
@@ -6071,10 +7449,120 @@
             bind:this={mainCanvas} 
             on:mousedown={handleMainMouseDown}
             on:mousemove={handleMainCanvasHover}
+            on:dblclick={handleMainDblClick}
             on:wheel|passive={handleMainWheel}
             on:contextmenu={handleWaveformContextMenu}
             class="main-canvas"
           ></canvas>
+        </div>
+      </div>
+
+      <!-- Volume Envelope Strip (Dorico Theme) -->
+      <div class="envelope-strip">
+        <div class="envelope-strip-left">
+          <button 
+            class="envelope-toggle-btn" 
+            class:active={isEnvelopeOverlayVisible} 
+            on:click={() => { isEnvelopeOverlayVisible = !isEnvelopeOverlayVisible; drawMainWaveform(); }}
+            title="Toggle Volume Envelope overlay lane on waveform"
+          >
+            📈 Volume Envelope
+          </button>
+          
+          <button 
+            class="envelope-state-btn" 
+            class:bypassed={!isEnvelopeEnabled} 
+            on:click={() => { isEnvelopeEnabled = !isEnvelopeEnabled; updateVolumeEnvelopeEngine(); }}
+            title={isEnvelopeEnabled ? "Volume Envelope Active (Click to Bypass)" : "Volume Envelope Bypassed (Click to Enable)"}
+          >
+            {isEnvelopeEnabled ? "ACTIVE" : "BYPASSED"}
+          </button>
+
+          <button 
+            class="envelope-reset-btn" 
+            on:click={resetVolumeEnvelope}
+            disabled={volumeEnvelopeNodes.length === 0}
+            title="Reset volume envelope back to flat 0 dB (removes all nodes)"
+          >
+            ↺ Reset Flat
+          </button>
+
+          <span class="envelope-node-count-badge">
+            {volumeEnvelopeNodes.length} node{volumeEnvelopeNodes.length === 1 ? '' : 's'}
+          </span>
+        </div>
+
+        <!-- Selected Node Inspector Strip -->
+        <div class="envelope-strip-right">
+          {#if selectedEnvelopeNodeId && volumeEnvelopeNodes.find(n => n.id === selectedEnvelopeNodeId)}
+            {@const selNode = volumeEnvelopeNodes.find(n => n.id === selectedEnvelopeNodeId)}
+            {#if selNode}
+              <div class="envelope-node-editor">
+                <span class="env-editor-label">Node:</span>
+                <span class="env-time-label">⏱ {formatTime(selNode.timeSeconds)}</span>
+                
+                <div class="env-gain-control">
+                  <span class="env-gain-label">{selNode.gainDb > 0 ? '+' : ''}{selNode.gainDb.toFixed(1)} dB</span>
+                  <input 
+                    type="range" 
+                    min="-60" 
+                    max="12" 
+                    step="0.5" 
+                    value={selNode.gainDb} 
+                    on:input={(e) => updateEnvelopeNodeGain(selNode.id, parseFloat(e.currentTarget.value))} 
+                    class="env-gain-slider"
+                    title="Adjust node gain (-60 dB to +12 dB)"
+                  />
+                </div>
+
+                <!-- Curve Type Selector -->
+                <div class="env-curve-selector">
+                  <button 
+                    class="env-curve-btn" 
+                    class:active={selNode.curve === 'linear'} 
+                    on:click={() => setEnvelopeNodeCurve(selNode.id, 'linear')}
+                    title="Straight / Linear interpolation"
+                  >
+                    Straight
+                  </button>
+                  <button 
+                    class="env-curve-btn" 
+                    class:active={selNode.curve === 'curve_up'} 
+                    on:click={() => setEnvelopeNodeCurve(selNode.id, 'curve_up')}
+                    title="Curve Up / Exponential ramp"
+                  >
+                    Curve Up
+                  </button>
+                  <button 
+                    class="env-curve-btn" 
+                    class:active={selNode.curve === 'curve_down'} 
+                    on:click={() => setEnvelopeNodeCurve(selNode.id, 'curve_down')}
+                    title="Curve Down / Logarithmic ramp"
+                  >
+                    Curve Down
+                  </button>
+                  <button 
+                    class="env-curve-btn" 
+                    class:active={selNode.curve === 'sine'} 
+                    on:click={() => setEnvelopeNodeCurve(selNode.id, 'sine')}
+                    title="Sine / S-Curve Ease In & Out"
+                  >
+                    Sine S-Curve
+                  </button>
+                </div>
+
+                <button 
+                  class="env-delete-node-btn" 
+                  on:click={() => removeVolumeEnvelopeNode(selNode.id)}
+                  title="Delete this envelope node (or press Delete key)"
+                >
+                  🗑
+                </button>
+              </div>
+            {/if}
+          {:else}
+            <span class="env-hint-text">Double-click on waveform to add an envelope node • Max +12 dB (Pre-Dynamics)</span>
+          {/if}
         </div>
       </div>
 
@@ -6092,6 +7580,14 @@
               ⏹ STOP
             </button>
             <button class="control-btn" on:click={jumpToNextMarker} title="Next Marker (→)">⏩</button>
+            <button 
+              class="control-btn ab-compare-btn" 
+              class:ab-active={Boolean(primarySongTrackPath && filePath !== primarySongTrackPath)} 
+              on:click={triggerAbCompare} 
+              title="A/B Compare: Switch between default mix and selected stem (T)"
+            >
+              ⇄ A/B
+            </button>
           </div>
         </div>
 
@@ -6132,6 +7628,15 @@
       </div>
     </section>
 
+    <!-- RIGHT SIDEBAR RESIZER HANDLE -->
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div 
+      class="resizer-handle resizer-right" 
+      class:active={isResizingRight} 
+      on:mousedown={startResizeRight} 
+      title="Drag to resize Right Sidebar"
+    ></div>
+
     <!-- RIGHT SIDEBAR: Markers & Regions, Effects Rack (Dorico Theme) -->
     <aside class="sidebar-right">
       
@@ -6139,18 +7644,14 @@
       <div class="panel-section markers-section">
         <div class="panel-header">
           MARKERS & REGIONS
-          <span class="marker-track-mode-badge" class:alt-badge={activeTrackMode === 'alternate'}>
-            ({activeTrackMode.toUpperCase()})
+          <span class="marker-track-mode-badge" class:alt-badge={filePath !== primarySongTrackPath && primarySongTrackPath}>
+            ({getTrackWatermarkLabel()})
           </span>
         </div>
         <div class="markers-list">
           {#if markers.length === 0}
             <div class="placeholder-text">
-              {#if activeTrackMode === 'alternate'}
-                No markers set for Alternate Track. Drag from below or click "+ Add Marker".
-              {:else}
-                No markers set. Click "+ Add Marker" during playback.
-              {/if}
+              No markers set. Click "+ Add Marker" (or press M) during playback.
             </div>
           {:else}
             {#each markers as marker}
@@ -6612,55 +8113,197 @@
       on:click|stopPropagation
     >
       {#if contextMenuType === "waveform"}
-        <!-- Waveform Context Menu: Main vs Alternate Track -->
+        <!-- Waveform Context Menu: Audio Versions & A/B Compare -->
+        <div class="menu-section-header">Audio Versions</div>
+
+        <!-- Primary Default Track (if not already listed in associatedFiles) -->
+        {#if primarySongTrackPath && !associatedFiles.some(f => f.path === primarySongTrackPath)}
+          <!-- svelte-ignore a11y-click-events-have-key-events -->
+          <!-- svelte-ignore a11y-no-static-element-interactions -->
+          <div 
+            class="menu-item menu-item-assoc" 
+            class:menu-active={filePath === primarySongTrackPath}
+            on:click={() => { if (primarySongTrackPath) { loadAudioVersion(primarySongTrackPath); showContextMenu = false; } }}
+            title="Path: {primarySongTrackPath}"
+          >
+            <span class="menu-check">{filePath === primarySongTrackPath ? "✓" : " "}</span>
+            <span class="menu-item-icon">🎵</span>
+            <span class="menu-item-text">{primarySongTrackPath.split('/').pop() || primarySongTrackPath}</span>
+            <span class="menu-item-badge badge-orig">DEFAULT</span>
+          </div>
+        {/if}
+
+        <!-- Associated Audio Versions List (1-Click Switcher) -->
+        {#if associatedFiles && associatedFiles.some(f => f.fileType === 'audio')}
+          {#each associatedFiles.filter(f => f.fileType === 'audio') as assocItem}
+            <!-- svelte-ignore a11y-click-events-have-key-events -->
+            <!-- svelte-ignore a11y-no-static-element-interactions -->
+            <div 
+              class="menu-item menu-item-assoc" 
+              class:menu-active={filePath === assocItem.path}
+              on:click={() => { loadAudioVersion(assocItem.path); showContextMenu = false; }}
+              title="Path: {assocItem.path}"
+            >
+              <span class="menu-check">{filePath === assocItem.path ? "✓" : " "}</span>
+              <span class="menu-item-icon">
+                {#if assocItem.role === 'lead' || assocItem.name.toLowerCase().includes('lead vocal')}
+                  🎤
+                {:else if assocItem.role === 'backings' || assocItem.name.toLowerCase().includes('backing vocal')}
+                  👥
+                {:else if assocItem.role === 'vocals' || assocItem.name.toLowerCase().includes('vocals ensemble') || assocItem.name.toLowerCase().includes('(vocals)')}
+                  ✨
+                {:else if isLosslessAudio(assocItem.path || assocItem.name)}
+                  🎼
+                {:else if assocItem.id === 'audio-orig' || assocItem.name.toLowerCase().includes('original')}
+                  🎵
+                {:else}
+                  🎵
+                {/if}
+              </span>
+              <span class="menu-item-text">{assocItem.name}</span>
+              <span 
+                class="menu-item-badge"
+                class:badge-lossless={isLosslessAudio(assocItem.path || assocItem.name)}
+                class:badge-lead={assocItem.role === 'lead' || assocItem.name.toLowerCase().includes('lead vocal')}
+                class:badge-backings={assocItem.role === 'backings' || assocItem.name.toLowerCase().includes('backing vocal')}
+                class:badge-vocals={assocItem.role === 'vocals' || assocItem.name.toLowerCase().includes('vocals ensemble')}
+                class:badge-orig={assocItem.id === 'audio-orig' || assocItem.name.toLowerCase().includes('original')}
+              >
+                {#if assocItem.path === primarySongTrackPath}
+                  DEFAULT
+                {:else if assocItem.role === 'lead' || assocItem.name.toLowerCase().includes('lead vocal')}
+                  LEAD
+                {:else if assocItem.role === 'backings' || assocItem.name.toLowerCase().includes('backing vocal')}
+                  BACKINGS
+                {:else if assocItem.role === 'vocals' || assocItem.name.toLowerCase().includes('vocals ensemble')}
+                  VOCALS
+                {:else if isLosslessAudio(assocItem.path || assocItem.name)}
+                  FULL-RES
+                {:else if assocItem.id === 'audio-orig' || assocItem.name.toLowerCase().includes('original')}
+                  ORIGINAL
+                {:else}
+                  AUDIO
+                {/if}
+              </span>
+            </div>
+          {/each}
+        {/if}
+
+        <div class="menu-divider"></div>
         <!-- svelte-ignore a11y-click-events-have-key-events -->
         <!-- svelte-ignore a11y-no-static-element-interactions -->
         <div 
           class="menu-item" 
-          class:menu-active={activeTrackMode === "main"}
-          on:click={() => { toggleActiveTrack("main"); showContextMenu = false; }}
+          on:click={() => { triggerAbCompare(); showContextMenu = false; }}
+          title="Toggle between default mix and selected stem (hotkey: T)"
         >
-          {activeTrackMode === "main" ? "✓ " : "  "}Set to Main Track {mainTrack ? `(${mainTrack.name})` : "(None Loaded)"}
+          <span class="menu-check">&nbsp;</span>
+          <span class="menu-item-text">⇄ A/B Compare (T)</span>
         </div>
+
         <!-- svelte-ignore a11y-click-events-have-key-events -->
         <!-- svelte-ignore a11y-no-static-element-interactions -->
         <div 
           class="menu-item" 
-          class:menu-active={activeTrackMode === "alternate"}
-          on:click={() => { toggleActiveTrack("alternate"); showContextMenu = false; }}
+          class:menu-active={preferHighResAudio}
+          on:click={() => { togglePreferHighResAudio(); showContextMenu = false; }}
+          title="Automatically load high-res lossless audio as main track if downloaded locally"
         >
-          {activeTrackMode === "alternate" ? "✓ " : "  "}Set to Alternate Track {alternateTrack ? `(${alternateTrack.name})` : "(Click to Choose...)"}
+          <span class="menu-check">{preferHighResAudio ? "✓" : " "}</span>
+          <span class="menu-item-text">⚡ Prefer High-Res (if downloaded)</span>
         </div>
+
         <div class="menu-divider"></div>
         <!-- svelte-ignore a11y-click-events-have-key-events -->
         <!-- svelte-ignore a11y-no-static-element-interactions -->
         <div class="menu-item" on:click={() => { pickMainTrack(); showContextMenu = false; }}>
-          Choose / Replace Main Track...
+          <span class="menu-check">&nbsp;</span>
+          <span class="menu-item-text">Choose / Replace Audio File...</span>
+        </div>
+
+      {:else if contextMenuType === "assoc-file" && contextMenuTargetAssoc}
+        <!-- Associated File Card Context Menu -->
+        <div class="menu-header-label" title={contextMenuTargetAssoc.name}>
+          {contextMenuTargetAssoc.name}
+        </div>
+        <div class="menu-divider"></div>
+
+        {#if contextMenuTargetAssoc.fileType === 'audio'}
+          <!-- svelte-ignore a11y-click-events-have-key-events -->
+          <!-- svelte-ignore a11y-no-static-element-interactions -->
+          <div 
+            class="menu-item" 
+            class:menu-active={filePath === contextMenuTargetAssoc.path}
+            on:click={() => { if (contextMenuTargetAssoc) { loadAudioVersion(contextMenuTargetAssoc.path); showContextMenu = false; } }}
+          >
+            ▶ Load into Waveform
+          </div>
+          <!-- svelte-ignore a11y-click-events-have-key-events -->
+          <!-- svelte-ignore a11y-no-static-element-interactions -->
+          <div 
+            class="menu-item"
+            on:click={() => { if (contextMenuTargetAssoc) { setDefaultSongTrack(contextMenuTargetAssoc); showContextMenu = false; } }}
+          >
+            ⭐️ Set as Default Song Track
+          </div>
+
+          <!-- Stems options -->
+          {#if contextMenuTargetAssoc.role === 'vocals' || contextMenuTargetAssoc.name.toLowerCase().includes('vocals') || contextMenuTargetAssoc.name.toLowerCase().includes('ensemble')}
+            <div class="menu-divider"></div>
+            <!-- svelte-ignore a11y-click-events-have-key-events -->
+            <!-- svelte-ignore a11y-no-static-element-interactions -->
+            <div 
+              class="menu-item"
+              on:click={() => { if (contextMenuTargetAssoc) { const p = contextMenuTargetAssoc.path; showContextMenu = false; triggerUvrSeparation('lead_backups', p); } }}
+            >
+              🎤 Split Lead / Backups (5HP Karaoke)
+            </div>
+          {:else if contextMenuTargetAssoc.id === 'audio-orig' || contextMenuTargetAssoc.name.toLowerCase().includes('original') || (!contextMenuTargetAssoc.name.toLowerCase().includes('lead') && !contextMenuTargetAssoc.name.toLowerCase().includes('backing'))}
+            <div class="menu-divider"></div>
+            <!-- svelte-ignore a11y-click-events-have-key-events -->
+            <!-- svelte-ignore a11y-no-static-element-interactions -->
+            <div 
+              class="menu-item"
+              on:click={() => { if (contextMenuTargetAssoc) { const p = contextMenuTargetAssoc.path; showContextMenu = false; triggerUvrSeparation('ensemble_vocals', p); } }}
+            >
+              ✨ Isolate Vocals (4-Model Ensemble)
+            </div>
+          {/if}
+
+        {:else if contextMenuTargetAssoc.fileType === 'pdf'}
+          <!-- svelte-ignore a11y-click-events-have-key-events -->
+          <!-- svelte-ignore a11y-no-static-element-interactions -->
+          <div 
+            class="menu-item" 
+            on:click={() => { if (contextMenuTargetAssoc) { openPdfTab(contextMenuTargetAssoc.path, contextMenuTargetAssoc.name); showContextMenu = false; } }}
+          >
+            📄 Open Sheet Music in Tab
+          </div>
+        {/if}
+
+        <div class="menu-divider"></div>
+        <!-- svelte-ignore a11y-click-events-have-key-events -->
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <div 
+          class="menu-item menu-item-danger" 
+          on:click={() => { if (contextMenuTargetAssoc) { const item = contextMenuTargetAssoc; showContextMenu = false; requestMoveToTrash(item); } }}
+        >
+          🗑️ Move to Trash...
         </div>
         <!-- svelte-ignore a11y-click-events-have-key-events -->
         <!-- svelte-ignore a11y-no-static-element-interactions -->
-        <div class="menu-item" on:click={() => { pickAlternateTrack(); showContextMenu = false; }}>
-          Choose / Replace Alternate Track...
+        <div 
+          class="menu-item" 
+          on:click={() => { if (contextMenuTargetAssoc) { const id = contextMenuTargetAssoc.id; showContextMenu = false; unlinkAssociatedFile(id); } }}
+        >
+          × Unlink from Project
         </div>
-        {#if alternateTrack}
-          <div class="menu-divider"></div>
-          <!-- svelte-ignore a11y-click-events-have-key-events -->
-          <!-- svelte-ignore a11y-no-static-element-interactions -->
-          <div class="menu-item menu-item-danger" on:click={() => { alternateTrack = null; if (activeTrackMode === "alternate") toggleActiveTrack("main"); showContextMenu = false; }}>
-            Unload Alternate Track
-          </div>
-        {/if}
       {:else}
         <!-- Browser / Playlist Context Menu -->
         <!-- svelte-ignore a11y-click-events-have-key-events -->
         <!-- svelte-ignore a11y-no-static-element-interactions -->
-        <div class="menu-item" on:click={() => { if (contextMenuTargetFile) { loadAudioPath(contextMenuTargetFile.path, "main"); showContextMenu = false; } }}>
-          Set as Main Track
-        </div>
-        <!-- svelte-ignore a11y-click-events-have-key-events -->
-        <!-- svelte-ignore a11y-no-static-element-interactions -->
-        <div class="menu-item" on:click={() => { if (contextMenuTargetFile) { loadAudioPath(contextMenuTargetFile.path, "alternate"); showContextMenu = false; } }}>
-          Set as Alt Track
+        <div class="menu-item" on:click={() => { if (contextMenuTargetFile) { loadAudioVersion(contextMenuTargetFile.path); showContextMenu = false; } }}>
+          ▶ Load into Waveform
         </div>
         <div class="menu-divider"></div>
         <!-- svelte-ignore a11y-click-events-have-key-events -->
@@ -7126,12 +8769,12 @@
         </div>
 
         <div class="modal-body eq-inspector-body">
-          <!-- Kirchhoff Interactive EQ Graph Canvas -->
-          <div class="kirchhoff-eq-canvas-card">
+          <!-- Precision Parametric EQ Graph Canvas -->
+          <div class="helm-eq-canvas-card">
             <svg 
               bind:this={eqSvgElement}
               viewBox="0 0 600 240" 
-              class="kirchhoff-eq-svg"
+              class="helm-eq-svg"
               on:mousedown={handleEqSvgMousedown}
               on:mousemove={handleEqSvgMousemove}
               on:mouseup={handleEqSvgMouseup}
@@ -7606,6 +9249,13 @@
                 </span>
               </label>
               <label class="export-check-item">
+                <input type="checkbox" bind:checked={exportBakeEnvelope} />
+                <span class="check-label">
+                  Volume Envelope
+                  <span class="check-sub">{volumeEnvelopeNodes.length} nodes (Pre-Dynamics)</span>
+                </span>
+              </label>
+              <label class="export-check-item">
                 <input type="checkbox" bind:checked={exportCopyMetadata} />
                 <span class="check-label">
                   Preserve Tags
@@ -8036,36 +9686,48 @@
     <!-- svelte-ignore a11y-click-events-have-key-events -->
     <!-- svelte-ignore a11y-no-static-element-interactions -->
     <div class="modal-backdrop" on:click={() => showSetlistModal = false}>
-      <div class="inspector-modal setlist-modal-card" on:click|stopPropagation>
+      <div 
+        class="inspector-modal setlist-modal-card" 
+        style="width: {setlistModalWidth}px; height: {setlistModalHeight}px;"
+        class:is-resizing={isResizingSetlistModal}
+        on:click|stopPropagation
+      >
         <div class="modal-header">
           <div class="modal-title-row">
             <span class="modal-badge ai-badge">AI SETLIST</span>
             <h3>Import Setlist from CSV / Clipboard</h3>
             <span class="stage-subhead">Automated Rehearsal Package Generator</span>
           </div>
-          <button class="modal-close-btn" on:click={() => showSetlistModal = false}>×</button>
+          <div class="modal-header-actions">
+            <button 
+              class="modal-icon-btn" 
+              on:click={toggleMaximizeSetlistModal} 
+              title={isSetlistModalMaximized ? "Restore Window Size" : "Maximize Window"}
+            >
+              {isSetlistModalMaximized ? "❐" : "🗖"}
+            </button>
+            <button class="modal-close-btn" on:click={() => showSetlistModal = false}>×</button>
+          </div>
         </div>
 
         <div class="modal-body setlist-modal-body">
           <div class="setlist-input-section">
             <div class="setlist-input-header">
-              <span class="export-section-title">PASTE SETLIST CSV / TSV TEXT</span>
+              <span class="export-section-title">SETLIST CSV / TSV SOURCE</span>
               <button 
-                class="mini-sample-btn" 
-                on:click={() => {
-                  rawCsvText = `Title,Singer,Key,Notes\nSuperstition,Sarah Jenkins,Ebm,Horn intro; vamp on outro\nI Wish,Marcus Vance,Ebm,Full band hit at bar 9\nSir Duke,Alex & Sarah,B,Horn soli at bridge\nIsn't She Lovely,Marcus Vance,E,Acoustic breakdown verse 2\nLiving for the City,Sarah Jenkins,F#,Key change to G# on last chorus\nNew Commissioned Ballad,Sarah Jenkins,Ab,Track in progress (Unlinked)`;
-                  handleResolveSetlist();
-                }}
+                class="mini-sample-btn load-file-btn" 
+                on:click={loadSetlistCsvFile}
+                title="Open a CSV, TSV, or TXT file from disk"
               >
-                📋 Load Sample Setlist
+                📂 Load CSV / TSV File...
               </button>
             </div>
             <p class="prefs-section-hint">
-              Paste your setlist table from Excel, Google Sheets, or CSV. Supports columns for <strong>Song Title</strong>, <strong>Singer(s)</strong>, <strong>Key</strong>, and <strong>Arrangement Notes</strong>.
+              Column A is the <strong>Song Title</strong>. Any additional columns (singers, parts, mics, arrangement cues) are automatically parsed into a clean Markdown table in each track's rehearsal notes.
             </p>
             <textarea 
               class="setlist-csv-textarea" 
-              placeholder="Title, Singer, Key, Notes&#10;Superstition, Sarah, Ebm, Horn intro&#10;I Wish, Marcus, Ebm, Band hit bar 9..."
+              placeholder="Song Title, Lead Singer, Mic, Arrangement Notes&#10;Crazy Little Thing Called Love, Sarah, Mic 3, Acoustic guitar intro&#10;Superstition, Marcus, Mic 1, Horn stab cue..."
               bind:value={rawCsvText}
             ></textarea>
 
@@ -8094,10 +9756,9 @@
                     <tr>
                       <th style="width: 36px;">#</th>
                       <th>Song Title</th>
-                      <th>Singer(s)</th>
-                      <th style="width: 60px;">Key</th>
                       <th>Main Audio (AAC/M4A)</th>
-                      <th>Full-Res WAV</th>
+                      <th>Full-Res (WAV/AIF)</th>
+                      <th>Original Artist</th>
                       <th>PDF Sheet Music</th>
                       <th style="width: 90px;">Status</th>
                     </tr>
@@ -8107,13 +9768,14 @@
                       <tr class:row-unlinked={item.isPlaceholder}>
                         <td class="order-cell">{item.order}</td>
                         <td class="title-cell"><strong>{item.title}</strong></td>
-                        <td class="singer-cell">{item.singers || "—"}</td>
-                        <td class="key-cell">{item.keyNote || "—"}</td>
                         <td class="file-match-cell" title={item.mainAacPath || "Unlinked"}>
                           {item.mainAacName || "⚠️ No file (Placeholder)"}
                         </td>
                         <td class="file-match-cell" title={item.fullResWavPath || "None"}>
                           {item.fullResWavName || "—"}
+                        </td>
+                        <td class="file-match-cell" title={item.originalPath || "None"}>
+                          {item.originalName || "—"}
                         </td>
                         <td class="file-match-cell" title={item.pdfPath || "None"}>
                           {item.pdfName || "—"}
@@ -8136,11 +9798,28 @@
           {/if}
         </div>
 
-        <div class="modal-footer">
-          <button class="modal-cancel-btn" on:click={() => showSetlistModal = false}>Cancel</button>
-          <button class="modal-action-btn" disabled={resolvedSetlist.length === 0} on:click={applyImportedSetlist}>
-            🚀 Import & Load Setlist ({resolvedSetlist.length})
-          </button>
+        <div class="modal-footer setlist-modal-footer">
+          <div class="footer-left-info">
+            <span class="resize-hint-text">⤢ Drag corner to resize</span>
+          </div>
+          <div class="footer-actions-row">
+            <button class="modal-cancel-btn" on:click={() => showSetlistModal = false}>Cancel</button>
+            <button class="modal-action-btn" disabled={resolvedSetlist.length === 0} on:click={applyImportedSetlist}>
+              🚀 Import & Load Setlist ({resolvedSetlist.length})
+            </button>
+          </div>
+          <!-- svelte-ignore a11y-no-static-element-interactions -->
+          <div 
+            class="modal-corner-resizer" 
+            on:mousedown={startResizeSetlistModal} 
+            title="Drag to resize window"
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12">
+              <line x1="10" y1="3" x2="3" y2="10" stroke="#71717a" stroke-width="1.5" stroke-linecap="round" />
+              <line x1="11" y1="7" x2="7" y2="11" stroke="#71717a" stroke-width="1.5" stroke-linecap="round" />
+              <line x1="11" y1="11" x2="11" y2="11" stroke="#71717a" stroke-width="1.5" stroke-linecap="round" />
+            </svg>
+          </div>
         </div>
       </div>
     </div>
@@ -8210,6 +9889,41 @@
                 </div>
               {/each}
             </div>
+
+            <!-- Selective Migration Checkboxes -->
+            <div class="repair-migration-section">
+              <div class="repair-migration-title">METADATA MIGRATION OPTIONS FOR UPGRADED MIXES</div>
+              <div class="repair-migration-grid">
+                <label class="repair-check-label">
+                  <input type="checkbox" bind:checked={repairMigrateMarkers} />
+                  <span>📍 Cue Markers & Landmarks</span>
+                </label>
+                <label class="repair-check-label">
+                  <input type="checkbox" bind:checked={repairMigrateRegions} />
+                  <span>🔁 Loop & Cut Regions</span>
+                </label>
+                <label class="repair-check-label">
+                  <input type="checkbox" bind:checked={repairMigrateNotes} />
+                  <span>📝 Singer Assignments & Notes</span>
+                </label>
+                <label class="repair-check-label">
+                  <input type="checkbox" bind:checked={repairMigrateVolume} />
+                  <span>🔊 Base Track Volume</span>
+                </label>
+                <label class="repair-check-label">
+                  <input type="checkbox" bind:checked={repairMigrateEnvelope} />
+                  <span>📈 Volume Envelope Automation</span>
+                </label>
+                <label class="repair-check-label">
+                  <input type="checkbox" bind:checked={repairMigrateEq} />
+                  <span>🎛️ Parametric EQ Settings</span>
+                </label>
+                <label class="repair-check-label">
+                  <input type="checkbox" bind:checked={repairMigrateComp} />
+                  <span>🗜️ Compressor Dynamics</span>
+                </label>
+              </div>
+            </div>
           {/if}
         </div>
 
@@ -8226,7 +9940,68 @@
       </div>
     </div>
   {/if}
+
+  {#if showTrashModal && itemToTrash}
+    <!-- svelte-ignore a11y-click-events-have-key-events -->
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div class="modal-backdrop" on:click={() => !trashLoading && (showTrashModal = false)}>
+      <div class="inspector-modal trash-modal-card" on:click|stopPropagation>
+        <div class="modal-header">
+          <div class="modal-title-row">
+            <span class="modal-badge trash-badge">TRASH</span>
+            <h3>Move File to macOS Trash?</h3>
+          </div>
+          <button class="modal-close-btn" disabled={trashLoading} on:click={() => showTrashModal = false}>×</button>
+        </div>
+
+        <div class="modal-body trash-modal-body">
+          <p class="trash-question">
+            Are you sure you want to move this file to your computer's Trash?
+          </p>
+
+          <div class="trash-file-details">
+            <div class="trash-file-name-row">
+              <span class="trash-file-icon">{itemToTrash.fileType === 'pdf' ? '📄' : '🎵'}</span>
+              <span class="trash-file-name">{itemToTrash.name}</span>
+              <span class="assoc-ext-badge">{getFileExtension(itemToTrash.path || itemToTrash.name)}</span>
+            </div>
+            <div class="trash-file-path-row" title={itemToTrash.path}>
+              <span class="trash-path-label">Path:</span>
+              <span class="trash-path-value">{itemToTrash.path}</span>
+            </div>
+          </div>
+
+          <div class="trash-safety-note">
+            <span class="trash-safety-icon">🛡️</span>
+            <span>This file will be safely moved to your macOS <strong>Trash</strong> (<code>~/.Trash</code>) and unlinked from TrackHelm. It will not be permanently deleted, and you can recover it from Finder if needed.</span>
+          </div>
+
+          {#if trashErrorMessage}
+            <div class="trash-error-alert">
+              <span>⚠️ {trashErrorMessage}</span>
+            </div>
+          {/if}
+        </div>
+
+        <div class="modal-footer">
+          <button class="modal-cancel-btn" disabled={trashLoading} on:click={() => showTrashModal = false}>Cancel</button>
+          <button 
+            class="modal-action-btn trash-danger-btn" 
+            disabled={trashLoading} 
+            on:click={executeMoveToTrash}
+          >
+            {#if trashLoading}
+              ⏳ Moving to Trash...
+            {:else}
+              🗑️ Move to Trash
+            {/if}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </main>
+
 
 <style>
   /* Color Scheme: Dorico (Slate grey / dark charcoal) */
@@ -8252,10 +10027,29 @@
   /* Grid layout spanning 3-column workspaces (Full 100vh Height) */
   .workspace-grid {
     display: grid;
-    grid-template-columns: 240px 1fr 280px;
     flex-grow: 1;
     overflow: hidden;
     height: 100vh;
+  }
+
+  .workspace-grid.resizing-active {
+    user-select: none !important;
+    cursor: col-resize !important;
+  }
+
+  .resizer-handle {
+    width: 4px;
+    background-color: #2b2b30;
+    cursor: col-resize;
+    position: relative;
+    z-index: 25;
+    transition: background-color 0.15s ease;
+    user-select: none;
+  }
+
+  .resizer-handle:hover,
+  .resizer-handle.active {
+    background-color: #007aff;
   }
 
   /* Shared Panels Styling */
@@ -8271,11 +10065,52 @@
 
   /* Left Sidebar Tab system */
   .sidebar-left {
+    position: relative;
     background-color: #252526;
     border-right: 1px solid #3c3c3c;
     display: flex;
     flex-direction: column;
     overflow: hidden;
+  }
+
+  .typeahead-indicator {
+    position: absolute;
+    bottom: 12px;
+    right: 12px;
+    background: rgba(26, 26, 32, 0.94);
+    border: 1px solid #3b99fc;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.65), 0 0 8px rgba(59, 153, 252, 0.25);
+    border-radius: 6px;
+    padding: 5px 11px;
+    font-size: 0.74rem;
+    color: #ffffff;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    pointer-events: none;
+    z-index: 100;
+    backdrop-filter: blur(8px);
+    animation: typeaheadFadeIn 0.15s ease-out;
+  }
+
+  .typeahead-indicator .typeahead-icon {
+    font-size: 0.85rem;
+  }
+
+  .typeahead-indicator .typeahead-text {
+    font-size: 0.72rem;
+    color: #d1d1d6;
+  }
+
+  .typeahead-indicator strong {
+    color: #3b99fc;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+
+  @keyframes typeaheadFadeIn {
+    from { opacity: 0; transform: translateY(4px) scale(0.96); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
   }
 
   .tab-selectors {
@@ -8534,9 +10369,24 @@
   .playlist-controls-sidebar {
     background-color: #202021;
     border-top: 1px solid #3c3c3c;
-    padding: 12px;
+    padding: 8px 10px;
     display: flex;
-    gap: 8px;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .playlist-controls-sidebar .action-btn {
+    flex: 1 1 calc(33.333% - 6px);
+    min-width: 60px;
+    padding: 5px 6px;
+    font-size: 0.7rem;
+    text-align: center;
+    justify-content: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    box-sizing: border-box;
   }
 
   .clear-btn {
@@ -8809,6 +10659,30 @@
   .disabled-btn {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+
+  .ab-compare-btn {
+    background-color: #2a2d34;
+    color: #9ab4d0;
+    border-color: #3b4657;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.78rem;
+  }
+
+  .ab-compare-btn:hover:not(.disabled-btn) {
+    background-color: #384050;
+    color: #c0d8f8;
+    border-color: #4f6382;
+  }
+
+  .ab-compare-btn.ab-active {
+    background: linear-gradient(135deg, #104432, #186348);
+    color: #64e3a5;
+    border-color: #28a76f;
+    box-shadow: 0 0 8px rgba(40, 167, 111, 0.4);
+    font-weight: 700;
   }
 
   /* Loop & Zoom layout */
@@ -10004,6 +11878,90 @@
     margin: 4px 0;
   }
 
+  .menu-section-header {
+    font-size: 0.64rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #8e8e93;
+    padding: 6px 14px 2px 14px;
+    font-weight: 700;
+  }
+
+  .menu-header-label {
+    font-size: 0.74rem;
+    font-weight: 700;
+    color: #ffffff;
+    padding: 4px 14px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 280px;
+  }
+
+  .menu-item-assoc {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 360px;
+  }
+
+  .menu-check {
+    width: 14px;
+    display: inline-block;
+    color: #3b99fc;
+    font-weight: 700;
+    flex-shrink: 0;
+    text-align: center;
+  }
+
+  .menu-item-icon {
+    flex-shrink: 0;
+    font-size: 0.85rem;
+  }
+
+  .menu-item-text {
+    flex-grow: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .menu-item-badge {
+    font-size: 0.55rem;
+    font-weight: 700;
+    padding: 1px 4px;
+    border-radius: 3px;
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+    background: rgba(255, 255, 255, 0.1);
+    color: #d1d1d1;
+  }
+
+  .menu-item-badge.badge-lossless {
+    background-color: rgba(59, 153, 252, 0.2);
+    color: #3b99fc;
+  }
+
+  .menu-item-badge.badge-lead {
+    background-color: rgba(255, 214, 10, 0.2);
+    color: #ffd60a;
+  }
+
+  .menu-item-badge.badge-backings {
+    background-color: rgba(100, 210, 255, 0.2);
+    color: #64d2ff;
+  }
+
+  .menu-item-badge.badge-vocals {
+    background-color: rgba(175, 82, 222, 0.2);
+    color: #bf5af2;
+  }
+
+  .menu-item-badge.badge-orig {
+    background-color: rgba(255, 149, 0, 0.2);
+    color: #ff9f0a;
+  }
+
   /* Marker Color Palette Popover */
   .marker-color-palette-popover {
     position: fixed;
@@ -10418,27 +12376,36 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    border-bottom: 1px solid #2c2c30;
-    padding-bottom: 10px;
-    margin-bottom: 12px;
+    border-bottom: 1px solid #28282e;
+    padding-bottom: 6px;
+    margin-bottom: 8px;
+    gap: 12px;
   }
 
   .files-header-left {
     display: flex;
-    flex-direction: column;
-    gap: 2px;
+    align-items: center;
+    gap: 8px;
   }
 
   .files-pane-title {
-    font-size: 0.82rem;
+    font-size: 0.78rem;
     font-weight: 800;
     letter-spacing: 0.05em;
     color: #ffffff;
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
 
-  .files-pane-subtitle {
-    font-size: 0.68rem;
-    color: #8e8e93;
+  .files-count-pill {
+    font-size: 0.65rem;
+    font-weight: 700;
+    background-color: #2c2c34;
+    color: #5ac8fa;
+    padding: 1px 6px;
+    border-radius: 10px;
+    border: 1px solid #3e3e4a;
   }
 
   .add-assoc-file-btn {
@@ -10510,70 +12477,124 @@
     border-color: #007aff;
   }
 
-  .assoc-files-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 10px;
-  }
-
-  .assoc-card {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    background-color: #18181b;
-    border: 1px solid #2b2b30;
-    border-radius: 6px;
-    padding: 8px 10px;
-    transition: border-color 0.15s ease;
-  }
-
-  .assoc-card:hover {
-    border-color: #3e3e48;
-  }
-
-  .assoc-card.pdf-card {
-    border-left: 3px solid #ff9500;
-  }
-
-  .assoc-card.audio-card {
-    border-left: 3px solid #30d158;
-  }
-
-  .assoc-card-icon {
-    font-size: 1.2rem;
-    flex-shrink: 0;
-  }
-
-  .assoc-card-info {
+  .assoc-files-table {
     display: flex;
     flex-direction: column;
-    min-width: 0;
-    flex-grow: 1;
+    gap: 4px;
+    width: 100%;
   }
 
-  .assoc-card-name {
-    font-size: 0.78rem;
-    font-weight: 700;
-    color: #ffffff;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .assoc-card-path {
-    font-size: 0.62rem;
-    color: #71717a;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    font-family: monospace;
-  }
-
-  .assoc-card-actions {
+  .assoc-file-row {
     display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 10px;
+    background-color: #17171a;
+    border: 1px solid #28282e;
+    border-radius: 4px;
+    transition: all 0.12s ease;
+    user-select: none;
+    cursor: pointer;
+  }
+
+  .assoc-file-row:hover {
+    background-color: #202026;
+    border-color: #3e3e4a;
+  }
+
+  .assoc-file-row.is-active-waveform {
+    background-color: rgba(59, 153, 252, 0.08);
+    border-color: rgba(59, 153, 252, 0.45);
+    box-shadow: 0 0 8px rgba(59, 153, 252, 0.15);
+  }
+
+  .assoc-row-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex: 1;
+  }
+
+  .assoc-row-icon {
+    font-size: 0.95rem;
+    flex-shrink: 0;
+    width: 20px;
+    text-align: center;
+  }
+
+  .assoc-row-name {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #f2f2f7;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 360px;
+  }
+
+  .assoc-row-badges {
+    display: inline-flex;
     align-items: center;
     gap: 4px;
     flex-shrink: 0;
+  }
+
+  .assoc-row-actions {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+  }
+
+  .assoc-ext-badge {
+    font-size: 0.58rem;
+    font-weight: 700;
+    padding: 1px 4px;
+    border-radius: 3px;
+    letter-spacing: 0.05em;
+    flex-shrink: 0;
+    text-transform: uppercase;
+  }
+
+  .assoc-ext-badge.badge-lossless {
+    background-color: rgba(59, 153, 252, 0.18);
+    color: #3b99fc;
+    border: 1px solid rgba(59, 153, 252, 0.4);
+  }
+
+  .assoc-ext-badge.badge-lossy {
+    background-color: rgba(48, 209, 88, 0.18);
+    color: #30d158;
+    border: 1px solid rgba(48, 209, 88, 0.4);
+  }
+
+  .assoc-ext-badge.badge-pdf {
+    background-color: rgba(255, 149, 0, 0.18);
+    color: #ff9500;
+    border: 1px solid rgba(255, 149, 0, 0.4);
+  }
+
+  .assoc-role-badge {
+    font-size: 0.58rem;
+    font-weight: 700;
+    padding: 1px 5px;
+    border-radius: 3px;
+    letter-spacing: 0.05em;
+    flex-shrink: 0;
+  }
+
+  .assoc-role-badge.badge-orig {
+    background-color: rgba(191, 90, 242, 0.22);
+    color: #d084ff;
+    border: 1px solid rgba(191, 90, 242, 0.5);
+  }
+
+  .assoc-role-badge.badge-hires {
+    background-color: rgba(59, 153, 252, 0.22);
+    color: #5ac8fa;
+    border: 1px solid rgba(59, 153, 252, 0.5);
   }
 
   .assoc-action-btn {
@@ -10587,6 +12608,7 @@
     font-weight: 600;
     transition: all 0.12s ease;
   }
+
 
   .assoc-action-btn:hover {
     background-color: #34343d;
@@ -10624,6 +12646,330 @@
     color: #ff453a;
     background-color: rgba(255, 69, 58, 0.15);
   }
+
+  .assoc-card.vocal-card {
+    border-left: 3px solid #bf5af2 !important;
+  }
+
+  .assoc-card.lead-card {
+    border-left: 3px solid #ffd60a !important;
+  }
+
+  .assoc-card.backing-card {
+    border-left: 3px solid #64d2ff !important;
+  }
+
+  .assoc-role-badge.badge-lead {
+    background-color: rgba(255, 214, 10, 0.2);
+    color: #ffd60a;
+    border: 1px solid rgba(255, 214, 10, 0.5);
+  }
+
+  .assoc-role-badge.badge-backings {
+    background-color: rgba(100, 210, 255, 0.2);
+    color: #64d2ff;
+    border: 1px solid rgba(100, 210, 255, 0.5);
+  }
+
+  .assoc-role-badge.badge-vocals {
+    background-color: rgba(191, 90, 242, 0.25);
+    color: #d084ff;
+    border: 1px solid rgba(191, 90, 242, 0.55);
+  }
+
+  .assoc-role-badge.badge-active-waveform {
+    background-color: rgba(59, 153, 252, 0.25);
+    color: #5ac8fa;
+    border: 1px solid #3b99fc;
+    font-weight: 800;
+  }
+
+  .assoc-role-badge.badge-default-mix {
+    background-color: rgba(52, 199, 89, 0.2);
+    color: #55e084;
+    border: 1px solid rgba(52, 199, 89, 0.55);
+    font-weight: 700;
+  }
+
+  .files-header-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .prefer-hires-btn {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: #a1a1aa;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 5px 11px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  .prefer-hires-btn:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: #ffffff;
+    border-color: rgba(255, 255, 255, 0.3);
+  }
+
+  .prefer-hires-btn.active {
+    background: linear-gradient(135deg, rgba(59, 153, 252, 0.28), rgba(175, 82, 222, 0.28));
+    border-color: #3b99fc;
+    color: #5ac8fa;
+    box-shadow: 0 0 10px rgba(59, 153, 252, 0.35);
+  }
+
+  .assoc-action-btn.uvr-action-btn {
+    background-color: rgba(191, 90, 242, 0.14);
+    border-color: rgba(191, 90, 242, 0.35);
+    color: #d084ff;
+  }
+
+  .assoc-action-btn.uvr-action-btn:hover:not(:disabled) {
+    background-color: rgba(191, 90, 242, 0.3);
+    color: #ffffff;
+    border-color: #d084ff;
+  }
+
+  .assoc-action-btn.uvr-karaoke-btn {
+    background-color: rgba(255, 214, 10, 0.14);
+    border-color: rgba(255, 214, 10, 0.35);
+    color: #ffd60a;
+  }
+
+  .assoc-action-btn.uvr-karaoke-btn:hover:not(:disabled) {
+    background-color: rgba(255, 214, 10, 0.3);
+    color: #ffffff;
+    border-color: #ffd60a;
+  }
+
+  .assoc-action-btn.trash-action-btn {
+    color: #8e8e96;
+    padding: 2px 6px;
+  }
+
+  .assoc-action-btn.trash-action-btn:hover {
+    color: #ff453a;
+    background-color: rgba(255, 69, 58, 0.18);
+    border-color: rgba(255, 69, 58, 0.4);
+  }
+
+  .uvr-tab-indicator {
+    font-size: 0.65rem;
+    font-weight: 700;
+    color: #d084ff;
+    background: rgba(191, 90, 242, 0.18);
+    padding: 1px 6px;
+    border-radius: 10px;
+    margin-left: 6px;
+  }
+
+  .files-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .uvr-header-btn {
+    background-color: #7b2cbf !important;
+    border: 1px solid #9d4edd !important;
+  }
+
+  .uvr-header-btn:hover:not(:disabled) {
+    background-color: #9d4edd !important;
+  }
+
+  .uvr-status-bar {
+    background: linear-gradient(90deg, #1e1528, #18181f);
+    border: 1px solid rgba(191, 90, 242, 0.4);
+    border-radius: 4px;
+    padding: 4px 10px;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.74rem;
+  }
+
+  .uvr-sparkle {
+    font-size: 0.85rem;
+    flex-shrink: 0;
+  }
+
+  .uvr-stage {
+    font-weight: 700;
+    color: #ffffff;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .uvr-target {
+    color: #8e8e93;
+    font-size: 0.68rem;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex-shrink: 1;
+  }
+
+  .uvr-meter-track {
+    flex: 1;
+    min-width: 60px;
+    height: 4px;
+    background-color: #2a2035;
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .uvr-meter-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #9d4edd, #007aff);
+    border-radius: 2px;
+    transition: width 0.25s ease;
+  }
+
+  .uvr-pct {
+    font-size: 0.74rem;
+    font-weight: 800;
+    color: #d084ff;
+    flex-shrink: 0;
+    margin-left: auto;
+  }
+
+  .uvr-toast {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin-bottom: 12px;
+  }
+
+  .uvr-toast-error {
+    background-color: rgba(255, 69, 58, 0.15);
+    border: 1px solid rgba(255, 69, 58, 0.4);
+    color: #ff6961;
+  }
+
+  .uvr-toast-success {
+    background-color: rgba(48, 209, 88, 0.15);
+    border: 1px solid rgba(48, 209, 88, 0.4);
+    color: #30d158;
+  }
+
+  .uvr-dismiss-btn {
+    background: transparent;
+    border: none;
+    color: inherit;
+    font-size: 1rem;
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
+  }
+
+  /* Trash Modal */
+  .trash-modal-card {
+    width: 480px;
+    max-width: 92vw;
+  }
+
+  .trash-badge {
+    background-color: #ff453a;
+  }
+
+  .trash-modal-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .trash-question {
+    margin: 0;
+    font-size: 0.88rem;
+    color: #ffffff;
+    font-weight: 600;
+  }
+
+  .trash-file-details {
+    background-color: #141416;
+    border: 1px solid #28282e;
+    border-radius: 6px;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .trash-file-name-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: #ffffff;
+  }
+
+  .trash-file-path-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    font-size: 0.68rem;
+    color: #8e8e93;
+    font-family: monospace;
+    word-break: break-all;
+  }
+
+  .trash-path-label {
+    color: #636366;
+    flex-shrink: 0;
+  }
+
+  .trash-safety-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    background-color: rgba(0, 122, 255, 0.1);
+    border: 1px solid rgba(0, 122, 255, 0.25);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 0.72rem;
+    color: #9ac9ff;
+    line-height: 1.4;
+  }
+
+  .trash-safety-icon {
+    font-size: 1rem;
+    flex-shrink: 0;
+  }
+
+  .trash-error-alert {
+    background-color: rgba(255, 69, 58, 0.15);
+    border: 1px solid rgba(255, 69, 58, 0.4);
+    color: #ff6961;
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 0.75rem;
+  }
+
+  .trash-danger-btn {
+    background-color: #ff453a !important;
+    color: #ffffff !important;
+  }
+
+  .trash-danger-btn:hover:not(:disabled) {
+    background-color: #ff5b52 !important;
+  }
+
 
   .files-badge-count {
     font-size: 0.62rem;
@@ -10979,8 +13325,8 @@
     cursor: pointer;
   }
 
-  /* Kirchhoff EQ Canvas & Node Controls */
-  .kirchhoff-eq-canvas-card {
+  /* Precision Parametric EQ Canvas & Node Controls */
+  .helm-eq-canvas-card {
     position: relative;
     background-color: #08080a;
     border: 1px solid #222228;
@@ -10988,7 +13334,7 @@
     overflow: hidden;
   }
 
-  .kirchhoff-eq-svg {
+  .helm-eq-svg {
     width: 100%;
     height: 200px;
   }
@@ -12234,9 +14580,84 @@
 
   /* Setlist Importer Modal */
   .setlist-modal-card {
-    width: 820px;
-    max-width: 95vw;
-    max-height: 90vh;
+    min-width: 550px;
+    max-width: 96vw;
+    min-height: 400px;
+    max-height: 94vh;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    box-sizing: border-box;
+  }
+
+  .setlist-modal-card.is-resizing {
+    user-select: none !important;
+  }
+
+  .modal-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .modal-icon-btn {
+    background: transparent;
+    border: none;
+    color: #8e8e93;
+    font-size: 0.9rem;
+    padding: 2px 6px;
+    cursor: pointer;
+    border-radius: 4px;
+    transition: all 0.12s ease;
+  }
+
+  .modal-icon-btn:hover {
+    background-color: #2b2b32;
+    color: #ffffff;
+  }
+
+  .setlist-modal-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    position: relative;
+  }
+
+  .footer-left-info {
+    display: flex;
+    align-items: center;
+  }
+
+  .resize-hint-text {
+    font-size: 0.65rem;
+    color: #636366;
+    font-family: monospace;
+    user-select: none;
+  }
+
+  .footer-actions-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .modal-corner-resizer {
+    position: absolute;
+    right: 3px;
+    bottom: 3px;
+    width: 14px;
+    height: 14px;
+    cursor: nwse-resize;
+    display: flex;
+    align-items: flex-end;
+    justify-content: flex-end;
+    opacity: 0.5;
+    transition: opacity 0.15s ease;
+    user-select: none;
+  }
+
+  .modal-corner-resizer:hover {
+    opacity: 1.0;
   }
 
   .ai-badge {
@@ -12250,6 +14671,8 @@
     flex-direction: column;
     gap: 16px;
     overflow-y: auto;
+    flex-grow: 1;
+    min-height: 0;
   }
 
   .setlist-input-header {
@@ -12257,6 +14680,12 @@
     justify-content: space-between;
     align-items: center;
     margin-bottom: 4px;
+  }
+
+  .setlist-header-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
   }
 
   .mini-sample-btn {
@@ -12269,6 +14698,19 @@
     border-radius: 4px;
     cursor: pointer;
     transition: all 0.12s ease;
+  }
+
+  .mini-sample-btn.load-file-btn {
+    background: linear-gradient(135deg, #2c1a4d, #1c1c28);
+    border-color: #bf5af2;
+    color: #e599f7;
+    font-weight: 700;
+  }
+
+  .mini-sample-btn.load-file-btn:hover {
+    background: linear-gradient(135deg, #442277, #282838);
+    border-color: #d0bfff;
+    color: #ffffff;
   }
 
   .mini-sample-btn:hover {
@@ -12322,8 +14764,17 @@
     font-size: 0.78rem;
   }
 
+  .setlist-results-section {
+    display: flex;
+    flex-direction: column;
+    flex-grow: 1;
+    min-height: 0;
+  }
+
   .setlist-table-scroll {
-    max-height: 280px;
+    flex-grow: 1;
+    min-height: 180px;
+    max-height: 55vh;
     overflow-y: auto;
     border: 1px solid #2e2e38;
     border-radius: 5px;
@@ -12527,5 +14978,222 @@
     background: rgba(255, 69, 58, 0.2);
     color: #ff453a;
     border: 1px solid #ff453a;
+  }
+
+  /* Selective Migration Section in Repair Modal */
+  .repair-migration-section {
+    margin-top: 10px;
+    padding: 12px 14px;
+    background: #141419;
+    border: 1px solid #282832;
+    border-radius: 6px;
+  }
+
+  .repair-migration-title {
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: #ffd60a;
+    margin-bottom: 10px;
+    text-transform: uppercase;
+  }
+
+  .repair-migration-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 8px 12px;
+  }
+
+  .repair-check-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.75rem;
+    color: #e4e4e7;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .repair-check-label input[type="checkbox"] {
+    accent-color: #ffd60a;
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
+  }
+
+  /* Volume Envelope Strip (Below Main Waveform) */
+  .envelope-strip {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 14px;
+    background: #111116;
+    border-top: 1px solid #23232c;
+    border-bottom: 1px solid #23232c;
+    font-size: 0.74rem;
+    color: #d1d1d6;
+    min-height: 34px;
+    box-sizing: border-box;
+  }
+
+  .envelope-strip-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .envelope-toggle-btn {
+    background: #1d1d24;
+    border: 1px solid #383844;
+    color: #ffb340;
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 3px 9px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.12s ease;
+  }
+
+  .envelope-toggle-btn.active {
+    background: rgba(255, 179, 64, 0.2);
+    border-color: #ffb340;
+    color: #ffffff;
+  }
+
+  .envelope-state-btn {
+    background: rgba(48, 209, 88, 0.15);
+    border: 1px solid #30d158;
+    color: #30d158;
+    font-size: 0.65rem;
+    font-weight: 800;
+    padding: 2px 7px;
+    border-radius: 3px;
+    cursor: pointer;
+  }
+
+  .envelope-state-btn.bypassed {
+    background: rgba(255, 69, 58, 0.15);
+    border-color: #ff453a;
+    color: #ff453a;
+  }
+
+  .envelope-reset-btn {
+    background: #202028;
+    border: 1px solid #333340;
+    color: #a1a1aa;
+    font-size: 0.7rem;
+    padding: 3px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .envelope-reset-btn:hover:not(:disabled) {
+    background: #2a2a36;
+    color: #ffffff;
+  }
+
+  .envelope-reset-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .envelope-node-count-badge {
+    font-size: 0.68rem;
+    color: #8e8e93;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Mono", monospace;
+  }
+
+  .envelope-strip-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .envelope-node-editor {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #181820;
+    padding: 2px 8px;
+    border: 1px solid #323240;
+    border-radius: 4px;
+  }
+
+  .env-editor-label {
+    font-weight: 700;
+    color: #ffb340;
+    font-size: 0.7rem;
+  }
+
+  .env-time-label {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Mono", monospace;
+    font-size: 0.72rem;
+    color: #64d2ff;
+  }
+
+  .env-gain-control {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .env-gain-label {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Mono", monospace;
+    font-weight: 700;
+    font-size: 0.74rem;
+    color: #ffd60a;
+    min-width: 54px;
+  }
+
+  .env-gain-slider {
+    width: 80px;
+    height: 4px;
+    accent-color: #ffd60a;
+    cursor: pointer;
+  }
+
+  .env-curve-selector {
+    display: flex;
+    gap: 2px;
+    background: #101014;
+    padding: 2px;
+    border-radius: 4px;
+  }
+
+  .env-curve-btn {
+    background: transparent;
+    border: none;
+    color: #8e8e93;
+    font-size: 0.65rem;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 3px;
+    cursor: pointer;
+  }
+
+  .env-curve-btn.active {
+    background: #ffb340;
+    color: #000000;
+    font-weight: 700;
+  }
+
+  .env-delete-node-btn {
+    background: transparent;
+    border: none;
+    color: #ff453a;
+    font-size: 0.85rem;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 3px;
+  }
+
+  .env-delete-node-btn:hover {
+    background: rgba(255, 69, 58, 0.2);
+  }
+
+  .env-hint-text {
+    font-size: 0.7rem;
+    color: #71717a;
+    font-style: italic;
   }
 </style>
