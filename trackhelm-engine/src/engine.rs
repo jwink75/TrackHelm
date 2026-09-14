@@ -9,6 +9,7 @@ pub struct SharedEngineState {
     pub current_frame: Arc<AtomicUsize>,
     pub total_frames: Arc<AtomicUsize>,
     pub sample_rate: Arc<AtomicUsize>,
+    pub device_sample_rate: Arc<AtomicUsize>,
     pub volume_raw: Arc<AtomicUsize>, // Volume scaled by 1000 (e.g. 1.0 -> 1000)
     pub in_peak_db_l: Arc<AtomicI32>,  // (db * 100.0) as i32, default -6000 (-60.0 dB)
     pub in_peak_db_r: Arc<AtomicI32>,
@@ -33,6 +34,7 @@ impl AudioEngine {
             current_frame: Arc::new(AtomicUsize::new(0)),
             total_frames: Arc::new(AtomicUsize::new(0)),
             sample_rate: Arc::new(AtomicUsize::new(44100)),
+            device_sample_rate: Arc::new(AtomicUsize::new(48000)),
             volume_raw: Arc::new(AtomicUsize::new(1000)), // default 1.0 volume
             in_peak_db_l: Arc::new(AtomicI32::new(-6000)),
             in_peak_db_r: Arc::new(AtomicI32::new(-6000)),
@@ -75,6 +77,9 @@ impl AudioEngine {
             log::info!("Audio device initialized: {}", device.name().unwrap_or_default());
             log::info!("Default output config: {:?}", config);
 
+            let device_sample_rate = config.sample_rate().0 as f64;
+            shared_state.device_sample_rate.store(config.sample_rate().0 as usize, Ordering::SeqCst);
+
             let output_channels = config.channels() as usize;
 
             // Maximum supported channel count and buffer frames for real-time safety
@@ -87,7 +92,7 @@ impl AudioEngine {
             let mut is_playing = false;
             let mut current_speed: f32 = 1.0;
             let mut current_pitch: f32 = 0.0;
-            let mut stretch = signalsmith_stretch_rs::SignalsmithStretch::new(output_channels.max(2).min(MAX_CHANNELS), config.sample_rate().0 as f32);
+            let mut stretch = signalsmith_stretch_rs::SignalsmithStretch::new(output_channels.max(2).min(MAX_CHANNELS), device_sample_rate as f32);
             stretch.set_transpose_semitones(current_pitch);
             let mut stretch_channels: usize = output_channels.max(2).min(MAX_CHANNELS);
 
@@ -95,12 +100,11 @@ impl AudioEngine {
             let mut in_channel_scratch: Vec<Vec<f32>> = vec![vec![0.0f32; MAX_BUFFER_FRAMES]; MAX_CHANNELS];
             let mut out_channel_scratch: Vec<Vec<f32>> = vec![vec![0.0f32; MAX_BUFFER_FRAMES]; MAX_CHANNELS];
 
-            let mut current_sample_rate = config.sample_rate().0 as f64;
             // Pre-allocate biquad filter pool (up to 16 cascade bands)
             let mut biquads_pool: Vec<crate::dsp::Biquad> = (0..crate::command::MAX_EQ_BANDS).map(|_| crate::dsp::Biquad::new(output_channels)).collect();
             let mut active_biquad_count = 0;
             let mut eq_active = false;
-            let mut dual_compressor = crate::dsp::DualCompressor::new(current_sample_rate);
+            let mut dual_compressor = crate::dsp::DualCompressor::new(device_sample_rate);
             let mut active_regions: [crate::command::EngineRegion; crate::command::MAX_ENGINE_REGIONS] = [crate::command::EngineRegion::default(); crate::command::MAX_ENGINE_REGIONS];
             let mut active_region_count: usize = 0;
             let mut envelope_nodes = [crate::command::EnvelopeNode::default(); crate::command::MAX_ENVELOPE_NODES];
@@ -243,16 +247,36 @@ impl AudioEngine {
                                         pending_envelope = Some((nodes, count));
                                     }
                                     Command::LoadAudio(audio) => {
-                                        let total = audio.channel_samples[0].len();
-                                        let rate = audio.sample_rate;
-                                        current_sample_rate = rate as f64;
+                                        // Ensure audio matches device sample rate
+                                        let audio_to_load = if audio.sample_rate as f64 != device_sample_rate && audio.sample_rate > 0 {
+                                            match crate::resampler::resample_audio_channels(&audio.channel_samples, audio.sample_rate, device_sample_rate as u32) {
+                                                Ok(resampled) => {
+                                                    let duration = audio.duration_seconds;
+                                                    Arc::new(DecodedAudio {
+                                                        channels: audio.channels,
+                                                        sample_rate: device_sample_rate as u32,
+                                                        duration_seconds: duration,
+                                                        channel_samples: resampled,
+                                                    })
+                                                }
+                                                Err(e) => {
+                                                    log::error!("Failed to resample audio in engine: {}", e);
+                                                    audio
+                                                }
+                                            }
+                                        } else {
+                                            audio
+                                        };
+
+                                        let total = audio_to_load.channel_samples[0].len();
+                                        let rate = audio_to_load.sample_rate;
                                         shared_total_frames.store(total, Ordering::SeqCst);
                                         shared_sample_rate.store(rate as usize, Ordering::SeqCst);
                                         shared_current_frame.store(0, Ordering::SeqCst);
                                         
-                                        let ch = audio.channels.max(1).min(MAX_CHANNELS);
+                                        let ch = audio_to_load.channels.max(1).min(MAX_CHANNELS);
                                         stretch_channels = ch;
-                                        stretch.preset_default(stretch_channels, current_sample_rate as f32);
+                                        stretch.preset_default(stretch_channels, device_sample_rate as f32);
                                         stretch.reset();
                                         stretch.set_transpose_semitones(current_pitch);
 
@@ -261,7 +285,7 @@ impl AudioEngine {
                                         }
                                         dual_compressor.reset();
 
-                                        active_audio = Some(audio);
+                                        active_audio = Some(audio_to_load);
                                         playback_frame = 0;
                                     }
                                 }
@@ -280,7 +304,7 @@ impl AudioEngine {
                                 for band in bands.iter().take(count) {
                                     if band.enabled && (band.gain_db.abs() > 0.01 || matches!(band.filter_type, crate::dsp::FilterType::LowPass | crate::dsp::FilterType::HighPass | crate::dsp::FilterType::Notch)) {
                                         if biquad_idx < biquads_pool.len() {
-                                            biquads_pool[biquad_idx].set_params(band.filter_type, current_sample_rate, band.freq, band.gain_db, band.q);
+                                            biquads_pool[biquad_idx].set_params(band.filter_type, device_sample_rate, band.freq, band.gain_db, band.q);
                                             biquad_idx += 1;
                                         }
                                     }
@@ -289,8 +313,8 @@ impl AudioEngine {
                                 eq_active = active_biquad_count > 0;
                             }
                             if let Some((stage1, stage2, routing, parallel_blend)) = pending_dual_comp {
-                                dual_compressor.stage1.set_params(current_sample_rate, stage1);
-                                dual_compressor.stage2.set_params(current_sample_rate, stage2);
+                                dual_compressor.stage1.set_params(device_sample_rate, stage1);
+                                dual_compressor.stage2.set_params(device_sample_rate, stage2);
                                 dual_compressor.routing = routing;
                                 dual_compressor.parallel_blend = parallel_blend;
                             }
@@ -336,7 +360,7 @@ impl AudioEngine {
                                         *sample = 0.0;
                                     }
                                 } else {
-                                    // Signalsmith stretch processing (always engaged by default for seamless glitch-free real-time modulation)
+                                    // Signalsmith stretch processing (or bit-transparent passthrough if unmodulated)
                                     let safe_out_frames = std::cmp::min(num_out_frames, MAX_BUFFER_FRAMES);
                                     let num_in_frames = ((safe_out_frames as f32) * current_speed).round() as usize;
                                     let safe_in_frames = std::cmp::min(num_in_frames, MAX_BUFFER_FRAMES);
@@ -370,11 +394,18 @@ impl AudioEngine {
                                         }
                                     });
 
-                                    stretch.process(&in_slices[..stretch_channels], &mut out_slices[..stretch_channels]);
+                                    let is_modulating = current_pitch.abs() > 0.001 || (current_speed - 1.0).abs() > 0.001;
+                                    if is_modulating {
+                                        stretch.process(&in_slices[..stretch_channels], &mut out_slices[..stretch_channels]);
+                                    } else {
+                                        for ch in 0..stretch_channels {
+                                            out_channel_scratch[ch][..safe_out_frames].copy_from_slice(&in_channel_scratch[ch][..safe_out_frames]);
+                                        }
+                                    }
 
                                     // Apply track volume & interpolated volume envelope PRE-EQ and PRE-COMPRESSOR
                                     for frame_idx in 0..safe_out_frames {
-                                        let frame_time_sec = (playback_frame + ((frame_idx as f32 * current_speed) as usize)) as f64 / current_sample_rate;
+                                        let frame_time_sec = (playback_frame + ((frame_idx as f32 * current_speed) as usize)) as f64 / device_sample_rate;
                                         let env_gain = if envelope_nodes_count > 0 {
                                             crate::command::interpolate_envelope(&envelope_nodes[..envelope_nodes_count], frame_time_sec)
                                         } else {

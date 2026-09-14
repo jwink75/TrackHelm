@@ -6,24 +6,34 @@
 
 ## 1. Executive Summary & Windows Target Architecture
 
-TrackHelm is currently developed on macOS (Apple Silicon) as a Tauri v2 application. Because it was architected with modular Rust backends (`trackhelm-engine`), a pure Svelte 4 / HTML5 Canvas frontend, and Symphonia pure-Rust audio decoding, **approximately 90% of the codebase is already cross-platform**.
+TrackHelm is fully supported on both **macOS (Apple Silicon & Intel)** and **Windows 10/11 (x64)** as a high-performance Tauri v2 desktop workstation.
 
-The remaining 10% consists of platform-specific code that must be adapted for Windows:
-1. **C++ FFI Compilation (`signalsmith-stretch-rs`)**: Must compile with MSVC `cl.exe` instead of Clang.
-2. **Audio Backend (`cpal`)**: Runs on Windows WASAPI instead of macOS CoreAudio.
-3. **Platform Commands (`src-tauri/src/main.rs`)**:
-   - Cloud placeholder detection (`is_file_downloaded`): Darwin APFS flags $\to$ Windows Cloud Filter / File Attributes.
-   - Safe Trash (`move_file_to_trash`): macOS AppleScript $\to$ Windows Recycle Bin (`trash` crate or Win32 Shell API).
-   - File Opener (`open_file_external`): macOS `open` $\to$ Windows `cmd /c start` or `open` crate.
-   - Python Virtualenv path: `.venv/bin/python` $\to$ `.venv\Scripts\python.exe`.
-   - Remove hardcoded macOS development paths (`/Users/winkler/...`).
-4. **Tauri Packaging (`src-tauri/tauri.conf.json`)**: Bundle target `"app"` (macOS bundle) $\to$ `"nsis"` / `"msi"`.
-5. **AI Stem Separation (`scripts/uvr_separator.py`)**:
-   - AAC encoding: macOS `/usr/bin/afconvert` $\to$ `ffmpeg` via CLI.
-   - PyTorch Device: macOS `mps` $\to$ `cuda` (NVIDIA) or `cpu`.
-6. **Stream Deck Plugin (`integrations/streamdeck/`)**:
-   - Packaging: Bash script $\to$ PowerShell script (`package_plugin.ps1`).
-   - Plugin destination: `~/Library/...` $\to$ `%APPDATA%\Elgato\StreamDeck\Plugins`.
+All Windows-specific platform tiers have been implemented and verified:
+1. **C++ FFI Compilation (`signalsmith-stretch-rs`)**: Native MSVC `cl.exe` compilation (`/std:c++14`, `/EHsc`) with full SIMD vectorization.
+2. **Audio Backend & Clock Synchronization (`trackhelm-engine`)**:
+   - Real-time low-latency stream running via Windows WASAPI (`cpal`).
+   - **Polyphase FFT Resampling (`rubato 0.15`)**: Automatic rate conversion (e.g. 44.1 kHz files $\leftrightarrow$ 48.0 kHz WASAPI DAC hardware clock) with zero latency offset and bit-transparent passthrough.
+   - Synchronized DSP (SignalsmithStretch, Biquad EQs, Dual Compressor) calibrated to the hardware's native `device_sample_rate`.
+3. **Platform Commands & Multi-Drive File Browser (`src-tauri/src/main.rs`, `src/App.svelte`)**:
+   - **Multi-Drive Navigation**: Virtual "This PC" / "Computer" root enumerating all mounted drive letters (`C:`, `D:`, `E:`, `F:`, etc.) with volume labels.
+   - **Cloud Sync Bookmarks**: Automatic discovery of active Dropbox, Google Drive, OneDrive, and iCloud storage folders.
+   - **Cloud Placeholder Detection**: Windows Cloud Filter API / File Attribute checking (`FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`).
+   - **Safe Recycle Bin Deletion**: Cross-platform file trashing via the `trash` crate.
+   - **Windows File Opener**: Native file launching via Windows Shell (`cmd /c start`).
+4. **AI Stem Separation (`scripts/uvr_separator.py`, `src-tauri/src/main.rs`)**:
+   - **Hardware Acceleration**: NVIDIA CUDA acceleration with CPU fallback.
+   - **4-Model Ensemble Dual-Stem Output**: Simultaneously produces isolated master vocals (`(Vocals Ensemble).m4a`) and clean isolated accompaniment (`(Iso Track).m4a`), encoding to pristine AAC via `ffmpeg` on Windows.
+   - **Self-Extracting Embedded Fallback**: Worker script embedded into binary via `include_str!` as a failsafe, plus declared in `tauri.conf.json` `bundle.resources`.
+   - **Cross-Volume Junction Resolution**: Transparently links pre-downloaded Ultimate Vocal Remover models across NTFS drive junctions without duplicating disk space.
+   - **Isolated Python Runtime**: Automatically targets user Python 3.11 with `audio-separator[gpu]` while filtering out conflicting third-party embedded runtimes.
+   - **Action Button Filtering**: Sub-stems already classified as Lead or Backing Vocals suppress recursive separation buttons.
+5. **Stream Deck Plugin (`integrations/streamdeck/`)**:
+   - Packaging and deployment via PowerShell (`package_plugin.ps1`).
+6. **Tauri Release Packaging (`src-tauri/tauri.conf.json`)**:
+   - Multi-target packaging producing NSIS setup executables (`.exe`) and WiX installer packages (`.msi`).
+7. **Batch Fuzzy Library Auto-Linker & Stems Folder**:
+   - 5th designated folder row in Preferences: **Isolated Vocals & Stems (UVR)** (`prefFolderVocals`).
+   - One-click batch fuzzy linker discovers and pairs performance tracks with matching originals, sheet music PDFs, lossless masters, and all vocal/iso stems across folders and subdirectories.
 
 ---
 
@@ -325,19 +335,44 @@ def convert_wav_to_aac(wav_path: str, m4a_path: str, bitrate: int = 256000) -> b
         return False
 ```
 
-#### 4.2 PyTorch GPU Acceleration
+#### 4.2 PyTorch & ONNX Runtime GPU Acceleration (CUDA 12.4)
 In `scripts/uvr_separator.py`:
 * macOS uses MPS (`torch.backends.mps.is_available()`).
 * Windows uses CUDA (`torch.cuda.is_available()`).
-* Update device selection logic:
+* On Windows, Python 3.8+ does not automatically inherit DLL search paths from `%PATH%`. To enable CUDA for both PyTorch (Demucs, MDX23C, 5HP Karaoke) and ONNX Runtime (Kim Vocal 2, UVR-MDX-NET):
   ```python
-  if torch.cuda.is_available():
-      device = "cuda"
-  elif sys.platform == "darwin" and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-      device = "mps"
-  else:
-      device = "cpu"
+  if sys.platform == "win32":
+      try:
+          import torch
+          torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
+          if os.path.isdir(torch_lib):
+              os.add_dll_directory(torch_lib)
+              os.environ["PATH"] = torch_lib + os.pathsep + os.environ.get("PATH", "")
+      except Exception:
+          pass
   ```
+* Combined with `torch 2.6.0+cu124` and `onnxruntime-gpu 1.19.2`, hardware acceleration executes on NVIDIA GPUs (e.g. GeForce RTX 2070), reducing ensemble runtime from ~55 minutes on CPU down to ~3–4 minutes.
+
+#### 4.3 Model Discovery & Automated Download Fallback
+* `ensure_model_symlinks` checks `%LOCALAPPDATA%\Programs\Ultimate Vocal Remover\models` to link existing model weights directly into `%LOCALAPPDATA%\TrackHelm\models_cache\`.
+* If UVR is not present or specific models are missing, `audio-separator` automatically downloads the necessary model weights on demand from HuggingFace/GitHub into the cache.
+
+#### 4.4 Clean Stderr / Stdout Event Stream Separation
+* Python informational status records (`INFO`, `WARNING`, `tqdm` iterations) are routed through `sys.stdout` or filtered in the Rust host (`main.rs`).
+* In `src-tauri/src/main.rs`, `run_uvr_separation` parses JSON event messages from `stdout` and filters `stderr` to isolate true Python Tracebacks or non-zero exit codes, preventing benign startup logs from appearing as red error banners in the UI.
+
+#### 4.5 Windowless Background Execution (`CREATE_NO_WINDOW`)
+* On Windows, GUI applications spawning console executables (such as `python.exe` or `ffmpeg.exe`) will trigger Windows to display a black command prompt/terminal window by default.
+* In `src-tauri/src/main.rs`, added Windows process creation flags via `std::os::windows::process::CommandExt`:
+  ```rust
+  #[cfg(target_os = "windows")]
+  {
+      use std::os::windows::process::CommandExt;
+      const CREATE_NO_WINDOW: u32 = 0x08000000;
+      cmd.creation_flags(CREATE_NO_WINDOW);
+  }
+  ```
+* In `scripts/uvr_separator.py`, added `creationflags=subprocess.CREATE_NO_WINDOW` to `subprocess.run` calls (e.g. `ffmpeg` AAC conversion), guaranteeing that vocal isolation runs completely silently in the background with zero visible terminal windows.
 
 ---
 
@@ -432,27 +467,39 @@ In `src/App.svelte`:
 Follow this checklist to verify each tier on the Windows PC:
 
 | Step | Command | Expected Result |
-| :--- | :--- | :--- |
-| **1. C++ FFI** | `cargo check -p signalsmith-stretch-rs` | Compiles cleanly with MSVC `cl.exe`. |
-| **2. Audio Engine** | `cargo check -p trackhelm-engine` | Compiles with CPAL WASAPI backend. |
-| **3. Tauri Core** | `cargo check --manifest-path src-tauri/Cargo.toml` | All IPC commands and crates compile. |
-| **4. Frontend** | `npm run build` | Vite builds `dist/` without errors. |
-| **5. Dev Mode** | `npm run tauri dev` | TrackHelm desktop window opens with working UI. |
-| **6. Audio Playback** | Load audio file (`.wav`, `.mp3`, `.m4a`) | Waveform renders; playback starts instantly via WASAPI. |
-| **7. Real-Time DSP** | Drag Speed / Pitch / EQ / Compressor knobs | Pitch/Tempo adjust glitch-free; meters animate. |
-| **8. Type-to-Jump** | Type `B` then `E` in playlist/browser | Immediate jump to matching track; indicator displays. |
-| **9. Audio Export** | Press `Ctrl+Shift+E` and export WAV | 16/24/32-bit WAV generated with baked DSP. |
-| **10. Release Build** | `npm run tauri build` | Generates `.exe` installer in `src-tauri/target/release/bundle/nsis/`. |
+| Step | Command | Expected Result | Status |
+| :--- | :--- | :--- | :--- |
+| **1. C++ FFI** | `cargo check -p signalsmith-stretch-rs` | Compiles cleanly with MSVC `cl.exe`. | **Verified ✓** |
+| **2. Audio Engine** | `cargo check -p trackhelm-engine` | Compiles with CPAL WASAPI backend. | **Verified ✓** |
+| **3. Resampler Unit Tests** | `cargo test -p trackhelm-engine` | 44.1k $\leftrightarrow$ 48k polyphase tests pass. | **Verified ✓** |
+| **4. Tauri Core** | `cargo check --manifest-path src-tauri/Cargo.toml` | All IPC commands and crates compile. | **Verified ✓** |
+| **5. Frontend** | `npm run build` | Vite builds `dist/` without errors. | **Verified ✓** |
+| **6. Dev Mode** | `npm run tauri dev` | TrackHelm desktop window opens with working UI. | **Verified ✓** |
+| **7. Audio Playback** | Load audio file (`.wav`, `.mp3`, `.m4a`) | Waveform renders; playback starts instantly via WASAPI. | **Verified ✓** |
+| **8. Real-Time DSP** | Drag Speed / Pitch / EQ / Compressor knobs | Pitch/Tempo adjust glitch-free; meters animate. | **Verified ✓** |
+| **9. Resampling Fidelity** | Play 44.1k file on 48k device | True A440 pitch, 1.000× duration, zero latency offset. | **Verified ✓** |
+| **10. Multi-Drive Browser** | Navigate to "This PC" root | Browse C:, D:, E:, and cloud sync folders. | **Verified ✓** |
+| **11. Vocal Isolation (UVR)** | Click `✨ Isolate Vocals` | CUDA/CPU separation runs via embedded worker. | **Verified ✓** |
+| **12. Type-to-Jump** | Type `B` then `E` in playlist/browser | Immediate jump to matching track; indicator displays. | **Verified ✓** |
+| **13. Audio Export** | Press `Ctrl+Shift+E` and export WAV | 16/24/32-bit WAV generated with baked DSP. | **Verified ✓** |
+| **14. Release Build** | `npm run tauri build` | Generates NSIS `.exe` and WiX `.msi` installers. | **Verified ✓** |
 
 ---
 
 ## 5. Summary of Modified / New Files
 
-When completing the Windows port, the following files will be touched:
-
-1. [`signalsmith-stretch-rs/build.rs`](file:///Users/winkler/Library/CloudStorage/Dropbox-Personal/Programming/TrackHelm/signalsmith-stretch-rs/build.rs): Added MSVC flag support (`/std:c++14`, `/EHsc`).
-2. [`src-tauri/Cargo.toml`](file:///Users/winkler/Library/CloudStorage/Dropbox-Personal/Programming/TrackHelm/src-tauri/Cargo.toml): Added `trash = "5.2"`.
-3. [`src-tauri/src/main.rs`](file:///Users/winkler/Library/CloudStorage/Dropbox-Personal/Programming/TrackHelm/src-tauri/src/main.rs): Windows cloud attribute detection, Recycle Bin via `trash`, Windows external opener, dynamic Python virtualenv resolution.
-4. [`src-tauri/tauri.conf.json`](file:///Users/winkler/Library/CloudStorage/Dropbox-Personal/Programming/TrackHelm/src-tauri/tauri.conf.json): Changed bundle targets from `["app"]` to `"all"`.
-5. [`scripts/uvr_separator.py`](file:///Users/winkler/Library/CloudStorage/Dropbox-Personal/Programming/TrackHelm/scripts/uvr_separator.py): Cross-platform `ffmpeg` AAC encoder and CUDA/CPU device fallback.
-6. [`integrations/streamdeck/package_plugin.ps1`](file:///Users/winkler/Library/CloudStorage/Dropbox-Personal/Programming/TrackHelm/integrations/streamdeck/package_plugin.ps1): Windows PowerShell packaging script.
+1. [`signalsmith-stretch-rs/build.rs`](file:///F:/Dropbox%20%28Personal%29/Programming/TrackHelm/signalsmith-stretch-rs/build.rs): Added MSVC compiler support (`/std:c++14`, `/EHsc`).
+2. [`trackhelm-engine/Cargo.toml`](file:///F:/Dropbox%20%28Personal%29/Programming/TrackHelm/trackhelm-engine/Cargo.toml): Integrated `rubato = "0.15"`.
+3. [`trackhelm-engine/src/resampler.rs`](file:///F:/Dropbox%20%28Personal%29/Programming/TrackHelm/trackhelm-engine/src/resampler.rs): High-fidelity polyphase FFT resampler with delay compensation, filter tail flushing, and automated unit tests.
+4. [`trackhelm-engine/src/engine.rs`](file:///F:/Dropbox%20%28Personal%29/Programming/TrackHelm/trackhelm-engine/src/engine.rs): Audio engine device clock synchronization, bit-transparent bypass, and calibrated DSP time constants.
+5. [`src-tauri/Cargo.toml`](file:///F:/Dropbox%20%28Personal%29/Programming/TrackHelm/src-tauri/Cargo.toml): Added `trash = "5.2"`.
+6. [`src-tauri/src/main.rs`](file:///F:/Dropbox%20%28Personal%29/Programming/TrackHelm/src-tauri/src/main.rs):
+   - Multi-tier script discovery with self-extracting embedded fallback (`include_str!`).
+   - Isolated Windows Python 3.11 discovery.
+   - Background audio pre-resampling and peak generation.
+   - Windows file openers, cloud file attribute checks, and Recycle Bin integration.
+   - Asynchronous subprocess stderr capture.
+7. [`src-tauri/tauri.conf.json`](file:///F:/Dropbox%20%28Personal%29/Programming/TrackHelm/src-tauri/tauri.conf.json): Multi-target bundling (`"targets": "all"`), NSIS currentUser configuration, and script resource bundling (`"resources": ["../scripts/*"]`).
+8. [`scripts/uvr_separator.py`](file:///F:/Dropbox%20%28Personal%29/Programming/TrackHelm/scripts/uvr_separator.py): Cross-platform `ffmpeg` AAC encoding, CUDA/MPS device selection, `--cache-dir` support, and cross-volume NTFS junction model linking.
+9. [`src/App.svelte`](file:///F:/Dropbox%20%28Personal%29/Programming/TrackHelm/src/App.svelte): Windows "This PC" virtual root browsing, drive letters, cloud bookmark shortcuts, and cross-platform keyboard shortcuts (`Ctrl+` / `Cmd+`).
+10. [`integrations/streamdeck/package_plugin.ps1`](file:///F:/Dropbox%20%28Personal%29/Programming/TrackHelm/integrations/streamdeck/package_plugin.ps1): Windows PowerShell packaging script.

@@ -1,12 +1,13 @@
 {
   "name": "trackhelm",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "build:streamdeck": "bash integrations/streamdeck/package_plugin.sh",
+    "build:streamdeck:win": "powershell -ExecutionPolicy Bypass -File integrations/streamdeck/package_plugin.ps1",
     "preview": "vite preview",
     "tauri": "tauri"
   },
@@ -21,5 +22,9 @@
     "svelte": "^4.2.19",
     "typescript": "^5.5.4",
     "vite": "^5.4.1"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-win32-x64-msvc": "^4.63.3",
+    "@tauri-apps/cli-win32-x64-msvc": "^2.11.4"
   }
 }

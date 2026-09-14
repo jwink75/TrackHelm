@@ -11,7 +11,7 @@ The primary user story for TrackHelm is:
 
 It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized for fast, zero-latency playback, legibility in low-light stage environments, and flexible external control.
 
-**Target Environments:** macOS-native dark-mode desktop application (Primary), with cross-platform Windows workstation support (In Progress).
+**Target Environments:** Native cross-platform dark-mode desktop workstation supporting macOS (Apple Silicon & Intel) and Windows 10/11 (x64) with native installers (NSIS & MSI).
 
 ---
 
@@ -182,11 +182,17 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
   * Metadata preservation copying ID3v2/Vorbis tags and album artwork to exported files.
 
 ### 2.21 AI Stem Separation (UVR) & Safe File Deletion Architecture (Milestone 10)
-* **Decision:** Headless execution of Ultimate Vocal Remover models via `python-audio-separator` running locally on Apple Silicon (MPS / CoreML) combined with native AAC encoding and OS-level Trash.
+* **Decision:** Headless execution of Ultimate Vocal Remover models via `python-audio-separator` running locally with hardware acceleration (Apple Silicon MPS on macOS, NVIDIA CUDA on Windows) combined with native AAC encoding (`afconvert` on macOS, `ffmpeg` on Windows/Linux) and OS-level Trash / Recycle Bin.
 * **4-Model Ensemble Mode:** Kim Vocal 2 (`Kim_Vocal_2.onnx`), MDX23C-InstVoc HQ (`MDX23C-8KFFT-InstVoc_HQ.ckpt`), UVR-MDX-NET-Voc_FT (`UVR-MDX-NET-Voc_FT.onnx`), and Demucs v4 (`htdemucs_ft.yaml`) blended via `uvr_max_spec` to isolate master vocal stems.
 * **Lead / Backing Vocals Separation:** VR Architecture `5_HP-Karaoke-UVR.pth` executed on isolated vocals to split lead vs. backing harmonies.
+* **Hardware Acceleration (NVIDIA CUDA & Apple Silicon MPS):** On Windows, `scripts/uvr_separator.py` dynamically registers PyTorch's CUDA 12 runtime directory (`torch/lib`) via `os.add_dll_directory`, allowing both PyTorch models (MDX23C, Demucs) and ONNX models (Kim Vocal 2, UVR-MDX-NET via `onnxruntime-gpu`) to leverage NVIDIA GPUs (e.g. RTX 2070), reducing ensemble processing time from ~55 minutes on CPU to ~3–4 minutes.
+* **Model Discovery & Automated Download Fallback:** TrackHelm scans for existing local Ultimate Vocal Remover installations (e.g. `%LOCALAPPDATA%\Programs\Ultimate Vocal Remover\models`) and links found models into `%LOCALAPPDATA%\TrackHelm\models_cache\` to avoid duplicate downloads. If UVR is not installed or specific models are missing, `audio-separator` automatically downloads the required weights on demand from HuggingFace/GitHub into the cache.
+* **Self-Extracting Embedded Script Architecture:** Binary embeds `scripts/uvr_separator.py` as a failsafe using Rust `include_str!`. If running in packaged production environments without project roots, TrackHelm automatically unpacks the script to the user's local application data directory (`%LOCALAPPDATA%\TrackHelm\scripts\`), backed by Tauri `bundle.resources`.
+* **Clean Stderr / Stdout Event Stream Filtering:** Python informational logs (`INFO`, `WARNING`, `tqdm` progress) are routed through stdout or filtered in the Rust host (`main.rs`). `stderr` is reserved exclusively for fatal exceptions and tracebacks, preventing benign status records from triggering error banners in the UI.
+* **Windowless Background Process Execution (`CREATE_NO_WINDOW`):** Native Windows process creation flags (`0x08000000`) applied across Rust `Command` spawns and Python `subprocess.run` calls prevent any command prompt or terminal windows from flashing or popping up during stem separation.
+* **Cross-Volume NTFS Junction Model Resolution:** Dynamic model cache linking transparently links pre-downloaded Ultimate Vocal Remover models across NTFS drive junctions without extra disk usage.
 * **Audio Encoding & Organization:** Renders stems directly into `[OriginalDir]/Vocals Only/[Track] (Vocals Ensemble).m4a` with zero quality loss.
-* **Safe OS Trash Deletion:** Associated files can be sent to macOS Trash (`~/.Trash`) via Finder AppleScript with user confirmation modal, preserving full macOS "Put Back" capability.
+* **Safe OS Trash / Recycle Bin Deletion:** Associated files can be sent to macOS Trash or Windows Recycle Bin (`trash` crate) with user confirmation modal, preserving full native "Put Back" / Restore capabilities.
 
 ### 2.22 Bi-Directional Song Collections & Multi-Peer Store Synchronization (Milestone 11)
 * **Decision:** True peer-to-peer song clusters rather than parent-child hierarchies.
@@ -230,6 +236,42 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
 * **Decision:** Embedded MCP server interface over stdio / WebSocket.
 * **Implementation Details:**
   * Exposes TrackHelm workstation control tools (`trackhelm_play`, `trackhelm_pause`, `trackhelm_seek`, `trackhelm_set_speed`, `trackhelm_set_pitch`, `trackhelm_add_marker`, `trackhelm_get_state`) directly to AI coding assistants and automation sidecars.
+
+### 2.28 High-Fidelity Audio Resampling & Hardware Device Clock Synchronization (Milestone 14)
+* **Decision:** Polyphase FFT sample rate resampling using `rubato 0.15` (`FftFixedInOut<f32>`) with real-time DSP clock synchronization.
+* **Problem & Rationale:**
+  * Modern audio interfaces and host OS sound subsystems (such as Windows WASAPI and macOS CoreAudio default output devices) typically run at **48,000 Hz**.
+  * Audio tracks decoded at 44.1 kHz (CD standard, MP3, AAC) played into a 48 kHz DAC without conversion are consumed 8.84% too quickly, causing playback to speed up by $1.088\times$ and pitch to shift sharp by $+1.467$ semitones (~147 cents).
+  * In addition, fixed-frequency DSP modules (such as Biquad EQ band cutoffs and compressor attack/release time constants) drift from their acoustical specifications if calculated using the file sample rate rather than the stream sample rate.
+* **Implementation Details:**
+  * **Background Pre-Resampling:** When loading tracks in `src-tauri`, audio is decoded and resampled in background worker threads to the device's native rate before entering the memory cache.
+  * **Zero-Latency Output Delay Compensation:** Resampled buffers compensate for `output_delay()` and flush internal polyphase filter tails so audio timing and duration align to the exact microsecond.
+  * **Bit-Transparent Passthrough:** When source and target sample rates match and modulation is disengaged (speed $= 1.0$, pitch $= 0.0$), the resampler is bypassed for pure bit-transparent fidelity.
+  * **Engine Clock Synchronization:** `device_sample_rate` is queried from CPAL and stored in `SharedEngineState`. Signalsmith Stretch, cascaded Biquad EQ filters, and dual compressor envelopes are initialized and updated against `device_sample_rate`.
+  * **Visual Waveform Alignment:** Waveform overview and pyramid peaks are calculated from the resampled buffer, ensuring absolute sample-accurate synchronization between the graphical playhead and the audible DAC output.
+
+### 2.29 Cross-Platform Multi-Drive File System & Cloud Navigation (Milestone 15)
+* **Decision:** Virtual "This PC" root directory and native cloud storage folder detection.
+* **Implementation Details:**
+  * **Windows Drive Enumeration:** On Windows, the File Browser provides a top-level virtual "This PC" / "Computer" root that queries available system volumes (`GetLogicalDrives`) and enumerates all mounted drive letters (`C:`, `D:`, `E:`, `F:`, etc.) with drive labels.
+  * **Direct Cloud Folder Discovery:** Automatically discovers and bookmarks active cloud synchronization folders across user environments (Dropbox, Google Drive, Microsoft OneDrive, and Apple iCloud).
+
+### 2.30 Height-Adjustable Waveform & Interactive Audio Tags (Milestone 16)
+* **Decision:** Interactive height-resizable waveform workspace and customizable, auto-detected audio tag metadata.
+* **Implementation Details:**
+  * **Dynamic Waveform Resize Handle:** An interactive divider handle situated between the overview mini-waveform (40px) and the main detailed waveform allows smooth vertical resizing from 100px to 650px (default 256px). Includes double-click to reset to 256px and persists in `localStorage` (`th_waveform_height`).
+  * **Auto-Detected & Context-Menu Toggleable Audio Tags:** Comprehensive tag system supporting automatic keyword detection (`"Original"`, `"Vocals only"`, `"Lead Vocal"`, `"Background Vocals"`, `"Track"`) and instant right-click toggleability across the `FILES` tab rows and active waveform context menu.
+  * **Peer Collection Synchronization:** Tag metadata persists in `TrackProfile` (`fileTags: Record<string, string[]>`) and synchronizes bi-directionally across all member tracks in a song collection.
+  * **Real-Time Visual Tag Reflection:** Multi-badge indicators display in the `FILES` tab and dynamically update the overview waveform watermark banner (`getTrackWatermarkLabel`).
+
+### 2.31 Batch Fuzzy Library Auto-Linker & Iso Track Preservation (Milestone 17)
+* **Decision:** Automated batch linking across configured rehearsal folders and preservation of isolated accompaniment stems.
+* **Implementation Details:**
+  * **Dedicated Stems Folder Preference (`prefFolderVocals`):** A 5th designated folder row in Preferences (`VOC`, color `#af52de`) for storing and organizing isolated vocals, lead/backing tracks, and stem outputs.
+  * **Batch Fuzzy Linker (`executeAutoLinkLibrary`):** Recursively inspects all five configured asset directories (Performance Tracks, Full-Res Lossless, Original Reference, Sheet Music PDFs, and Isolated Vocals / `Vocals Only/` subdirectories). Using token Jaccard and Levenshtein distance metrics (`calculateMatchScore`), it anchors collections on primary performance tracks and automatically links matching sheet music PDFs ($\ge 0.55$), originals ($\ge 0.60$), lossless masters ($\ge 0.60$), and all corresponding vocal/iso stems ($\ge 0.62$).
+  * **Bi-Directional Profile Propagation:** Propagates shared file lists, rehearsal markers, notes, lyrics, and sheet music across all peer tracks, with real-time UI updates for the active track.
+  * **Iso Track Instrumental Stem Preservation:** During 4-model ensemble vocal separation (`scripts/uvr_separator.py`), the engine retains the accompaniment output, encoding it to pristine AAC as `[Title] (Iso Track).m4a` alongside `[Title] (Vocals Ensemble).m4a`, automatically tagging it with the new `Iso Track` audio tag (`ISO TRACK` badge `#38bdf8`).
+  * **Context-Aware Stem Action Filtering:** Audio tracks identified as Lead Vocals or Backing Vocals automatically suppress the `🎤 Lead/Backups` and `✨ Isolate Vocals` buttons to prevent unnecessary recursive separation passes.
 
 ---
 
@@ -294,4 +336,7 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
 * **Milestone 11:** Bi-Directional Song Collections, Live A/B Compare & Streamlined Files Hub *(Completed)*
 * **Milestone 12:** Setlist CSV Importer, Library Repair Engine & Smooth Type-to-Jump *(Completed)*
 * **Milestone 13:** Model Context Protocol (MCP) Server & Automation Tools *(Completed)*
-* **Milestone 14:** Cross-Platform Windows Workstation Port *(Active Phase)*
+* **Milestone 14:** Cross-Platform Windows Workstation Port *(Completed)*
+* **Milestone 15:** Multi-Drive File System & Cloud Navigation *(Completed)*
+* **Milestone 16:** Height-Adjustable Waveform & Interactive Audio Tags *(Completed)*
+* **Milestone 17:** Batch Fuzzy Library Auto-Linker, Iso Track Preservation, and Stem Workflow Refinements *(Completed)*

@@ -1,6 +1,6 @@
 [package]
 name = "trackhelm-app"
-version = "0.1.0"
+version = "0.1.1"
 description = "TrackHelm Desktop App"
 authors = ["Antigravity"]
 edition = "2021"
@@ -21,4 +21,5 @@ tokio-tungstenite = "0.24"
 futures-util = "0.3"
 rosc = "0.10"
 midir = "0.9"
+trash = "5.2"
 trackhelm-engine = { path = "../trackhelm-engine" }

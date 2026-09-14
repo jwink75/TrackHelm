@@ -2,9 +2,9 @@
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tauri::{State, Emitter};
+use tauri::{State, Emitter, Manager};
 use tauri::menu::{Menu, MenuItem, Submenu, PredefinedMenuItem};
-use trackhelm_engine::{Command, CommandBus, SharedEngineState, DecodedAudio, decode_file};
+use trackhelm_engine::{Command, CommandBus, SharedEngineState, DecodedAudio, decode_file, resample_audio_channels};
 use lofty::prelude::*;
 
 mod control;
@@ -105,12 +105,13 @@ struct PlaybackStatus {
     gr_stage2: f32,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Clone)]
 struct DirEntry {
     name: String,
     path: String,
     is_dir: bool,
     size_bytes: u64,
+    kind: String, // "drive" | "cloud" | "dir" | "file"
 }
 
 #[derive(serde::Serialize)]
@@ -118,24 +119,423 @@ struct DirContents {
     current_path: String,
     parent_path: Option<String>,
     entries: Vec<DirEntry>,
+    drives: Vec<DirEntry>,
+    cloud_folders: Vec<DirEntry>,
+    root_name: String,
+    home_path: String,
+}
+
+fn get_computer_root_name() -> &'static str {
+    #[cfg(target_os = "windows")]
+    { "This PC" }
+    #[cfg(target_os = "macos")]
+    { "This Mac" }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    { "This Computer" }
+}
+
+#[cfg(target_os = "windows")]
+extern "system" {
+    fn GetLogicalDrives() -> u32;
+    fn GetDriveTypeW(lpRootPathName: *const u16) -> u32;
+    fn GetVolumeInformationW(
+        lpRootPathName: *const u16,
+        lpVolumeNameBuffer: *mut u16,
+        nVolumeNameSize: u32,
+        lpVolumeSerialNumber: *mut u32,
+        lpMaximumComponentLength: *mut u32,
+        lpFileSystemFlags: *mut u32,
+        lpFileSystemNameBuffer: *mut u16,
+        nFileSystemNameSize: u32,
+    ) -> i32;
+}
+
+fn get_system_drives() -> Vec<DirEntry> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut drives = Vec::new();
+        let mask = unsafe { GetLogicalDrives() };
+        for i in 0..26 {
+            if (mask & (1 << i)) != 0 {
+                let letter = (b'A' + i as u8) as char;
+                let root_str = format!("{}:\\", letter);
+                let wide_path: Vec<u16> = root_str.encode_utf16().chain(std::iter::once(0)).collect();
+                
+                let drive_type = unsafe { GetDriveTypeW(wide_path.as_ptr()) };
+                // 1 = DRIVE_NO_ROOT_DIR (skip unmounted drive letters)
+                if drive_type <= 1 {
+                    continue;
+                }
+
+                let mut vol_name = [0u16; 260];
+                let success = unsafe {
+                    GetVolumeInformationW(
+                        wide_path.as_ptr(),
+                        vol_name.as_mut_ptr(),
+                        vol_name.len() as u32,
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        0,
+                    )
+                };
+
+                // Skip optical drives that have no disc media inside
+                if drive_type == 5 && success == 0 {
+                    continue;
+                }
+
+                let label = if success != 0 {
+                    let len = vol_name.iter().position(|&c| c == 0).unwrap_or(vol_name.len());
+                    String::from_utf16_lossy(&vol_name[..len]).trim().to_string()
+                } else {
+                    String::new()
+                };
+
+                let display_name = if !label.is_empty() {
+                    format!("{} ({}:)", label, letter)
+                } else {
+                    match drive_type {
+                        2 => format!("Removable Disk ({}:)", letter),
+                        3 => format!("Local Disk ({}:)", letter),
+                        4 => format!("Network Drive ({}:)", letter),
+                        5 => format!("CD Drive ({}:)", letter),
+                        _ => format!("Drive ({}:)", letter),
+                    }
+                };
+
+                drives.push(DirEntry {
+                    name: display_name,
+                    path: root_str,
+                    is_dir: true,
+                    size_bytes: 0,
+                    kind: "drive".to_string(),
+                });
+            }
+        }
+        drives
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut roots = Vec::new();
+        #[cfg(target_os = "macos")]
+        let root_label = "Macintosh HD (/)";
+        #[cfg(not(target_os = "macos"))]
+        let root_label = "Root (/)";
+
+        roots.push(DirEntry {
+            name: root_label.to_string(),
+            path: "/".to_string(),
+            is_dir: true,
+            size_bytes: 0,
+            kind: "drive".to_string(),
+        });
+
+        let volumes = std::path::Path::new("/Volumes");
+        if volumes.exists() && volumes.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(volumes) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.starts_with('.') {
+                        continue;
+                    }
+                    let p = entry.path();
+                    if let Ok(canon) = p.canonicalize() {
+                        if canon == std::path::Path::new("/") {
+                            continue;
+                        }
+                    }
+                    roots.push(DirEntry {
+                        name: format!("{} (Volume)", name),
+                        path: p.to_string_lossy().to_string(),
+                        is_dir: true,
+                        size_bytes: 0,
+                        kind: "drive".to_string(),
+                    });
+                }
+            }
+        }
+        roots
+    }
+}
+
+fn detect_cloud_folders(drives: &[DirEntry]) -> Vec<DirEntry> {
+    let mut cloud_folders: Vec<DirEntry> = Vec::new();
+    let mut seen_paths = std::collections::HashSet::new();
+
+    let mut add_cloud_folder = |name: String, path_buf: std::path::PathBuf| {
+        if !path_buf.exists() || !path_buf.is_dir() {
+            return;
+        }
+        let clean_path = if let Ok(canon) = path_buf.canonicalize() {
+            let s = canon.to_string_lossy().to_string();
+            if let Some(stripped) = s.strip_prefix(r"\\?\") {
+                stripped.to_string()
+            } else {
+                s
+            }
+        } else {
+            let s = path_buf.to_string_lossy().to_string();
+            if let Some(stripped) = s.strip_prefix(r"\\?\") {
+                stripped.to_string()
+            } else {
+                s
+            }
+        };
+
+        let key = clean_path.to_lowercase();
+        if !seen_paths.contains(&key) {
+            seen_paths.insert(key);
+            cloud_folders.push(DirEntry {
+                name,
+                path: clean_path,
+                is_dir: true,
+                size_bytes: 0,
+                kind: "cloud".to_string(),
+            });
+        }
+    };
+
+    let home = dirs::home_dir();
+
+    // 1. Dropbox info.json (Windows %LOCALAPPDATA% / %APPDATA%, macOS ~/.dropbox)
+    #[cfg(target_os = "windows")]
+    {
+        let mut dropbox_json_paths = Vec::new();
+        if let Ok(lad) = std::env::var("LOCALAPPDATA") {
+            dropbox_json_paths.push(std::path::PathBuf::from(lad).join("Dropbox").join("info.json"));
+        }
+        if let Ok(ad) = std::env::var("APPDATA") {
+            dropbox_json_paths.push(std::path::PathBuf::from(ad).join("Dropbox").join("info.json"));
+        }
+
+        for j_path in dropbox_json_paths {
+            if j_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&j_path) {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if let Some(obj) = json.as_object() {
+                            for (key, val) in obj {
+                                if let Some(p) = val.get("path").and_then(|v| v.as_str()) {
+                                    let pb = std::path::PathBuf::from(p);
+                                    if pb.exists() {
+                                        let name = if key == "personal" {
+                                            "Dropbox (Personal)".to_string()
+                                        } else if key == "business" {
+                                            "Dropbox (Business)".to_string()
+                                        } else {
+                                            format!("Dropbox ({})", key)
+                                        };
+                                        add_cloud_folder(name, pb);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        if let Some(ref h) = home {
+            let j_path = h.join(".dropbox").join("info.json");
+            if j_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&j_path) {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if let Some(obj) = json.as_object() {
+                            for (key, val) in obj {
+                                if let Some(p) = val.get("path").and_then(|v| v.as_str()) {
+                                    let pb = std::path::PathBuf::from(p);
+                                    if pb.exists() {
+                                        let name = if key == "personal" {
+                                            "Dropbox (Personal)".to_string()
+                                        } else if key == "business" {
+                                            "Dropbox (Business)".to_string()
+                                        } else {
+                                            format!("Dropbox ({})", key)
+                                        };
+                                        add_cloud_folder(name, pb);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. macOS ~/Library/CloudStorage (Monterey+ FileProvider) & iCloud Drive
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(ref h) = home {
+            let cs = h.join("Library/CloudStorage");
+            if cs.exists() && cs.is_dir() {
+                if let Ok(entries) = std::fs::read_dir(&cs) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_dir() {
+                            let raw_name = entry.file_name().to_string_lossy().to_string();
+                            if !raw_name.starts_with('.') {
+                                let display_name = if raw_name.starts_with("Dropbox") {
+                                    raw_name.replace('-', " ")
+                                } else if raw_name.starts_with("GoogleDrive") {
+                                    format!("Google Drive ({})", raw_name.trim_start_matches("GoogleDrive-"))
+                                } else if raw_name.starts_with("OneDrive") {
+                                    format!("OneDrive ({})", raw_name.trim_start_matches("OneDrive-"))
+                                } else if raw_name.starts_with("Box") {
+                                    "Box".to_string()
+                                } else {
+                                    raw_name
+                                };
+                                add_cloud_folder(display_name, path);
+                            }
+                        }
+                    }
+                }
+            }
+
+            let icloud = h.join("Library/Mobile Documents/com~apple~CloudDocs");
+            if icloud.exists() && icloud.is_dir() {
+                add_cloud_folder("iCloud Drive".to_string(), icloud);
+            }
+        }
+    }
+
+    // 3. OneDrive environment variables (Windows)
+    #[cfg(target_os = "windows")]
+    {
+        for env_var in &["OneDrive", "OneDriveCommercial", "OneDriveConsumer"] {
+            if let Ok(val) = std::env::var(env_var) {
+                if !val.is_empty() {
+                    let p = std::path::PathBuf::from(&val);
+                    if p.exists() {
+                        let name = if *env_var == "OneDriveCommercial" {
+                            "OneDrive (Business)".to_string()
+                        } else {
+                            "OneDrive".to_string()
+                        };
+                        add_cloud_folder(name, p);
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Common user home cloud folders
+    if let Some(ref h) = home {
+        let common = [
+            ("Dropbox", "Dropbox"),
+            ("OneDrive", "OneDrive"),
+            ("Google Drive", "Google Drive"),
+            ("iCloudDrive", "iCloud Drive"),
+            ("Box", "Box"),
+        ];
+        for (sub, name) in common {
+            let p = h.join(sub);
+            if p.exists() && p.is_dir() {
+                add_cloud_folder(name.to_string(), p);
+            }
+        }
+    }
+
+    // 5. Scan drive roots for common cloud folders (e.g. F:\Dropbox (Personal))
+    for drive in drives {
+        let root = std::path::Path::new(&drive.path);
+        let cloud_candidates = [
+            "Dropbox",
+            "Dropbox (Personal)",
+            "Dropbox (Business)",
+            "Google Drive",
+            "OneDrive",
+            "My Drive",
+        ];
+        for cand in cloud_candidates {
+            let cand_path = root.join(cand);
+            if cand_path.exists() && cand_path.is_dir() {
+                add_cloud_folder(cand.to_string(), cand_path);
+            }
+        }
+    }
+
+    cloud_folders.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    cloud_folders
+}
+
+#[tauri::command]
+fn get_cloud_folders() -> Result<Vec<DirEntry>, String> {
+    let drives = get_system_drives();
+    Ok(detect_cloud_folders(&drives))
 }
 
 #[tauri::command]
 fn read_dir(path: Option<String>) -> Result<DirContents, String> {
     use std::path::PathBuf;
-    
+
+    let root_name = get_computer_root_name().to_string();
+    let all_drives = get_system_drives();
+    let all_cloud = detect_cloud_folders(&all_drives);
+
     let home = dirs::home_dir().ok_or_else(|| "Could not find home directory".to_string())?;
-    
+    let home_str = home.to_string_lossy().to_string();
+    let clean_home = if let Some(stripped) = home_str.strip_prefix(r"\\?\") {
+        stripped.to_string()
+    } else {
+        home_str
+    };
+
+    // Check if client requested "This PC" / "This Mac" / computer overview
+    if let Some(ref p) = path {
+        let p_trimmed = p.trim();
+        if p_trimmed == root_name 
+            || p_trimmed == "This PC" 
+            || p_trimmed == "This Mac" 
+            || p_trimmed == "drives" 
+            || p_trimmed == "computer" 
+        {
+            let mut computer_entries = Vec::new();
+            for d in &all_drives {
+                computer_entries.push(d.clone());
+            }
+            for c in &all_cloud {
+                computer_entries.push(c.clone());
+            }
+
+            return Ok(DirContents {
+                current_path: root_name.clone(),
+                parent_path: None,
+                entries: computer_entries,
+                drives: all_drives,
+                cloud_folders: all_cloud,
+                root_name,
+                home_path: clean_home,
+            });
+        }
+    }
+
     let target_path = match path {
         Some(p) => {
-            if p.starts_with('~') {
-                if p.len() > 2 {
-                    home.join(&p[2..]) // Skip "~/"
+            #[allow(unused_mut)]
+            let mut p_str = p.trim().to_string();
+            // On Windows, if user passes "F:" without backslash, add backslash to refer to root
+            #[cfg(target_os = "windows")]
+            {
+                if p_str.len() == 2 && p_str.ends_with(':') {
+                    p_str.push('\\');
+                }
+            }
+
+            if p_str.starts_with('~') {
+                if p_str.len() > 2 {
+                    home.join(&p_str[2..]) // Skip "~/"
                 } else {
                     home.clone()
                 }
             } else {
-                PathBuf::from(p)
+                PathBuf::from(p_str)
             }
         }
         None => home.clone(),
@@ -144,7 +544,30 @@ fn read_dir(path: Option<String>) -> Result<DirContents, String> {
     let canonical = target_path.canonicalize()
         .map_err(|e| format!("Failed to canonicalize path: {}", e))?;
 
-    let parent_path = canonical.parent().map(|p| p.to_string_lossy().to_string());
+    let canonical_str = canonical.to_string_lossy().to_string();
+    let clean_current = if let Some(stripped) = canonical_str.strip_prefix(r"\\?\") {
+        stripped.to_string()
+    } else {
+        canonical_str
+    };
+
+    // Determine parent path: at drive roots (C:\, F:\, /), going up goes to "This PC" / "This Mac"
+    let parent_path = match canonical.parent() {
+        Some(p) => {
+            let ps = p.to_string_lossy().to_string();
+            let clean_p = if let Some(stripped) = ps.strip_prefix(r"\\?\") {
+                stripped.to_string()
+            } else {
+                ps
+            };
+            if clean_p.is_empty() || clean_p.ends_with(':') {
+                Some(root_name.clone())
+            } else {
+                Some(clean_p)
+            }
+        }
+        None => Some(root_name.clone()),
+    };
 
     let mut entries = Vec::new();
     let read_entries = std::fs::read_dir(&canonical)
@@ -154,22 +577,28 @@ fn read_dir(path: Option<String>) -> Result<DirContents, String> {
         if let Ok(entry) = entry {
             let metadata = entry.metadata().ok();
             let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-            
+
             let name = entry.file_name().to_string_lossy().to_string();
-            
+
             if name.starts_with('.') {
                 continue;
             }
 
-            let path_str = entry.path().to_string_lossy().to_string();
+            let path_raw = entry.path().to_string_lossy().to_string();
+            let clean_entry_path = if let Some(stripped) = path_raw.strip_prefix(r"\\?\") {
+                stripped.to_string()
+            } else {
+                path_raw
+            };
             let size_bytes = metadata.map(|m| m.len()).unwrap_or(0);
 
             if is_dir {
                 entries.push(DirEntry {
                     name,
-                    path: path_str,
+                    path: clean_entry_path,
                     is_dir: true,
                     size_bytes,
+                    kind: "dir".to_string(),
                 });
             } else {
                 let lower_name = name.to_lowercase();
@@ -182,53 +611,12 @@ fn read_dir(path: Option<String>) -> Result<DirContents, String> {
                 {
                     entries.push(DirEntry {
                         name,
-                        path: path_str,
+                        path: clean_entry_path,
                         is_dir: false,
                         size_bytes,
+                        kind: "file".to_string(),
                     });
                 }
-            }
-        }
-    }
-
-    // Inject CloudStorage folder and cloud subfolders if we are in the home directory
-    let is_home = canonical == home.canonicalize().unwrap_or_else(|_| home.clone());
-    if is_home {
-        let cloud_storage = home.join("Library/CloudStorage");
-        if cloud_storage.exists() && cloud_storage.is_dir() {
-            // 1. Inject cloud subfolders (e.g. Dropbox-Personal, GoogleDrive, OneDrive)
-            if let Ok(sub_entries) = std::fs::read_dir(&cloud_storage) {
-                for sub_entry in sub_entries {
-                    if let Ok(sub_entry) = sub_entry {
-                        let sub_metadata = sub_entry.metadata().ok();
-                        let sub_is_dir = sub_metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-                        if sub_is_dir {
-                            let sub_name = sub_entry.file_name().to_string_lossy().to_string();
-                            if !sub_name.starts_with('.') {
-                                let sub_path_str = sub_entry.path().to_string_lossy().to_string();
-                                // Avoid duplicate entry additions
-                                if !entries.iter().any(|e| e.name == sub_name) {
-                                    entries.push(DirEntry {
-                                        name: sub_name,
-                                        path: sub_path_str,
-                                        is_dir: true,
-                                        size_bytes: 0,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // 2. Inject the CloudStorage folder itself
-            if !entries.iter().any(|e| e.name == "CloudStorage") {
-                entries.push(DirEntry {
-                    name: "CloudStorage".to_string(),
-                    path: cloud_storage.to_string_lossy().to_string(),
-                    is_dir: true,
-                    size_bytes: 0,
-                });
             }
         }
     }
@@ -242,58 +630,14 @@ fn read_dir(path: Option<String>) -> Result<DirContents, String> {
     });
 
     Ok(DirContents {
-        current_path: canonical.to_string_lossy().to_string(),
+        current_path: clean_current,
         parent_path,
         entries,
+        drives: all_drives,
+        cloud_folders: all_cloud,
+        root_name,
+        home_path: clean_home,
     })
-}
-
-#[tauri::command]
-fn get_cloud_folders() -> Result<Vec<DirEntry>, String> {
-    let mut folders = Vec::new();
-    let home = dirs::home_dir().ok_or_else(|| "Home directory not found".to_string())?;
-    
-    // Scan Library/CloudStorage
-    let cloud_storage = home.join("Library/CloudStorage");
-    if cloud_storage.exists() && cloud_storage.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(cloud_storage) {
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        if !name.starts_with('.') {
-                            folders.push(DirEntry {
-                                name,
-                                path: path.to_string_lossy().to_string(),
-                                is_dir: true,
-                                size_bytes: 0,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Scan common legacy folders direct in home folder
-    let legacy_folders = vec!["Dropbox", "OneDrive", "Google Drive"];
-    for name in legacy_folders {
-        let path = home.join(name);
-        if path.exists() && path.is_dir() {
-            let path_str = path.to_string_lossy().to_string();
-            if !folders.iter().any(|f| f.path == path_str) {
-                folders.push(DirEntry {
-                    name: name.to_string(),
-                    path: path_str,
-                    is_dir: true,
-                    size_bytes: 0,
-                });
-            }
-        }
-    }
-
-    Ok(folders)
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -491,14 +835,21 @@ async fn preload_track(state: State<'_, AppState>, path: String) -> Result<Track
         }
     }
     let p = path.clone();
+    let target_sample_rate = state.shared_engine_state.device_sample_rate.load(std::sync::atomic::Ordering::SeqCst) as u32;
     let decoded_res = tauri::async_runtime::spawn_blocking(move || {
-        let audio = decode_file(&p)?;
+        let mut audio = decode_file(&p)?;
+        let orig_sample_rate = audio.sample_rate;
+        if target_sample_rate > 0 && audio.sample_rate != target_sample_rate {
+            let resampled = resample_audio_channels(&audio.channel_samples, audio.sample_rate, target_sample_rate)?;
+            audio.channel_samples = resampled;
+            audio.sample_rate = target_sample_rate;
+        }
         let arc = Arc::new(audio);
         let overview_peaks = compute_peaks(&arc, 1000);
         let pyramid_peaks = compute_pyramid_peaks(&arc, 32768);
         let metadata = TrackMetadata {
             duration_seconds: arc.duration_seconds,
-            sample_rate: arc.sample_rate,
+            sample_rate: orig_sample_rate,
             channels: arc.channels,
             overview_peaks,
             pyramid_peaks,
@@ -546,14 +897,21 @@ async fn load_track(state: State<'_, AppState>, path: String) -> Result<TrackMet
         None => {
             // 2. Decode outside the lock on a worker thread to keep the main/UI thread responsive
             let p = path.clone();
+            let target_sample_rate = state.shared_engine_state.device_sample_rate.load(std::sync::atomic::Ordering::SeqCst) as u32;
             let decoded_res = tauri::async_runtime::spawn_blocking(move || {
-                let audio = decode_file(&p)?;
+                let mut audio = decode_file(&p)?;
+                let orig_sample_rate = audio.sample_rate;
+                if target_sample_rate > 0 && audio.sample_rate != target_sample_rate {
+                    let resampled = resample_audio_channels(&audio.channel_samples, audio.sample_rate, target_sample_rate)?;
+                    audio.channel_samples = resampled;
+                    audio.sample_rate = target_sample_rate;
+                }
                 let arc = Arc::new(audio);
                 let overview_peaks = compute_peaks(&arc, 1000);
                 let pyramid_peaks = compute_pyramid_peaks(&arc, 32768);
                 let metadata = TrackMetadata {
                     duration_seconds: arc.duration_seconds,
-                    sample_rate: arc.sample_rate,
+                    sample_rate: orig_sample_rate,
                     channels: arc.channels,
                     overview_peaks,
                     pyramid_peaks,
@@ -813,6 +1171,19 @@ fn open_file_external(path: String) -> Result<(), String> {
         .arg(&path)
         .spawn()
         .map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "windows")]
+    std::process::Command::new("cmd")
+        .args(&["/C", "start", "", &path])
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
+    #[cfg(target_os = "linux")]
+    std::process::Command::new("xdg-open")
+        .arg(&path)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+
     Ok(())
 }
 
@@ -1202,7 +1573,23 @@ fn is_file_downloaded(path: String) -> bool {
         false
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if let Ok(meta) = p.metadata() {
+            let attrs = meta.file_attributes();
+            // FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x00400000, FILE_ATTRIBUTE_OFFLINE = 0x00001000
+            const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
+            const FILE_ATTRIBUTE_OFFLINE: u32 = 0x0000_1000;
+            if (attrs & (FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS | FILE_ATTRIBUTE_OFFLINE)) != 0 {
+                return false;
+            }
+            return true;
+        }
+        false
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         p.exists()
     }
@@ -1215,39 +1602,10 @@ fn move_file_to_trash(path: String) -> Result<(), String> {
         return Err(format!("File does not exist: {}", path));
     }
 
-    #[cfg(target_os = "macos")]
-    {
-        let escaped = path.replace('\\', "\\\\").replace('"', "\\\"");
-        let script = format!(r#"tell application "Finder" to delete POSIX file "{}""#, escaped);
-        let output = std::process::Command::new("osascript")
-            .arg("-e")
-            .arg(&script)
-            .output()
-            .map_err(|e| format!("Failed to execute osascript: {}", e))?;
-
-        if output.status.success() {
-            return Ok(());
-        }
-
-        // Fallback: Move to ~/.Trash directly
-        if let Some(home) = dirs::home_dir() {
-            if let Some(file_name) = p.file_name() {
-                let trash_dest = home.join(".Trash").join(file_name);
-                if let Ok(_) = std::fs::rename(p, &trash_dest) {
-                    return Ok(());
-                }
-            }
-        }
-
-        let err_msg = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Trash error: {}", err_msg));
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        std::fs::remove_file(p).map_err(|e| format!("Failed to delete file: {}", e))
-    }
+    trash::delete(p).map_err(|e| format!("Failed to move file to trash: {}", e))
 }
+
+const UVR_SEPARATOR_SCRIPT: &str = include_str!("../../scripts/uvr_separator.py");
 
 #[tauri::command]
 async fn run_uvr_separation(
@@ -1262,7 +1620,13 @@ async fn run_uvr_separation(
     let (script_path, python_path, project_dir) = {
         let mut candidate_roots = Vec::new();
 
-        // 1. Current working directory and its parent
+        // 1. Tauri resource directory (for packaged app)
+        if let Ok(res_dir) = app.path().resource_dir() {
+            candidate_roots.push(res_dir.clone());
+            candidate_roots.push(res_dir.join("scripts"));
+        }
+
+        // 2. Current working directory and its parent
         if let Ok(cwd) = std::env::current_dir() {
             candidate_roots.push(cwd.clone());
             if let Some(p) = cwd.parent() {
@@ -1270,13 +1634,11 @@ async fn run_uvr_separation(
             }
         }
 
-        // 2. Known project directory
-        candidate_roots.push(std::path::PathBuf::from("/Users/winkler/Library/CloudStorage/Dropbox-Personal/Programming/TrackHelm"));
-
         // 3. Current executable ancestors
         if let Ok(exe) = std::env::current_exe() {
             if let Some(exe_dir) = exe.parent() {
                 candidate_roots.push(exe_dir.to_path_buf());
+                candidate_roots.push(exe_dir.join("scripts"));
                 if let Some(p1) = exe_dir.parent() {
                     candidate_roots.push(p1.to_path_buf());
                     if let Some(p2) = p1.parent() {
@@ -1289,14 +1651,48 @@ async fn run_uvr_separation(
             }
         }
 
+        // 4. App local data directory
+        if let Ok(data_dir) = app.path().app_data_dir() {
+            candidate_roots.push(data_dir.clone());
+            candidate_roots.push(data_dir.join("scripts"));
+        }
+
         let mut found_script = None;
         let mut found_project = None;
         for root in &candidate_roots {
-            let candidate = root.join("scripts/uvr_separator.py");
-            if candidate.exists() {
-                found_script = Some(candidate);
+            let candidate1 = root.join("scripts/uvr_separator.py");
+            if candidate1.exists() {
+                found_script = Some(candidate1);
                 found_project = Some(root.clone());
                 break;
+            }
+            let candidate2 = root.join("uvr_separator.py");
+            if candidate2.exists() {
+                found_script = Some(candidate2);
+                found_project = Some(root.clone());
+                break;
+            }
+        }
+
+        // If not found in any standard paths, automatically unpack embedded script to AppData
+        if found_script.is_none() {
+            if let Ok(data_dir) = app.path().app_data_dir() {
+                let scripts_dir = data_dir.join("scripts");
+                let _ = std::fs::create_dir_all(&scripts_dir);
+                let target_script = scripts_dir.join("uvr_separator.py");
+                if std::fs::write(&target_script, UVR_SEPARATOR_SCRIPT).is_ok() {
+                    found_script = Some(target_script);
+                    found_project = Some(data_dir);
+                }
+            }
+        }
+
+        // Fallback to temp dir if AppData write failed
+        if found_script.is_none() {
+            let temp_script = std::env::temp_dir().join("trackhelm_uvr_separator.py");
+            if std::fs::write(&temp_script, UVR_SEPARATOR_SCRIPT).is_ok() {
+                found_script = Some(temp_script);
+                found_project = Some(std::env::temp_dir());
             }
         }
 
@@ -1308,20 +1704,123 @@ async fn run_uvr_separation(
         });
 
         let mut found_py = None;
-        for root in &[&proj, &std::path::PathBuf::from("/Users/winkler/Library/CloudStorage/Dropbox-Personal/Programming/TrackHelm")] {
-            let venv_py = root.join(".venv/bin/python");
-            if venv_py.exists() {
-                found_py = Some(venv_py);
-                break;
+
+        // Check local virtualenvs in candidate roots
+        for root in &candidate_roots {
+            #[cfg(target_os = "windows")]
+            {
+                let venv_py = root.join(".venv").join("Scripts").join("python.exe");
+                if venv_py.exists() {
+                    found_py = Some(venv_py);
+                    break;
+                }
+                let venv_py2 = root.join(".venv_windows").join("Scripts").join("python.exe");
+                if venv_py2.exists() {
+                    found_py = Some(venv_py2);
+                    break;
+                }
             }
-            let venv_py3 = root.join(".venv/bin/python3");
-            if venv_py3.exists() {
-                found_py = Some(venv_py3);
-                break;
+
+            #[cfg(not(target_os = "windows"))]
+            {
+                let venv_py = root.join(".venv/bin/python");
+                if venv_py.exists() {
+                    found_py = Some(venv_py);
+                    break;
+                }
+                let venv_py3 = root.join(".venv/bin/python3");
+                if venv_py3.exists() {
+                    found_py = Some(venv_py3);
+                    break;
+                }
             }
         }
 
-        let py = found_py.unwrap_or_else(|| std::path::PathBuf::from("python3"));
+        // On Windows, check standard Python installations with audio-separator / UVR support
+        #[cfg(target_os = "windows")]
+        if found_py.is_none() {
+            let mut win_py_candidates = Vec::new();
+            if let Ok(local_app) = std::env::var("LOCALAPPDATA") {
+                let base = std::path::PathBuf::from(local_app);
+                win_py_candidates.push(base.join("Programs").join("Python").join("Python311").join("python.exe"));
+                win_py_candidates.push(base.join("Programs").join("Python").join("Python312").join("python.exe"));
+                win_py_candidates.push(base.join("Programs").join("Python").join("Python310").join("python.exe"));
+            }
+            for drive in &["C", "D", "E", "F"] {
+                win_py_candidates.push(std::path::PathBuf::from(format!(r"{}:\Program Files\Python311\python.exe", drive)));
+                win_py_candidates.push(std::path::PathBuf::from(format!(r"{}:\Program Files\Python312\python.exe", drive)));
+                win_py_candidates.push(std::path::PathBuf::from(format!(r"{}:\Program Files\Python310\python.exe", drive)));
+                win_py_candidates.push(std::path::PathBuf::from(format!(r"{}:\Python311\python.exe", drive)));
+                win_py_candidates.push(std::path::PathBuf::from(format!(r"{}:\Python312\python.exe", drive)));
+                win_py_candidates.push(std::path::PathBuf::from(format!(r"{}:\Python310\python.exe", drive)));
+            }
+
+            for p in win_py_candidates {
+                if p.exists() {
+                    found_py = Some(p);
+                    break;
+                }
+            }
+        }
+
+        // Check Windows `py` launcher
+        #[cfg(target_os = "windows")]
+        if found_py.is_none() {
+            use std::os::windows::process::CommandExt;
+            for ver in &["-3.11", "-3.12", "-3.10", "-3"] {
+                let mut c = StdCommand::new("py");
+                c.creation_flags(0x08000000);
+                if let Ok(output) = c.arg(ver).arg("-c").arg("import sys; print(sys.executable)").output() {
+                    if output.status.success() {
+                        let py_exe = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                        if !py_exe.is_empty() && std::path::Path::new(&py_exe).exists() {
+                            found_py = Some(std::path::PathBuf::from(py_exe));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Fallback on Windows: where.exe python.exe (filtering out Inkscape)
+        #[cfg(target_os = "windows")]
+        if found_py.is_none() {
+            use std::os::windows::process::CommandExt;
+            let mut c = StdCommand::new("where.exe");
+            c.creation_flags(0x08000000);
+            if let Ok(output) = c.arg("python.exe").output() {
+                if output.status.success() {
+                    let out_str = String::from_utf8_lossy(&output.stdout);
+                    for line in out_str.lines() {
+                        let trimmed = line.trim();
+                        if !trimmed.is_empty() && !trimmed.to_lowercase().contains("inkscape") {
+                            found_py = Some(std::path::PathBuf::from(trimmed));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        #[cfg(target_os = "windows")]
+        let py = found_py.unwrap_or_else(|| std::path::PathBuf::from("python.exe"));
+
+        #[cfg(not(target_os = "windows"))]
+        let py = found_py.unwrap_or_else(|| {
+            let mac_candidates = [
+                "/opt/homebrew/bin/python3",
+                "/usr/local/bin/python3",
+                "/usr/bin/python3",
+            ];
+            for c in &mac_candidates {
+                let p = std::path::PathBuf::from(c);
+                if p.exists() {
+                    return p;
+                }
+            }
+            std::path::PathBuf::from("python3")
+        });
+
         (script, py, proj)
     };
 
@@ -1334,11 +1833,47 @@ async fn run_uvr_separation(
     if let Some(ref out) = output_dir {
         cmd.arg("--output-dir").arg(out);
     }
+
+    // Configure model cache directory in app data / cache
+    let models_cache = if let Ok(cache_dir) = app.path().app_cache_dir() {
+        cache_dir.join("models_cache")
+    } else if let Ok(data_dir) = app.path().app_data_dir() {
+        data_dir.join("models_cache")
+    } else {
+        project_dir.join(".models_cache")
+    };
+    let _ = std::fs::create_dir_all(&models_cache);
+    cmd.arg("--cache-dir").arg(&models_cache);
+
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
     let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn separator: {}", e))?;
     let stdout = child.stdout.take().ok_or_else(|| "Failed to open stdout".to_string())?;
+    let stderr = child.stderr.take();
+
+    let stderr_thread = std::thread::spawn(move || {
+        let mut err_msg = String::new();
+        if let Some(pipe) = stderr {
+            let reader = BufReader::new(pipe);
+            for line in reader.lines() {
+                if let Ok(l) = line {
+                    if !err_msg.is_empty() {
+                        err_msg.push('\n');
+                    }
+                    err_msg.push_str(&l);
+                }
+            }
+        }
+        err_msg
+    });
 
     let app_handle = app.clone();
     let reader = BufReader::new(stdout);
@@ -1387,9 +1922,40 @@ async fn run_uvr_separation(
         }
     }
 
+    let stderr_output = stderr_thread.join().unwrap_or_default();
     let status = child.wait().map_err(|e| format!("Child wait error: {}", e))?;
+    if !stderr_output.trim().is_empty() {
+        eprintln!("[uvr stderr]:\n{}", stderr_output);
+    }
     if !status.success() && result.error.is_none() {
-        result.error = Some(format!("Separation process exited with code {:?}", status.code()));
+        let lines: Vec<&str> = stderr_output.lines().collect();
+        let detail = if let Some(idx) = lines.iter().position(|l| l.contains("Traceback (most recent call last):")) {
+            lines[idx..].join("\n").trim().to_string()
+        } else {
+            let filtered: Vec<&str> = lines
+                .into_iter()
+                .filter(|l| {
+                    let trimmed = l.trim();
+                    let lower = trimmed.to_lowercase();
+                    !lower.contains("- info -")
+                        && !lower.contains("- warning -")
+                        && !trimmed.contains("%|")
+                        && !lower.contains("downloading")
+                        && !lower.contains("cuda-executionprovider")
+                        && !lower.contains("failed to load cublas")
+                        && !lower.contains("failed to load cufft")
+                        && !lower.contains("failed to load cudart")
+                        && !lower.contains("please follow https://onnxruntime.ai")
+                        && !trimmed.is_empty()
+                })
+                .collect();
+            if !filtered.is_empty() {
+                filtered.join("\n")
+            } else {
+                format!("Separation process exited with code {:?}", status.code())
+            }
+        };
+        result.error = Some(detail);
     }
 
     if result.success {
@@ -1409,7 +1975,7 @@ fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
         "TrackHelm",
         true,
         &[
-            &PredefinedMenuItem::about(app, None, None)?,
+            &MenuItem::with_id(app, "open_about", "About TrackHelm...", true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
             &MenuItem::with_id(app, "open_preferences", "Preferences...", true, Some("CmdOrCtrl+,"))?,
             &PredefinedMenuItem::separator(app)?,
@@ -1490,12 +2056,22 @@ fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
         ],
     )?;
 
+    let help_menu = Submenu::with_items(
+        app,
+        "Help",
+        true,
+        &[
+            &MenuItem::with_id(app, "open_about", "About TrackHelm...", true, None::<&str>)?,
+        ],
+    )?;
+
     Menu::with_items(app, &[
         &app_menu,
         &file_menu,
         &edit_menu,
         &playback_menu,
         &view_menu,
+        &help_menu,
     ])
 }
 

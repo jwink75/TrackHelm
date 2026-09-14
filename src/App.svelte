@@ -6,7 +6,15 @@
   import * as pdfjsLib from "pdfjs-dist";
   import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
-  import { parseSetlistCsv, resolveSetlistLocal, type ScannedAsset, type ResolvedSetlistItem } from "./lib/setlistResolver";
+  import { 
+    parseSetlistCsv, 
+    resolveSetlistLocal, 
+    findBestMatch, 
+    calculateMatchScore, 
+    normalizeSongTitle, 
+    type ScannedAsset, 
+    type ResolvedSetlistItem 
+  } from "./lib/setlistResolver";
   import { analyzePlaylistHealth, type PlaylistItemHealth } from "./lib/playlistRepair";
 
   pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
@@ -250,7 +258,42 @@
   let currentPath = "";
   let parentPath: string | null = null;
   let browserEntries: any[] = [];
-  let cloudFolders: PlaylistItem[] = [];
+  let cloudFolders: Array<{ name: string; path: string; is_dir: boolean; size_bytes: number; kind: string }> = [];
+  let systemDrives: Array<{ name: string; path: string; is_dir: boolean; size_bytes: number; kind: string }> = [];
+  let rootName = "This PC";
+  let homePath = "";
+  let showCloudDropdown = false;
+
+  $: isCurrentPathHome = Boolean(homePath && (currentPath === homePath || currentPath === "~"));
+  $: isCurrentPathCloud = Boolean(cloudFolders && cloudFolders.some(c => 
+    c.path && currentPath.toLowerCase().startsWith(c.path.toLowerCase())
+  ));
+
+  function getFolderDisplayName(p: string): string {
+    if (!p) return "";
+    if (p === rootName) return `💻 ${rootName}`;
+    const drive = systemDrives.find(d => 
+      d.path.toUpperCase() === p.toUpperCase() || 
+      (d.path.toUpperCase() + "\\") === p.toUpperCase() ||
+      d.path.toUpperCase() === (p.toUpperCase() + "\\")
+    );
+    if (drive) return `💾 ${drive.name}`;
+    const cloud = cloudFolders.find(c => c.path.toUpperCase() === p.toUpperCase());
+    if (cloud) return `☁️ ${cloud.name}`;
+    const normalized = p.replace(/\\/g, "/").replace(/\/$/, "");
+    const parts = normalized.split("/");
+    return parts.pop() || normalized || p;
+  }
+
+  function handleCloudJumpClick(e: MouseEvent) {
+    e.stopPropagation();
+    if (!cloudFolders || cloudFolders.length === 0) return;
+    if (cloudFolders.length === 1) {
+      loadBrowser(cloudFolders[0].path);
+    } else {
+      showCloudDropdown = !showCloudDropdown;
+    }
+  }
   
   // Search & Type to Jump State
   let searchQuery = "";
@@ -392,13 +435,24 @@
     isResizingLeft = true;
     const startX = e.clientX;
     const initialWidth = leftSidebarWidth;
+    let rafId: number | null = null;
+    let latestClientX = startX;
 
     function onMouseMove(moveEvent: MouseEvent) {
-      const delta = moveEvent.clientX - startX;
-      leftSidebarWidth = Math.max(160, Math.min(600, initialWidth + delta));
+      latestClientX = moveEvent.clientX;
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        const delta = latestClientX - startX;
+        leftSidebarWidth = Math.max(160, Math.min(600, initialWidth + delta));
+      });
     }
 
     function onMouseUp() {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
       isResizingLeft = false;
       try {
         localStorage.setItem("th_left_sidebar_width", leftSidebarWidth.toString());
@@ -416,13 +470,24 @@
     isResizingRight = true;
     const startX = e.clientX;
     const initialWidth = rightSidebarWidth;
+    let rafId: number | null = null;
+    let latestClientX = startX;
 
     function onMouseMove(moveEvent: MouseEvent) {
-      const delta = startX - moveEvent.clientX;
-      rightSidebarWidth = Math.max(180, Math.min(700, initialWidth + delta));
+      latestClientX = moveEvent.clientX;
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        const delta = startX - latestClientX;
+        rightSidebarWidth = Math.max(180, Math.min(700, initialWidth + delta));
+      });
     }
 
     function onMouseUp() {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
       isResizingRight = false;
       try {
         localStorage.setItem("th_right_sidebar_width", rightSidebarWidth.toString());
@@ -469,15 +534,28 @@
     const startY = e.clientY;
     const initialW = setlistModalWidth;
     const initialH = setlistModalHeight;
+    let rafId: number | null = null;
+    let latestMeX = startX;
+    let latestMeY = startY;
 
     function onMouseMove(me: MouseEvent) {
-      const deltaX = me.clientX - startX;
-      const deltaY = me.clientY - startY;
-      setlistModalWidth = Math.max(550, Math.min(window.innerWidth * 0.96, initialW + deltaX));
-      setlistModalHeight = Math.max(400, Math.min(window.innerHeight * 0.94, initialH + deltaY));
+      latestMeX = me.clientX;
+      latestMeY = me.clientY;
+      if (rafId !== null) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        const deltaX = latestMeX - startX;
+        const deltaY = latestMeY - startY;
+        setlistModalWidth = Math.max(550, Math.min(window.innerWidth * 0.96, initialW + deltaX));
+        setlistModalHeight = Math.max(400, Math.min(window.innerHeight * 0.94, initialH + deltaY));
+      });
     }
 
     function onMouseUp() {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
       isResizingSetlistModal = false;
       try {
         localStorage.setItem("th_setlist_modal_w", setlistModalWidth.toString());
@@ -501,6 +579,11 @@
   function isLosslessAudio(pathOrName: string): boolean {
     const ext = getFileExtension(pathOrName).toLowerCase();
     return ["wav", "aiff", "aif", "flac", "alac"].includes(ext);
+  }
+
+  function isAudioFile(pathOrName: string): boolean {
+    const ext = getFileExtension(pathOrName).toLowerCase();
+    return ["wav", "mp3", "m4a", "aac", "flac", "aif", "aiff", "alac", "ogg", "wma"].includes(ext);
   }
 
   function renderMarkdown(md: string): string {
@@ -1121,11 +1204,17 @@
   let prefFolderHiRes: string = "";
   let prefFolderOrig: string = "";
   let prefFolderPdf: string = "";
+  let prefFolderVocals: string = "";
   let prefAiProvider: AiProvider = "builtin";
   let prefAiApiKey: string = "";
   let prefAiModel: string = "";
   let prefOllamaUrl: string = "http://localhost:11434";
   let showPreferencesModal: boolean = false;
+  let showAboutModal: boolean = false;
+
+  let isAutoLinkingLibrary: boolean = false;
+  let autoLinkStatusMessage: string = "";
+  let autoLinkStatusIsError: boolean = false;
 
   // Setlist CSV Importer Modal State
   let showSetlistModal: boolean = false;
@@ -1150,6 +1239,7 @@
       prefFolderHiRes = localStorage.getItem("th_pref_folder_hires") || "";
       prefFolderOrig = localStorage.getItem("th_pref_folder_orig") || "";
       prefFolderPdf = localStorage.getItem("th_pref_folder_pdf") || "";
+      prefFolderVocals = localStorage.getItem("th_pref_folder_vocals") || "";
 
       const savedAi = localStorage.getItem("th_pref_ai_provider");
       if (savedAi === "builtin" || savedAi === "ollama" || savedAi === "openai" || savedAi === "anthropic" || savedAi === "gemini") {
@@ -1168,6 +1258,7 @@
       localStorage.setItem("th_pref_folder_hires", prefFolderHiRes);
       localStorage.setItem("th_pref_folder_orig", prefFolderOrig);
       localStorage.setItem("th_pref_folder_pdf", prefFolderPdf);
+      localStorage.setItem("th_pref_folder_vocals", prefFolderVocals);
       localStorage.setItem("th_pref_ai_provider", prefAiProvider);
       localStorage.setItem("th_pref_ai_api_key", prefAiApiKey);
       localStorage.setItem("th_pref_ai_model", prefAiModel);
@@ -1180,7 +1271,7 @@
     saveAppPreferences();
   }
 
-  async function pickPreferenceFolder(key: "aac" | "hires" | "orig" | "pdf") {
+  async function pickPreferenceFolder(key: "aac" | "hires" | "orig" | "pdf" | "vocals") {
     try {
       const selected = await open({
         directory: true,
@@ -1192,6 +1283,7 @@
         else if (key === "hires") prefFolderHiRes = selected;
         else if (key === "orig") prefFolderOrig = selected;
         else if (key === "pdf") prefFolderPdf = selected;
+        else if (key === "vocals") prefFolderVocals = selected;
         saveAppPreferences();
       }
     } catch (err) {
@@ -1217,11 +1309,20 @@
     showPreferencesModal = false;
   }
 
+  function openAboutModal() {
+    showAboutModal = true;
+  }
+
+  function closeAboutModal() {
+    showAboutModal = false;
+  }
+
   async function scanLibraryAssets() {
     let aacFiles: ScannedAsset[] = [];
     let hiresFiles: ScannedAsset[] = [];
     let origFiles: ScannedAsset[] = [];
     let pdfFiles: ScannedAsset[] = [];
+    let vocalsFiles: ScannedAsset[] = [];
 
     try {
       if (prefFolderAac) {
@@ -1248,11 +1349,257 @@
           extensions: ["pdf"]
         });
       }
+      if (prefFolderVocals) {
+        vocalsFiles = await invoke("scan_library_folder", {
+          folderPath: prefFolderVocals,
+          extensions: ["m4a", "aac", "mp3", "wav", "flac", "aiff", "aif"]
+        });
+      }
     } catch (e) {
       console.error("Failed to scan library assets:", e);
     }
 
-    return { aacFiles, hiresFiles, origFiles, pdfFiles };
+    return { aacFiles, hiresFiles, origFiles, pdfFiles, vocalsFiles };
+  }
+
+  async function executeAutoLinkLibrary() {
+    if (isAutoLinkingLibrary) return;
+    isAutoLinkingLibrary = true;
+    autoLinkStatusMessage = "";
+    autoLinkStatusIsError = false;
+
+    try {
+      // 1. Scan assets across all designated folders
+      const { aacFiles, hiresFiles, origFiles, pdfFiles, vocalsFiles } = await scanLibraryAssets();
+
+      const totalScanned = aacFiles.length + hiresFiles.length + origFiles.length + pdfFiles.length + (vocalsFiles ? vocalsFiles.length : 0);
+      if (totalScanned === 0) {
+        autoLinkStatusMessage = "No library files found. Please set your folder paths above first.";
+        autoLinkStatusIsError = true;
+        isAutoLinkingLibrary = false;
+        return;
+      }
+
+      // Stem identifier helper
+      const isStemOrVocal = (asset: ScannedAsset): boolean => {
+        const pathLower = (asset.path || "").toLowerCase();
+        const nameLower = (asset.name || "").toLowerCase();
+        if (
+          pathLower.includes("/vocals only/") || 
+          pathLower.includes("\\vocals only\\") || 
+          pathLower.includes("/stems/") || 
+          pathLower.includes("\\stems\\")
+        ) {
+          return true;
+        }
+        return (
+          nameLower.includes("(vocals ensemble)") ||
+          nameLower.includes("(vocals)") ||
+          nameLower.includes("(lead vocals)") ||
+          nameLower.includes("(backing vocals)") ||
+          nameLower.includes("(iso track)") ||
+          nameLower.includes("acapella") ||
+          nameLower.includes("isolated vocals") ||
+          nameLower.includes("vocals only")
+        );
+      };
+
+      // Collect stem pool (designated folder + any subfolder stems found)
+      const stemPool: ScannedAsset[] = [...(vocalsFiles || [])];
+      for (const f of [...aacFiles, ...hiresFiles, ...origFiles]) {
+        if (isStemOrVocal(f) && !stemPool.some(s => s.path === f.path)) {
+          stemPool.push(f);
+        }
+      }
+
+      // Candidate anchor tracks (primary backing/rehearsal tracks from AAC and Hi-Res)
+      const anchorMap = new Map<string, ScannedAsset>();
+      for (const f of aacFiles) {
+        if (!isStemOrVocal(f)) {
+          anchorMap.set(f.path, f);
+        }
+      }
+      for (const f of hiresFiles) {
+        if (!isStemOrVocal(f)) {
+          const norm = normalizeSongTitle(f.name);
+          const alreadyInAac = Array.from(anchorMap.values()).some(a => normalizeSongTitle(a.name) === norm);
+          if (!alreadyInAac) {
+            anchorMap.set(f.path, f);
+          }
+        }
+      }
+
+      const anchors = Array.from(anchorMap.values());
+      if (anchors.length === 0) {
+        autoLinkStatusMessage = "No performance tracks found in AAC or Full-Res folders to anchor song collections.";
+        autoLinkStatusIsError = true;
+        isAutoLinkingLibrary = false;
+        return;
+      }
+
+      const pdfPool = pdfFiles;
+      const origPool = origFiles.filter(f => !isStemOrVocal(f));
+      const hiresPool = hiresFiles.filter(f => !isStemOrVocal(f));
+
+      const store = getProfilesStore();
+      let songsProcessed = 0;
+      let pdfsLinked = 0;
+      let origsLinked = 0;
+      let hiresLinked = 0;
+      let stemsLinked = 0;
+
+      for (const anchor of anchors) {
+        songsProcessed++;
+        const cleanTitle = normalizeSongTitle(anchor.name);
+        if (!cleanTitle) continue;
+
+        const existingProfile = store[anchor.path] || ({} as TrackProfile);
+        const existingAssoc: AssociatedFileItem[] = existingProfile.associatedFiles ? [...existingProfile.associatedFiles] : [];
+
+        // 1. Match Sheet Music PDF
+        let matchedPdfPath = existingProfile.pdfChartPath || "";
+        let matchedPdfName = existingProfile.pdfChartName || "";
+        if (!matchedPdfPath && pdfPool.length > 0) {
+          const match = findBestMatch(cleanTitle, pdfPool, 0.55);
+          if (match) {
+            matchedPdfPath = match.asset.path;
+            matchedPdfName = match.asset.name;
+          }
+        }
+        if (matchedPdfPath && !existingAssoc.some(a => a.path === matchedPdfPath)) {
+          existingAssoc.push({
+            id: "pdf_" + Math.random().toString(36).substring(2, 8),
+            name: matchedPdfName || matchedPdfPath.split("/").pop() || "Sheet Music",
+            path: matchedPdfPath,
+            fileType: "pdf"
+          });
+          pdfsLinked++;
+        }
+
+        // 2. Match Original Artist Recording
+        if (origPool.length > 0 && !existingAssoc.some(a => a.role === "orig" || a.id === "audio-orig")) {
+          const match = findBestMatch(cleanTitle, origPool, 0.60);
+          if (match && match.asset.path !== anchor.path) {
+            existingAssoc.push({
+              id: "audio-orig",
+              name: match.asset.name,
+              path: match.asset.path,
+              fileType: "audio",
+              role: "orig"
+            });
+            origsLinked++;
+          }
+        }
+
+        // 3. Match Hi-Res Audio Track
+        if (hiresPool.length > 0 && anchor.path !== hiresPool.find(h => h.path === anchor.path)?.path) {
+          if (!existingAssoc.some(a => a.role === "hires" || a.id === "audio-hires")) {
+            const match = findBestMatch(cleanTitle, hiresPool, 0.60);
+            if (match && match.asset.path !== anchor.path) {
+              existingAssoc.push({
+                id: "audio-hires",
+                name: match.asset.name,
+                path: match.asset.path,
+                fileType: "audio",
+                role: "hires"
+              });
+              hiresLinked++;
+            }
+          }
+        }
+
+        // 4. Match All Vocal Stems & Iso Tracks
+        if (stemPool.length > 0) {
+          for (const stem of stemPool) {
+            if (stem.path === anchor.path) continue;
+            if (existingAssoc.some(a => a.path === stem.path)) continue;
+
+            const score = calculateMatchScore(cleanTitle, stem.name);
+            if (score >= 0.62) {
+              const stemNameLower = stem.name.toLowerCase();
+              let stemRole = "vocals";
+              if (stemNameLower.includes("lead")) {
+                stemRole = "lead";
+              } else if (stemNameLower.includes("backing") || stemNameLower.includes("bgv") || stemNameLower.includes("backings")) {
+                stemRole = "backings";
+              } else if (stemNameLower.includes("iso track") || stemNameLower.includes("instrumental")) {
+                stemRole = "track";
+              }
+
+              existingAssoc.push({
+                id: "stem_" + Math.random().toString(36).substring(2, 8),
+                name: stem.name,
+                path: stem.path,
+                fileType: "audio",
+                role: stemRole
+              });
+              stemsLinked++;
+            }
+          }
+        }
+
+        // Update profile for this anchor track
+        store[anchor.path] = {
+          ...existingProfile,
+          primarySongTrackPath: anchor.path,
+          pdfChartPath: matchedPdfPath,
+          pdfChartName: matchedPdfName,
+          associatedFiles: existingAssoc
+        };
+
+        // Propagate bi-directional sync to all peer audio files
+        const audioPeers = existingAssoc.filter(a => a.fileType === "audio" && a.path);
+        for (const peer of audioPeers) {
+          if (!peer.path || peer.path === anchor.path) continue;
+          const peerExisting = store[peer.path] || ({} as TrackProfile);
+          const peerAssoc: AssociatedFileItem[] = [
+            ...existingAssoc.filter(a => a.fileType !== "audio"),
+            {
+              id: "track-anchor-" + anchor.path.replace(/[^a-zA-Z0-9]/g, "_"),
+              name: anchor.name,
+              path: anchor.path,
+              fileType: "audio",
+              role: isLosslessAudio(anchor.path) ? "hires" : "main"
+            },
+            ...audioPeers.filter(p => p.path !== peer.path)
+          ];
+
+          store[peer.path] = {
+            ...peerExisting,
+            primarySongTrackPath: anchor.path,
+            pdfChartPath: matchedPdfPath || peerExisting.pdfChartPath || "",
+            pdfChartName: matchedPdfName || peerExisting.pdfChartName || "",
+            markers: existingProfile.markers ? existingProfile.markers.map(m => ({ ...m })) : (peerExisting.markers || []),
+            notes: existingProfile.notes || peerExisting.notes || "",
+            lyrics: existingProfile.lyrics || peerExisting.lyrics || "",
+            associatedFiles: peerAssoc
+          };
+        }
+
+        // If the currently loaded song in TrackHelm matches this anchor or any peer:
+        if (filePath && (filePath === anchor.path || audioPeers.some(p => p.path === filePath))) {
+          const currentCollectionProfile = store[filePath];
+          if (currentCollectionProfile) {
+            associatedFiles = [...(currentCollectionProfile.associatedFiles || [])];
+            primarySongTrackPath = currentCollectionProfile.primarySongTrackPath || anchor.path;
+            if (matchedPdfPath && !pdfChartPath) {
+              pdfChartPath = matchedPdfPath;
+              pdfChartName = matchedPdfName;
+            }
+          }
+        }
+      }
+
+      flushProfilesToLocalStorage();
+      autoLinkStatusMessage = `✓ Auto-link complete! Processed ${songsProcessed} songs. Linked ${pdfsLinked} PDFs, ${origsLinked} Originals, ${hiresLinked} Full-Res masters, and ${stemsLinked} Vocal/Iso stems.`;
+      autoLinkStatusIsError = false;
+    } catch (err: any) {
+      console.error("Auto-link error:", err);
+      autoLinkStatusMessage = "Failed to auto-link library: " + (err?.message || err);
+      autoLinkStatusIsError = true;
+    } finally {
+      isAutoLinkingLibrary = false;
+    }
   }
 
   async function openSetlistModal() {
@@ -1591,6 +1938,7 @@
     notesViewMode?: "edit" | "preview" | "split";
     lyricsViewMode?: "edit" | "preview" | "split";
     lastCenterTab?: string;
+    fileTags?: Record<string, string[]>;
   }
 
   let cachedProfilesStore: Record<string, TrackProfile> | null = null;
@@ -1712,7 +2060,8 @@
         lyrics: songLyrics || peerProfile.lyrics || "",
         notesViewMode,
         lyricsViewMode,
-        lastCenterTab: activeCenterTab
+        lastCenterTab: activeCenterTab,
+        fileTags: { ...(peerProfile.fileTags || {}), ...(currentProfile.fileTags || {}), ...activeSongTags }
       };
     }
 
@@ -1770,7 +2119,8 @@
       lyrics: songLyrics,
       notesViewMode,
       lyricsViewMode,
-      lastCenterTab: activeCenterTab
+      lastCenterTab: activeCenterTab,
+      fileTags: { ...(existing.fileTags || {}), ...activeSongTags }
     };
 
     // Propagate bidirectional associations across all audio peers in this collection
@@ -1962,15 +2312,308 @@
     }
   }
 
+  // Audio file tags system (auto-detected and user-toggled via right-click)
+  let activeSongTags: Record<string, string[]> = {};
+
+  const AUDIO_TAG_OPTIONS = [
+    { id: "original", label: "Original", color: "#d084ff" },
+    { id: "vocals_only", label: "Vocals only", color: "#30d158" },
+    { id: "lead_vocal", label: "Lead Vocal", color: "#ffd60a" },
+    { id: "background_vocals", label: "Background Vocals", color: "#64d2ff" },
+    { id: "iso_track", label: "Iso Track", color: "#38bdf8" },
+    { id: "track", label: "Track", color: "#ff9f0a" }
+  ];
+
+  function getAutoDetectedTags(path: string, name?: string, roleHint?: string): string[] {
+    const text = ((path || "") + " " + (name || "")).toLowerCase();
+    const fileNameOnly = (name || (path ? path.split("/").pop()?.split("\\").pop() : "") || "").toLowerCase();
+    const detected: string[] = [];
+
+    // 1. Original Artist / Reference Recording
+    if (
+      roleHint === "orig" ||
+      text.includes("audio-orig") ||
+      text.includes("original") ||
+      text.includes("[original]") ||
+      text.includes("(original)") ||
+      text.includes("album version") ||
+      text.includes("artist version") ||
+      text.includes("album cut") ||
+      text.includes("reference recording") ||
+      text.includes("original mix")
+    ) {
+      detected.push("Original");
+    }
+
+    // 2. Lead Vocal Track
+    if (
+      roleHint === "lead" ||
+      text.includes("lead vocal") ||
+      text.includes("lead-vocal") ||
+      text.includes("lead_vocal") ||
+      text.includes("(lead vocals)") ||
+      text.includes("[lead vocals]") ||
+      text.includes("(lead vocal)") ||
+      text.includes("[lead vocal]") ||
+      text.includes("lead vox") ||
+      text.includes("lead_vox") ||
+      text.includes("(lead)") ||
+      text.includes("[lead]") ||
+      text.includes("_lead.") ||
+      text.includes("- lead.") ||
+      text.includes(" lead.") ||
+      text.includes("lead voice")
+    ) {
+      detected.push("Lead Vocal");
+    }
+
+    // 3. Background Vocals / Backing Vocals Track
+    // Distinguish "Backing Track" (instrumental) from "Backing Vocals" / "BGV"
+    const isBackingTrackText = text.includes("backing track") || 
+      text.includes("backing-track") || 
+      text.includes("backing_track") ||
+      text.includes("performance track");
+
+    const hasBgvKeyword = 
+      roleHint === "backings" ||
+      text.includes("backing vocal") ||
+      text.includes("backing-vocal") ||
+      text.includes("backing_vocal") ||
+      text.includes("background vocal") ||
+      text.includes("background-vocal") ||
+      text.includes("background_vocal") ||
+      text.includes("backup vocal") ||
+      text.includes("backup-vocal") ||
+      text.includes("backup_vocal") ||
+      text.includes("bgv") ||
+      text.includes("bgvs") ||
+      text.includes("bg vox") ||
+      text.includes("backing vox") ||
+      text.includes("harmonies") ||
+      text.includes("harmony vocals") ||
+      text.includes("(backings)") ||
+      text.includes("[backings]") ||
+      (!isBackingTrackText && (
+        text.includes("backings") ||
+        text.includes("(backup)") ||
+        text.includes("[backup]") ||
+        text.includes("backing.") ||
+        text.includes("- backing") ||
+        text.includes("_backing")
+      ));
+
+    if (hasBgvKeyword) {
+      detected.push("Background Vocals");
+    }
+
+    // 4. Vocals only (Master Isolated Vocal Stem / Acapella)
+    const hasVocalsOnlyKeyword = 
+      roleHint === "vocals" ||
+      text.includes("vocals only") || 
+      text.includes("(vocals)") || 
+      text.includes("[vocals]") || 
+      text.includes("vocals ensemble") || 
+      text.includes("isolated_vocals") || 
+      text.includes("isolated vocals") || 
+      text.includes("acapella") || 
+      text.includes("acappella") || 
+      fileNameOnly.includes("vocals.") ||
+      fileNameOnly.includes("_vocals.") ||
+      fileNameOnly.includes(" vocals.") ||
+      fileNameOnly.includes("-vocals.");
+
+    if (hasVocalsOnlyKeyword) {
+      if (!detected.includes("Lead Vocal") && !detected.includes("Background Vocals")) {
+        detected.push("Vocals only");
+      }
+    }
+
+    // 5. Iso Track (Isolated Instrumental Stem from Vocal Separation)
+    const hasIsoTrackKeyword = 
+      roleHint === "iso_track" ||
+      text.includes("iso track") ||
+      text.includes("iso-track") ||
+      text.includes("iso_track") ||
+      text.includes("(iso track)") ||
+      text.includes("[iso track]") ||
+      text.includes("(instrumental)") ||
+      text.includes("[instrumental]") ||
+      fileNameOnly.includes("iso track") ||
+      fileNameOnly.includes("instrumental.");
+
+    if (hasIsoTrackKeyword) {
+      detected.push("Iso Track");
+    }
+
+    // 6. Track (Accompaniment / Backing Track / Instrumental / Karaoke)
+    const hasTrackKeyword = 
+      roleHint === "main" ||
+      text.includes("backing track") ||
+      text.includes("performance track") ||
+      text.includes("split track") ||
+      text.includes("accompaniment") ||
+      text.includes("instrumental") ||
+      text.includes("karaoke") ||
+      text.includes("minus one") ||
+      text.includes("minus 1") ||
+      text.includes("no vox") ||
+      text.includes("no vocals") ||
+      text.includes("(track)") ||
+      text.includes("[track]") ||
+      text.includes("_track.") ||
+      text.includes("-track.") ||
+      text.includes(" track.") ||
+      text.includes("- track.") ||
+      text.includes("- track ") ||
+      text.includes("rehearsal track") ||
+      text.includes("stage track");
+
+    if (hasTrackKeyword && !detected.includes("Iso Track")) {
+      detected.push("Track");
+    } else if (
+      // If no tag detected yet, check if this is the designated primary track
+      (roleHint === "main" || (primarySongTrackPath && path === primarySongTrackPath)) &&
+      !detected.includes("Original") &&
+      !detected.includes("Vocals only") &&
+      !detected.includes("Lead Vocal") &&
+      !detected.includes("Background Vocals") &&
+      !detected.includes("Iso Track")
+    ) {
+      detected.push("Track");
+    }
+
+    return detected;
+  }
+
+  function getFileTags(trackPath: string, trackName?: string, roleHint?: string): string[] {
+    if (!trackPath) return [];
+    // 1. In-memory active song tags
+    if (activeSongTags && Array.isArray(activeSongTags[trackPath])) {
+      return activeSongTags[trackPath];
+    }
+    const store = getProfilesStore();
+    // 2. Exact match in profile store
+    if (store[trackPath]?.fileTags && Array.isArray(store[trackPath].fileTags[trackPath])) {
+      activeSongTags[trackPath] = [...store[trackPath].fileTags[trackPath]];
+      return activeSongTags[trackPath];
+    }
+    // 3. Look under active song's profile key
+    if (filePath && store[filePath]?.fileTags && Array.isArray(store[filePath].fileTags[trackPath])) {
+      activeSongTags[trackPath] = [...store[filePath].fileTags[trackPath]];
+      return activeSongTags[trackPath];
+    }
+    // 4. Look under primarySongTrackPath profile key
+    if (primarySongTrackPath && store[primarySongTrackPath]?.fileTags && Array.isArray(store[primarySongTrackPath].fileTags[trackPath])) {
+      activeSongTags[trackPath] = [...store[primarySongTrackPath].fileTags[trackPath]];
+      return activeSongTags[trackPath];
+    }
+
+    // 5. Look up associated file role / ID if not explicitly passed
+    let effectiveRole = roleHint;
+    if (!effectiveRole && associatedFiles) {
+      const match = associatedFiles.find(f => f.path === trackPath);
+      if (match) {
+        effectiveRole = match.role || (match.id === 'audio-orig' ? 'orig' : undefined);
+      }
+    }
+    if (!effectiveRole && primarySongTrackPath && trackPath === primarySongTrackPath) {
+      effectiveRole = "main";
+    }
+
+    return getAutoDetectedTags(trackPath, trackName, effectiveRole);
+  }
+
+  function toggleFileTag(trackPath: string, tag: string) {
+    if (!trackPath || !tag) return;
+    const currentTags = [...getFileTags(trackPath)];
+    const index = currentTags.indexOf(tag);
+    if (index >= 0) {
+      currentTags.splice(index, 1);
+    } else {
+      currentTags.push(tag);
+    }
+    activeSongTags = {
+      ...activeSongTags,
+      [trackPath]: currentTags
+    };
+
+    const store = getProfilesStore();
+    const targetPath = filePath || primarySongTrackPath || trackPath;
+    if (store[targetPath]) {
+      store[targetPath].fileTags = {
+        ...(store[targetPath].fileTags || {}),
+        ...activeSongTags
+      };
+    }
+    if (filePath) {
+      saveCurrentTrackProfile(filePath, true);
+    } else {
+      flushProfilesToLocalStorage();
+    }
+  }
+
+  // Waveform Dynamic Height Resizing State & Handlers
+  const savedWaveformHeight = parseInt(localStorage.getItem("th_waveform_height") || "256", 10);
+  let waveformHeight: number = !isNaN(savedWaveformHeight) && savedWaveformHeight >= 100 && savedWaveformHeight <= 650 ? savedWaveformHeight : 256;
+  let isResizingWaveform = false;
+  let resizeWaveformStartY = 0;
+  let resizeWaveformStartHeight = 256;
+
+  function updateWaveformHeight(newH: number) {
+    const clamped = Math.round(Math.max(100, Math.min(650, newH)));
+    if (clamped === waveformHeight) return;
+    waveformHeight = clamped;
+    invalidateWaveformCaches();
+    tick().then(() => {
+      drawMainWaveform();
+      drawOverviewWaveform();
+    });
+  }
+
+  function startWaveformResize(e: MouseEvent) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    isResizingWaveform = true;
+    resizeWaveformStartY = e.clientY;
+    resizeWaveformStartHeight = waveformHeight;
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      const deltaY = resizeWaveformStartY - moveEvent.clientY;
+      updateWaveformHeight(resizeWaveformStartHeight + deltaY);
+    };
+
+    const onMouseUp = () => {
+      isResizingWaveform = false;
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      localStorage.setItem("th_waveform_height", waveformHeight.toString());
+      invalidateWaveformCaches();
+      drawMainWaveform();
+    };
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }
+
+  function resetWaveformHeight() {
+    updateWaveformHeight(256);
+    localStorage.setItem("th_waveform_height", "256");
+  }
+
   function getTrackWatermarkLabel(): string {
     if (!filePath) return "";
+    const tags = getFileTags(filePath);
+    if (tags.length > 0) {
+      return tags.join(" • ").toUpperCase();
+    }
     const activeAssoc = associatedFiles.find(f => f.path === filePath);
     if (activeAssoc) {
-      if (activeAssoc.role === 'lead' || activeAssoc.name.toLowerCase().includes('lead vocal')) return "LEAD VOCALS";
-      if (activeAssoc.role === 'backings' || activeAssoc.name.toLowerCase().includes('backing vocal')) return "BACKING VOCALS";
+      if (activeAssoc.role === 'lead' || activeAssoc.name.toLowerCase().includes('lead vocal')) return "LEAD VOCAL";
+      if (activeAssoc.role === 'backings' || activeAssoc.name.toLowerCase().includes('backing vocal')) return "BACKGROUND VOCALS";
       if (activeAssoc.role === 'vocals' || activeAssoc.name.toLowerCase().includes('vocals ensemble') || activeAssoc.name.toLowerCase().includes('(vocals)')) return "VOCALS ONLY";
       if (isLosslessAudio(activeAssoc.path || activeAssoc.name)) return "HIGH-RES MASTER";
-      if (activeAssoc.id === 'audio-orig' || activeAssoc.name.toLowerCase().includes('original')) return "ORIGINAL ARTIST";
+      if (activeAssoc.id === 'audio-orig' || activeAssoc.name.toLowerCase().includes('original')) return "ORIGINAL";
       return activeAssoc.name.toUpperCase();
     }
     if (isLosslessAudio(filePath)) return "HIGH-RES MASTER";
@@ -2896,6 +3539,7 @@
       songLyrics = profile.lyrics || "";
       notesViewMode = profile.notesViewMode || "edit";
       lyricsViewMode = profile.lyricsViewMode || "edit";
+      activeSongTags = profile.fileTags ? { ...profile.fileTags } : {};
 
       if (profile.lastCenterTab) {
         activeCenterTab = profile.lastCenterTab;
@@ -2978,6 +3622,7 @@
       songLyrics = "";
       notesViewMode = "edit";
       lyricsViewMode = "edit";
+      activeSongTags = {};
       alternateTrack = null;
       activeCenterTab = "notes";
       saveCurrentTrackProfile(trackPath, true);
@@ -3232,11 +3877,17 @@
     }, 50);
 
     // Resize observer for canvases
+    let resizeRafId: number | null = null;
     if (centerContentElement) {
       resizeObserver = new ResizeObserver(() => {
-        invalidateWaveformCaches();
-        drawMainWaveform();
-        drawOverviewWaveform();
+        if (resizeRafId !== null) return;
+        resizeRafId = requestAnimationFrame(() => {
+          resizeRafId = null;
+          invalidateWaveformCaches();
+          updateVisiblePeaks();
+          drawMainWaveform();
+          drawOverviewWaveform();
+        });
       });
       resizeObserver.observe(centerContentElement);
     }
@@ -3264,10 +3915,11 @@
       }
     });
 
-    // Close context menu & color palette on window click
+    // Close context menu & color palette & cloud dropdown on window click
     const closeMenu = () => { 
       showContextMenu = false; 
       colorPaletteMarker = null;
+      showCloudDropdown = false;
     };
     window.addEventListener("click", closeMenu);
 
@@ -3280,6 +3932,7 @@
       else if (action === "save_playlist") savePlaylistToFile();
       else if (action === "export_audio") openExportModal();
       else if (action === "open_preferences") openPreferencesModal();
+      else if (action === "open_about") openAboutModal();
       else if (action === "add_marker") addMarker();
       else if (action === "create_region") createRegionFromSelectionOrMarkers();
       else if (action === "toggle_loop") handleLoopHotkey();
@@ -3526,6 +4179,7 @@
 
     return () => {
       clearInterval(statusInterval);
+      if (resizeRafId !== null) cancelAnimationFrame(resizeRafId);
       if (resizeObserver) resizeObserver.disconnect();
       unlistenDragDrop.then(fn => fn());
       unlistenMenu.then(fn => fn());
@@ -3544,9 +4198,23 @@
       currentPath = contents.current_path;
       parentPath = contents.parent_path;
       browserEntries = contents.entries;
+      if (contents.drives && contents.drives.length > 0) {
+        systemDrives = contents.drives;
+      }
+      if (contents.cloud_folders && contents.cloud_folders.length > 0) {
+        cloudFolders = contents.cloud_folders;
+      }
+      if (contents.root_name) {
+        rootName = contents.root_name;
+      }
+      if (contents.home_path) {
+        homePath = contents.home_path;
+      }
       selectedFilePaths.clear();
       lastSelectedEntry = null;
-      localStorage.setItem("th_last_dir", currentPath);
+      if (currentPath && currentPath !== rootName) {
+        localStorage.setItem("th_last_dir", currentPath);
+      }
     } catch (err) {
       alert("Failed to read directory: " + err);
     }
@@ -4079,7 +4747,13 @@
 
   // Handle Multi-select File Clicks & Background Prefetching
   function handleFileClick(e: MouseEvent, entry: any) {
-    if (entry.is_dir) return;
+    if (entry.is_dir) {
+      selectedFilePaths.clear();
+      selectedFilePaths.add(entry.path);
+      selectedFilePaths = selectedFilePaths;
+      lastSelectedEntry = { name: entry.name, path: entry.path, is_dir: true };
+      return;
+    }
 
     // Trigger instant background pre-decoding in Rust
     invoke("preload_track", { path: entry.path }).catch(() => {});
@@ -4093,13 +4767,13 @@
         selectedFilePaths.add(entry.path);
         selectedFilePaths = selectedFilePaths;
       }
-      lastSelectedEntry = { name: entry.name, path: entry.path };
+      lastSelectedEntry = { name: entry.name, path: entry.path, is_dir: false };
     } else {
       // Regular click replaces selection
       selectedFilePaths.clear();
       selectedFilePaths.add(entry.path);
       selectedFilePaths = selectedFilePaths;
-      lastSelectedEntry = { name: entry.name, path: entry.path };
+      lastSelectedEntry = { name: entry.name, path: entry.path, is_dir: false };
     }
   }
 
@@ -6691,11 +7365,65 @@
       <!-- Tab Content: Browser -->
       {#if activeTab === "browser"}
         <div class="browser-nav">
-          <span class="current-dir-label" title={currentPath}>{currentPath.split("/").pop() || currentPath}</span>
+          <span class="current-dir-label" title={currentPath}>{getFolderDisplayName(currentPath)}</span>
           {#if parentPath}
             <!-- svelte-ignore a11y-click-events-have-key-events -->
             <!-- svelte-ignore a11y-no-static-element-interactions -->
             <span class="up-btn" on:click={() => loadBrowser(parentPath)}>Parent ↰</span>
+          {/if}
+        </div>
+
+        <div class="browser-quick-bar">
+          <button 
+            class="quick-jump-btn" 
+            class:active={currentPath === rootName}
+            on:click={() => loadBrowser(rootName)}
+            title="Browse all drives and storage ({rootName})"
+          >
+            💻 {rootName}
+          </button>
+
+          <button 
+            class="quick-jump-btn" 
+            class:active={isCurrentPathHome}
+            on:click={() => loadBrowser("~")}
+            title="Go to User Home directory"
+          >
+            🏠 Home
+          </button>
+
+          {#if cloudFolders && cloudFolders.length > 0}
+            <div class="cloud-btn-wrapper">
+              <button 
+                class="quick-jump-btn cloud-jump-btn" 
+                class:active={isCurrentPathCloud}
+                on:click={handleCloudJumpClick}
+                title="Jump to Cloud Storage"
+              >
+                ☁️ Cloud {cloudFolders.length > 1 ? "▾" : ""}
+              </button>
+
+              {#if showCloudDropdown}
+                <!-- svelte-ignore a11y-click-events-have-key-events -->
+                <!-- svelte-ignore a11y-no-static-element-interactions -->
+                <div class="cloud-dropdown-menu" on:click|stopPropagation>
+                  {#each cloudFolders as folder}
+                    <button 
+                      class="cloud-dropdown-item" 
+                      class:active={currentPath.toLowerCase().startsWith(folder.path.toLowerCase())}
+                      on:click={() => {
+                        showCloudDropdown = false;
+                        loadBrowser(folder.path);
+                      }}
+                      title={folder.path}
+                    >
+                      <span class="cloud-item-icon">☁️</span>
+                      <span class="cloud-item-name">{folder.name}</span>
+                    </button>
+                  {/each}
+                </div>
+              {/if}
+            </div>
           {/if}
         </div>
 
@@ -6728,8 +7456,29 @@
                 }
               }}
             >
-              <span class="item-icon">{entry.is_dir ? "📁" : "🎵"}</span>
+              <span class="item-icon">
+                {entry.kind === "drive" || entry.name.startsWith("Drive (") || entry.name.includes(" (Volume)") ? "💾" : (entry.kind === "cloud" || entry.name.includes("Dropbox") || entry.name.includes("OneDrive") || entry.name.includes("Google Drive") ? "☁️" : (entry.is_dir ? "📁" : "🎵"))}
+              </span>
               <span class="item-name" title={entry.name}>{entry.name}</span>
+              {#if !entry.is_dir && isAudioFile(entry.name || entry.path)}
+                <div class="browser-item-tags">
+                  {#each getFileTags(entry.path, entry.name).slice(0, 2) as tag}
+                    {#if tag === "Original"}
+                      <span class="browser-mini-tag mini-orig" title="Original Reference">ORIG</span>
+                    {:else if tag === "Vocals only"}
+                      <span class="browser-mini-tag mini-vocals" title="Vocals Only">VOCALS</span>
+                    {:else if tag === "Lead Vocal"}
+                      <span class="browser-mini-tag mini-lead" title="Lead Vocal">LEAD</span>
+                    {:else if tag === "Background Vocals"}
+                      <span class="browser-mini-tag mini-backings" title="Background Vocals">BGV</span>
+                    {:else if tag === "Iso Track"}
+                      <span class="browser-mini-tag mini-iso" title="Iso Track">ISO</span>
+                    {:else if tag === "Track"}
+                      <span class="browser-mini-tag mini-track" title="Track / Accompaniment">TRACK</span>
+                    {/if}
+                  {/each}
+                </div>
+              {/if}
             </div>
           {/each}
         </div>
@@ -7119,16 +7868,27 @@
                               <span class="assoc-role-badge badge-default-mix" title="Primary default track for this song">DEFAULT</span>
                             {/if}
 
-                            {#if item.id === 'audio-orig' || (item.name && item.name.toLowerCase().includes('original')) || (item.path && item.path.toLowerCase().includes('original'))}
-                              <span class="assoc-role-badge badge-orig" title="Original Artist Reference Recording">ORIGINAL</span>
-                            {:else if item.role === 'lead' || item.name.toLowerCase().includes('lead vocal')}
-                              <span class="assoc-role-badge badge-lead" title="Lead Vocal Track (5HP Karaoke)">LEAD</span>
-                            {:else if item.role === 'backings' || item.name.toLowerCase().includes('backing vocal')}
-                              <span class="assoc-role-badge badge-backings" title="Backing Vocals Track (5HP Karaoke)">BACKINGS</span>
-                            {:else if item.role === 'vocals' || item.name.toLowerCase().includes('vocals ensemble') || item.name.toLowerCase().includes('(vocals)')}
-                              <span class="assoc-role-badge badge-vocals" title="Master Isolated Vocals (4-Model Ensemble)">VOCALS</span>
-                            {:else if item.id === 'audio-hires' || (item.fileType === 'audio' && isLosslessAudio(item.path || item.name))}
-                              <span class="assoc-role-badge badge-hires" title="Full Resolution Lossless Master Audio">FULL-RES</span>
+                            {#if item.fileType === 'audio'}
+                              {#each getFileTags(item.path, item.name, item.role) as tag}
+                                {#if tag === "Original"}
+                                  <span class="assoc-role-badge badge-orig" title="Original Artist Reference Recording (Right-click to toggle)">ORIGINAL</span>
+                                {:else if tag === "Vocals only"}
+                                  <span class="assoc-role-badge badge-vocals" title="Master Isolated Vocals (Right-click to toggle)">VOCALS</span>
+                                {:else if tag === "Lead Vocal"}
+                                  <span class="assoc-role-badge badge-lead" title="Lead Vocal Track (Right-click to toggle)">LEAD</span>
+                                {:else if tag === "Background Vocals"}
+                                  <span class="assoc-role-badge badge-backings" title="Background Vocals Track (Right-click to toggle)">BACKINGS</span>
+                                {:else if tag === "Iso Track"}
+                                  <span class="assoc-role-badge badge-iso-track" title="Isolated Instrumental Track from Vocal Separation (Right-click to toggle)">ISO TRACK</span>
+                                {:else if tag === "Track"}
+                                  <span class="assoc-role-badge badge-track" title="Accompaniment / Backing Track (Right-click to toggle)">TRACK</span>
+                                {:else}
+                                  <span class="assoc-role-badge" title="Audio Tag: {tag}">{tag.toUpperCase()}</span>
+                                {/if}
+                              {/each}
+                              {#if item.id === 'audio-hires' || isLosslessAudio(item.path || item.name)}
+                                <span class="assoc-role-badge badge-hires" title="Full Resolution Lossless Master Audio">FULL-RES</span>
+                              {/if}
                             {/if}
                           </div>
                         </div>
@@ -7155,24 +7915,26 @@
                             </button>
 
                             <!-- UVR Stem Separation Actions -->
-                            {#if item.role === 'vocals' || (item.name && (item.name.toLowerCase().includes('vocals') || item.name.toLowerCase().includes('ensemble')))}
-                              <button 
-                                class="assoc-action-btn uvr-action-btn uvr-karaoke-btn" 
-                                disabled={uvrSeparating}
-                                on:click={() => triggerUvrSeparation('lead_backups', item.path)}
-                                title="Split Vocals into Lead & Backing Tracks using 5HP Karaoke"
-                              >
-                                🎤 Lead/Backups
-                              </button>
-                            {:else if item.id === 'audio-orig' || (item.name && item.name.toLowerCase().includes('original')) || (item.path && item.path.toLowerCase().includes('original')) || (!item.name.toLowerCase().includes('lead') && !item.name.toLowerCase().includes('backing'))}
-                              <button 
-                                class="assoc-action-btn uvr-action-btn uvr-ensemble-btn" 
-                                disabled={uvrSeparating}
-                                on:click={() => triggerUvrSeparation('ensemble_vocals', item.path)}
-                                title="Run 4-Model Ensemble to Isolate Vocals to AAC"
-                              >
-                                ✨ Isolate Vocals
-                              </button>
+                            {#if !item.role?.includes('lead') && !item.role?.includes('backing') && !(item.name && (item.name.toLowerCase().includes('lead') || item.name.toLowerCase().includes('backing') || item.name.toLowerCase().includes('bgv')))}
+                              {#if item.role === 'vocals' || (item.name && (item.name.toLowerCase().includes('vocals') || item.name.toLowerCase().includes('ensemble')))}
+                                <button 
+                                  class="assoc-action-btn uvr-action-btn uvr-karaoke-btn" 
+                                  disabled={uvrSeparating}
+                                  on:click={() => triggerUvrSeparation('lead_backups', item.path)}
+                                  title="Split Vocals into Lead & Backing Tracks using 5HP Karaoke"
+                                >
+                                  🎤 Lead/Backups
+                                </button>
+                              {:else}
+                                <button 
+                                  class="assoc-action-btn uvr-action-btn uvr-ensemble-btn" 
+                                  disabled={uvrSeparating}
+                                  on:click={() => triggerUvrSeparation('ensemble_vocals', item.path)}
+                                  title="Run 4-Model Ensemble to Isolate Vocals to AAC"
+                                >
+                                  ✨ Isolate Vocals
+                                </button>
+                              {/if}
                             {/if}
                           {/if}
 
@@ -7436,9 +8198,24 @@
           ></canvas>
         </div>
 
-        <!-- Main Waveform Box (256px height) -->
+        <!-- Waveform Height Resize Handle (Between Overview & Main Waveform) -->
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <div 
+          class="waveform-resize-handle" 
+          class:is-resizing={isResizingWaveform}
+          on:mousedown={startWaveformResize}
+          on:dblclick={resetWaveformHeight}
+          title="Drag up or down to adjust waveform height (Double-click to reset)"
+        >
+          <div class="resize-handle-line"></div>
+          <div class="resize-handle-grip"></div>
+          <div class="resize-handle-line"></div>
+        </div>
+
+        <!-- Main Waveform Box (Height adjustable) -->
         <div 
           class="waveform-block block-main-waveform" 
+          style="height: {waveformHeight}px; min-height: {waveformHeight}px; max-height: {waveformHeight}px;"
           title="Right-click for audio versions & A/B options • Drop marker to place"
           on:dragover={(e) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = "copy"; }}
           on:drop={handleWaveformMarkerDrop}
@@ -8221,6 +8998,23 @@
           <span class="menu-item-text">Choose / Replace Audio File...</span>
         </div>
 
+        {#if filePath}
+          <div class="menu-divider"></div>
+          <div class="menu-section-header">🏷️ Audio Tags (Active Track)</div>
+          {#each AUDIO_TAG_OPTIONS as tagOpt}
+            <!-- svelte-ignore a11y-click-events-have-key-events -->
+            <!-- svelte-ignore a11y-no-static-element-interactions -->
+            <div 
+              class="menu-item menu-item-tag"
+              on:click|stopPropagation={() => toggleFileTag(filePath, tagOpt.label)}
+            >
+              <span class="menu-check">{getFileTags(filePath).includes(tagOpt.label) ? "✓" : " "}</span>
+              <span class="tag-dot" style="background-color: {tagOpt.color};"></span>
+              <span class="menu-item-text">{tagOpt.label}</span>
+            </div>
+          {/each}
+        {/if}
+
       {:else if contextMenuType === "assoc-file" && contextMenuTargetAssoc}
         <!-- Associated File Card Context Menu -->
         <div class="menu-header-label" title={contextMenuTargetAssoc.name}>
@@ -8247,27 +9041,44 @@
             ⭐️ Set as Default Song Track
           </div>
 
+          <div class="menu-divider"></div>
+          <div class="menu-section-header">🏷️ Audio Tags</div>
+          {#each AUDIO_TAG_OPTIONS as tagOpt}
+            <!-- svelte-ignore a11y-click-events-have-key-events -->
+            <!-- svelte-ignore a11y-no-static-element-interactions -->
+            <div 
+              class="menu-item menu-item-tag"
+              on:click|stopPropagation={() => { if (contextMenuTargetAssoc) toggleFileTag(contextMenuTargetAssoc.path, tagOpt.label); }}
+            >
+              <span class="menu-check">{getFileTags(contextMenuTargetAssoc.path, contextMenuTargetAssoc.name).includes(tagOpt.label) ? "✓" : " "}</span>
+              <span class="tag-dot" style="background-color: {tagOpt.color};"></span>
+              <span class="menu-item-text">{tagOpt.label}</span>
+            </div>
+          {/each}
+
           <!-- Stems options -->
-          {#if contextMenuTargetAssoc.role === 'vocals' || contextMenuTargetAssoc.name.toLowerCase().includes('vocals') || contextMenuTargetAssoc.name.toLowerCase().includes('ensemble')}
-            <div class="menu-divider"></div>
-            <!-- svelte-ignore a11y-click-events-have-key-events -->
-            <!-- svelte-ignore a11y-no-static-element-interactions -->
-            <div 
-              class="menu-item"
-              on:click={() => { if (contextMenuTargetAssoc) { const p = contextMenuTargetAssoc.path; showContextMenu = false; triggerUvrSeparation('lead_backups', p); } }}
-            >
-              🎤 Split Lead / Backups (5HP Karaoke)
-            </div>
-          {:else if contextMenuTargetAssoc.id === 'audio-orig' || contextMenuTargetAssoc.name.toLowerCase().includes('original') || (!contextMenuTargetAssoc.name.toLowerCase().includes('lead') && !contextMenuTargetAssoc.name.toLowerCase().includes('backing'))}
-            <div class="menu-divider"></div>
-            <!-- svelte-ignore a11y-click-events-have-key-events -->
-            <!-- svelte-ignore a11y-no-static-element-interactions -->
-            <div 
-              class="menu-item"
-              on:click={() => { if (contextMenuTargetAssoc) { const p = contextMenuTargetAssoc.path; showContextMenu = false; triggerUvrSeparation('ensemble_vocals', p); } }}
-            >
-              ✨ Isolate Vocals (4-Model Ensemble)
-            </div>
+          {#if !contextMenuTargetAssoc.role?.includes('lead') && !contextMenuTargetAssoc.role?.includes('backing') && !(contextMenuTargetAssoc.name && (contextMenuTargetAssoc.name.toLowerCase().includes('lead') || contextMenuTargetAssoc.name.toLowerCase().includes('backing') || contextMenuTargetAssoc.name.toLowerCase().includes('bgv')))}
+            {#if contextMenuTargetAssoc.role === 'vocals' || contextMenuTargetAssoc.name.toLowerCase().includes('vocals') || contextMenuTargetAssoc.name.toLowerCase().includes('ensemble')}
+              <div class="menu-divider"></div>
+              <!-- svelte-ignore a11y-click-events-have-key-events -->
+              <!-- svelte-ignore a11y-no-static-element-interactions -->
+              <div 
+                class="menu-item"
+                on:click={() => { if (contextMenuTargetAssoc) { const p = contextMenuTargetAssoc.path; showContextMenu = false; triggerUvrSeparation('lead_backups', p); } }}
+              >
+                🎤 Split Lead / Backups (5HP Karaoke)
+              </div>
+            {:else}
+              <div class="menu-divider"></div>
+              <!-- svelte-ignore a11y-click-events-have-key-events -->
+              <!-- svelte-ignore a11y-no-static-element-interactions -->
+              <div 
+                class="menu-item"
+                on:click={() => { if (contextMenuTargetAssoc) { const p = contextMenuTargetAssoc.path; showContextMenu = false; triggerUvrSeparation('ensemble_vocals', p); } }}
+              >
+                ✨ Isolate Vocals (4-Model Ensemble)
+              </div>
+            {/if}
           {/if}
 
         {:else if contextMenuTargetAssoc.fileType === 'pdf'}
@@ -8321,6 +9132,23 @@
         <div class="menu-item" on:click={() => { if (contextMenuTargetFile) { clearPlaylist(); addToPlaylist(contextMenuTargetFile.name, contextMenuTargetFile.path); showContextMenu = false; } }}>
           Create New Playlist from File
         </div>
+
+        {#if contextMenuTargetFile && !contextMenuTargetFile.is_dir && isAudioFile(contextMenuTargetFile.name || contextMenuTargetFile.path)}
+          <div class="menu-divider"></div>
+          <div class="menu-section-header">🏷️ Audio Tags</div>
+          {#each AUDIO_TAG_OPTIONS as tagOpt}
+            <!-- svelte-ignore a11y-click-events-have-key-events -->
+            <!-- svelte-ignore a11y-no-static-element-interactions -->
+            <div 
+              class="menu-item menu-item-tag"
+              on:click|stopPropagation={() => { if (contextMenuTargetFile) toggleFileTag(contextMenuTargetFile.path, tagOpt.label); }}
+            >
+              <span class="menu-check">{getFileTags(contextMenuTargetFile.path, contextMenuTargetFile.name).includes(tagOpt.label) ? "✓" : " "}</span>
+              <span class="tag-dot" style="background-color: {tagOpt.color};"></span>
+              <span class="menu-item-text">{tagOpt.label}</span>
+            </div>
+          {/each}
+        {/if}
       {/if}
     </div>
   {/if}
@@ -9574,7 +10402,59 @@
                   {/if}
                 </div>
               </div>
+
+              <!-- 5. Isolated Vocals & Stems (UVR) -->
+              <div class="prefs-folder-row">
+                <div class="folder-label-cell">
+                  <span class="folder-badge vocals-badge">VOC</span>
+                  <div class="folder-title-desc">
+                    <span class="folder-title">Isolated Vocals & Stems (UVR)</span>
+                    <span class="folder-desc">Dedicated directory for isolated vocals, lead/backing stems, and acapellas</span>
+                  </div>
+                </div>
+                <div class="folder-input-cell">
+                  <input 
+                    type="text" 
+                    class="folder-path-input" 
+                    placeholder="Choose folder e.g. ~/Music/Vocals Only..." 
+                    bind:value={prefFolderVocals} 
+                    on:change={saveAppPreferences}
+                  />
+                  <button class="folder-pick-btn" on:click={() => pickPreferenceFolder('vocals')}>Choose...</button>
+                  {#if prefFolderVocals}
+                    <button class="folder-clear-btn" on:click={() => { prefFolderVocals = ""; saveAppPreferences(); }} title="Clear path">×</button>
+                  {/if}
+                </div>
+              </div>
             </div>
+
+            <!-- Batch Fuzzy Auto-Link Section -->
+            <div class="auto-link-card">
+              <div class="auto-link-info">
+                <div class="auto-link-title">⚡ Batch Auto-Link Library Files</div>
+                <div class="auto-link-desc">
+                  Uses fuzzy matching to link performance tracks with matching originals, PDFs, and any isolated vocal/iso stems across your configured library folders.
+                </div>
+              </div>
+              <button 
+                class="auto-link-action-btn" 
+                disabled={isAutoLinkingLibrary} 
+                on:click={executeAutoLinkLibrary}
+              >
+                {#if isAutoLinkingLibrary}
+                  <span class="spinner-inline"></span> Linking Library...
+                {:else}
+                  ⚡ Auto-Link Library Files
+                {/if}
+              </button>
+            </div>
+
+            {#if autoLinkStatusMessage}
+              <div class="auto-link-status-banner" class:error={autoLinkStatusIsError}>
+                <span>{autoLinkStatusMessage}</span>
+                <button class="status-dismiss-btn" on:click={() => autoLinkStatusMessage = ""}>×</button>
+              </div>
+            {/if}
           </div>
 
           <!-- Sheet Music & PDF Theme Section -->
@@ -9825,6 +10705,51 @@
     </div>
   {/if}
 
+  <!-- About TrackHelm Modal -->
+  {#if showAboutModal}
+    <!-- svelte-ignore a11y-click-events-have-key-events -->
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div class="modal-backdrop" on:click={closeAboutModal}>
+      <div class="inspector-modal about-modal-card" on:click|stopPropagation>
+        <div class="modal-header">
+          <div class="modal-title-row">
+            <span class="modal-badge about-badge">ABOUT</span>
+            <h3>TrackHelm</h3>
+            <span class="stage-subhead">Rehearsal & Performance Workstation</span>
+          </div>
+          <button class="modal-close-btn" on:click={closeAboutModal}>×</button>
+        </div>
+
+        <div class="modal-body about-modal-body">
+          <div class="about-hero">
+            <div class="about-app-title">TrackHelm</div>
+            <div class="about-version-tag">Version 0.1.1</div>
+            <div class="about-build-date">Build: September 2026 • 60fps Fluid Resizing Engine</div>
+          </div>
+
+          <div class="about-info-grid">
+            <div class="about-info-row">
+              <span class="about-info-label">Platform</span>
+              <span class="about-info-val">Windows x64 / Tauri 2.0</span>
+            </div>
+            <div class="about-info-row">
+              <span class="about-info-label">Audio DSP</span>
+              <span class="about-info-val">Signalsmith Stretch • Real-time Time/Pitch Engine</span>
+            </div>
+            <div class="about-info-row">
+              <span class="about-info-label">UI Acceleration</span>
+              <span class="about-info-val">Svelte 4 + WebGL/Canvas + RAF Coalescing</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer about-modal-footer">
+          <button class="modal-action-btn" on:click={closeAboutModal}>OK</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   <!-- Playlist Health & Asset Repair Modal -->
   {#if showRepairModal}
     <!-- svelte-ignore a11y-click-events-have-key-events -->
@@ -10019,6 +10944,7 @@
   .app-container {
     display: flex;
     flex-direction: column;
+    width: 100%;
     height: 100vh;
     box-sizing: border-box;
     background-color: #181818;
@@ -10027,6 +10953,7 @@
   /* Grid layout spanning 3-column workspaces (Full 100vh Height) */
   .workspace-grid {
     display: grid;
+    width: 100%;
     flex-grow: 1;
     overflow: hidden;
     height: 100vh;
@@ -10129,7 +11056,7 @@
     font-weight: bold;
     cursor: pointer;
     border-bottom: 2px solid transparent;
-    transition: all 0.15s ease;
+    transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
   }
 
   .tab-btn.active {
@@ -10165,6 +11092,125 @@
 
   .up-btn:hover {
     text-decoration: underline;
+  }
+
+  .browser-quick-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    background-color: #171719;
+    border-bottom: 1px solid #2d2d34;
+  }
+
+  .quick-jump-btn {
+    background: #242429;
+    border: 1px solid #3d3d46;
+    color: #a1a1aa;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    transition: background-color 0.12s, color 0.12s, border-color 0.12s;
+    user-select: none;
+    white-space: nowrap;
+  }
+
+  .quick-jump-btn:hover {
+    background: #33333b;
+    color: #ffffff;
+    border-color: #52525b;
+  }
+
+  .quick-jump-btn.active {
+    background: #133a60;
+    color: #93c5fd;
+    border-color: #3b82f6;
+    font-weight: 700;
+  }
+
+  .cloud-btn-wrapper {
+    position: relative;
+    display: inline-block;
+  }
+
+  .cloud-jump-btn {
+    background: #192533;
+    border-color: #2b3e52;
+    color: #7dd3fc;
+  }
+
+  .cloud-jump-btn:hover {
+    background: #22374d;
+    border-color: #38bdf8;
+    color: #ffffff;
+  }
+
+  .cloud-jump-btn.active {
+    background: #0369a1;
+    color: #ffffff;
+    border-color: #38bdf8;
+  }
+
+  .cloud-dropdown-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 1000;
+    background: #1c1d22;
+    border: 1px solid #3e3f49;
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.65);
+    min-width: 220px;
+    max-width: 320px;
+    padding: 4px 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .cloud-dropdown-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    background: transparent;
+    border: none;
+    color: #e4e4e7;
+    font-size: 0.72rem;
+    font-weight: 500;
+    text-align: left;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+    width: 100%;
+    box-sizing: border-box;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .cloud-dropdown-item:hover {
+    background: #272730;
+    color: #ffffff;
+  }
+
+  .cloud-dropdown-item.active {
+    background: #1e3a5f;
+    color: #60a5fa;
+    font-weight: 600;
+  }
+
+  .cloud-item-icon {
+    font-size: 0.85rem;
+    flex-shrink: 0;
+  }
+
+  .cloud-item-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .browser-search-input {
@@ -10235,6 +11281,62 @@
 
   .browser-item.active.is-dir {
     color: #ffffff;
+  }
+
+  .browser-item-tags {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    flex-shrink: 0;
+    margin-left: auto;
+  }
+
+  .browser-mini-tag {
+    font-size: 0.58rem;
+    font-weight: 700;
+    padding: 0 4px;
+    height: 14px;
+    line-height: 14px;
+    border-radius: 3px;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    pointer-events: none;
+  }
+
+  .browser-mini-tag.mini-orig {
+    background-color: rgba(208, 132, 255, 0.2);
+    color: #d084ff;
+    border: 1px solid rgba(208, 132, 255, 0.45);
+  }
+
+  .browser-mini-tag.mini-vocals {
+    background-color: rgba(48, 209, 88, 0.2);
+    color: #30d158;
+    border: 1px solid rgba(48, 209, 88, 0.45);
+  }
+
+  .browser-mini-tag.mini-lead {
+    background-color: rgba(255, 214, 10, 0.2);
+    color: #ffd60a;
+    border: 1px solid rgba(255, 214, 10, 0.45);
+  }
+
+  .browser-mini-tag.mini-backings {
+    background-color: rgba(100, 210, 255, 0.2);
+    color: #64d2ff;
+    border: 1px solid rgba(100, 210, 255, 0.45);
+  }
+
+  .browser-mini-tag.mini-iso {
+    background-color: rgba(56, 189, 248, 0.2);
+    color: #38bdf8;
+    border: 1px solid rgba(56, 189, 248, 0.45);
+  }
+
+  .browser-mini-tag.mini-track {
+    background-color: rgba(255, 159, 10, 0.2);
+    color: #ff9f0a;
+    border: 1px solid rgba(255, 159, 10, 0.45);
   }
 
   /* Playlist Sidebar mode */
@@ -10549,11 +11651,48 @@
     color: #3b99fc;
   }
 
+  .waveform-resize-handle {
+    height: 8px;
+    margin: 1px 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: row-resize;
+    user-select: none;
+    position: relative;
+    z-index: 10;
+    opacity: 0.55;
+    transition: opacity 0.15s ease;
+  }
+
+  .waveform-resize-handle:hover,
+  .waveform-resize-handle.is-resizing {
+    opacity: 1;
+  }
+
+  .resize-handle-line {
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, rgba(255, 255, 255, 0.04) 0%, rgba(255, 255, 255, 0.22) 50%, rgba(255, 255, 255, 0.04) 100%);
+  }
+
+  .resize-handle-grip {
+    width: 36px;
+    height: 4px;
+    background-color: #555560;
+    border-radius: 2px;
+    margin: 0 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.6);
+  }
+
+  .waveform-resize-handle:hover .resize-handle-grip,
+  .waveform-resize-handle.is-resizing .resize-handle-grip {
+    background-color: #3b99fc;
+    box-shadow: 0 0 6px rgba(59, 153, 252, 0.7);
+  }
+
   .block-main-waveform {
     flex-shrink: 0;
-    height: 256px;
-    min-height: 256px;
-    max-height: 256px;
     background-color: #122a3a; 
     border: 1px solid #1b384d;
     border-radius: 4px;
@@ -11821,17 +12960,6 @@
     color: #3b99fc;
   }
 
-  .placeholder-knobs .knob-circle {
-    border-color: #333333;
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-  .placeholder-knobs .knob-marker {
-    background-color: #717171;
-  }
-  .placeholder-knobs .knob-value {
-    color: #717171;
-  }
 
   /* Context Menu layout */
   .context-menu {
@@ -11905,6 +13033,28 @@
     max-width: 360px;
   }
 
+  .menu-item-tag {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 14px;
+    cursor: pointer;
+    font-size: 0.78rem;
+    user-select: none;
+    transition: background 0.12s ease;
+  }
+
+  .menu-item-tag:hover {
+    background-color: #2c2c32;
+  }
+
+  .tag-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
   .menu-check {
     width: 14px;
     display: inline-block;
@@ -11959,6 +13109,11 @@
 
   .menu-item-badge.badge-orig {
     background-color: rgba(255, 149, 0, 0.2);
+    color: #ff9f0a;
+  }
+
+  .menu-item-badge.badge-track {
+    background-color: rgba(255, 159, 10, 0.2);
     color: #ff9f0a;
   }
 
@@ -12045,7 +13200,7 @@
     align-items: center;
     justify-content: center;
     padding: 0;
-    transition: all 0.15s ease;
+    transition: background-color 0.15s ease, filter 0.15s ease;
     user-select: none;
     flex-shrink: 0;
   }
@@ -12185,7 +13340,7 @@
     font-size: 0.7rem;
     cursor: pointer;
     opacity: 0.5;
-    transition: all 0.12s ease;
+    transition: background-color 0.12s ease, border-color 0.12s ease, opacity 0.12s ease;
   }
 
   .region-toggle-btn:hover {
@@ -12671,6 +13826,20 @@
     border: 1px solid rgba(100, 210, 255, 0.5);
   }
 
+  .assoc-role-badge.badge-track {
+    background-color: rgba(255, 159, 10, 0.22);
+    color: #ff9f0a;
+    border: 1px solid rgba(255, 159, 10, 0.55);
+    font-weight: 700;
+  }
+
+  .assoc-role-badge.badge-iso-track {
+    background-color: rgba(56, 189, 248, 0.22);
+    color: #38bdf8;
+    border: 1px solid rgba(56, 189, 248, 0.55);
+    font-weight: 700;
+  }
+
   .assoc-role-badge.badge-vocals {
     background-color: rgba(191, 90, 242, 0.25);
     color: #d084ff;
@@ -13031,7 +14200,7 @@
     padding: 2px 0;
     cursor: pointer;
     text-align: center;
-    transition: all 0.12s ease;
+    transition: background-color 0.12s ease, color 0.12s ease, filter 0.12s ease;
   }
 
   .module-bypass-btn:hover {
@@ -13086,7 +14255,7 @@
     padding: 3px 7px;
     border-radius: 3px;
     cursor: pointer;
-    transition: all 0.12s ease;
+    transition: background-color 0.12s ease, color 0.12s ease;
   }
 
   .stage-tab-btn.active, .routing-btn.active {
@@ -14391,6 +15560,10 @@
     background-color: #ff375f;
   }
 
+  .vocals-badge {
+    background-color: #af52de;
+  }
+
   .folder-title-desc {
     display: flex;
     flex-direction: column;
@@ -14464,6 +15637,116 @@
   .folder-clear-btn:hover {
     background: rgba(255, 69, 58, 0.15);
     border-color: #ff453a;
+  }
+
+  /* Batch Auto-Link Card */
+  .auto-link-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    background: #1e1e24;
+    border: 1px solid #2e2e38;
+    border-radius: 6px;
+    padding: 12px 14px;
+    margin-top: 14px;
+  }
+
+  .auto-link-info {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .auto-link-title {
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: #f2f2f7;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .auto-link-desc {
+    font-size: 0.68rem;
+    color: #98989f;
+    line-height: 1.35;
+    max-width: 520px;
+  }
+
+  .auto-link-action-btn {
+    background: linear-gradient(135deg, #2563eb, #1d4ed8);
+    border: 1px solid #3b82f6;
+    color: #ffffff;
+    font-size: 0.75rem;
+    font-weight: 700;
+    padding: 7px 14px;
+    border-radius: 5px;
+    cursor: pointer;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.15s ease;
+    box-shadow: 0 2px 6px rgba(37, 99, 235, 0.25);
+  }
+
+  .auto-link-action-btn:hover:not(:disabled) {
+    background: linear-gradient(135deg, #1d4ed8, #1e40af);
+    border-color: #60a5fa;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 10px rgba(37, 99, 235, 0.35);
+  }
+
+  .auto-link-action-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .auto-link-status-banner {
+    margin-top: 10px;
+    padding: 8px 12px;
+    border-radius: 5px;
+    background: rgba(48, 209, 88, 0.12);
+    border: 1px solid rgba(48, 209, 88, 0.35);
+    color: #30d158;
+    font-size: 0.72rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .auto-link-status-banner.error {
+    background: rgba(255, 69, 58, 0.12);
+    border-color: rgba(255, 69, 58, 0.35);
+    color: #ff453a;
+  }
+
+  .status-dismiss-btn {
+    background: transparent;
+    border: none;
+    color: inherit;
+    font-size: 0.95rem;
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
+    opacity: 0.8;
+  }
+
+  .status-dismiss-btn:hover {
+    opacity: 1;
+  }
+
+  .spinner-inline {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-radius: 50%;
+    border-top-color: #ffffff;
+    animation: spin 0.8s linear infinite;
   }
 
   /* Markdown Table Rendering Styles */
@@ -15195,5 +16478,89 @@
     font-size: 0.7rem;
     color: #71717a;
     font-style: italic;
+  }
+
+  /* About Modal Styles */
+  .about-modal-card {
+    max-width: 440px;
+    width: 90%;
+  }
+
+  .about-badge {
+    background: #0071e3;
+    color: #ffffff;
+    font-weight: 700;
+  }
+
+  .about-modal-body {
+    padding: 24px 20px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .about-hero {
+    text-align: center;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #27272a;
+  }
+
+  .about-app-title {
+    font-size: 1.5rem;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    color: #f4f4f5;
+  }
+
+  .about-version-tag {
+    display: inline-block;
+    margin-top: 4px;
+    padding: 2px 10px;
+    background: #27272a;
+    border-radius: 12px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: #38bdf8;
+    border: 1px solid #38bdf840;
+  }
+
+  .about-build-date {
+    margin-top: 8px;
+    font-size: 0.72rem;
+    color: #a1a1aa;
+  }
+
+  .about-info-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: #141418;
+    padding: 12px 14px;
+    border-radius: 6px;
+    border: 1px solid #27272a;
+  }
+
+  .about-info-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.76rem;
+  }
+
+  .about-info-label {
+    color: #71717a;
+    font-weight: 500;
+  }
+
+  .about-info-val {
+    color: #e4e4e7;
+    font-weight: 600;
+  }
+
+  .about-modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    padding: 12px 20px 16px;
+    border-top: 1px solid #27272a;
   }
 </style>

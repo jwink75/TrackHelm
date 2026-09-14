@@ -1,9 +1,12 @@
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+import os from "os";
+import path from "path";
 
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [svelte()],
+  cacheDir: path.join(os.tmpdir(), "trackhelm-vite-cache"),
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   // prevent vite from obscuring rust errors

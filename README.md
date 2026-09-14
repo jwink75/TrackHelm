@@ -22,7 +22,8 @@ It combines real-time DSP pitch/time manipulation, instant deep-zoom waveform vi
   * **Quick Add Bands**: Double-click anywhere on empty graph space or click `+ Add Filter Band` to drop a new filter node.
   * **Logarithmically Mapped Frequency Sliders**: Natural, uniform spacing across all octaves from $20\text{ Hz}$ to $20\text{ kHz}$.
 * **Dedicated Module Bypass Toggles (`BYP`)**: Instant A/B bypass switches directly on the effects rack rows and inspector dialogs.
-* **Low-Latency CPAL CoreAudio Engine**: Lock-free native audio thread with zero heap allocations on the audio loop.
+* **High-Fidelity Polyphase Resampling (`rubato`)**: Automatic sample rate conversion between source files (e.g. 44.1 kHz) and hardware DAC clocks (e.g. 48.0 kHz WASAPI / CoreAudio) with exact zero-latency phase alignment and bit-transparent bypass when unmodulated.
+* **Low-Latency CPAL Audio Engine**: Lock-free native audio thread (CoreAudio on macOS, WASAPI on Windows) with zero heap allocations on the audio loop.
 * **Hardware-Style Analog Dials**: Vertical drag controls with top 12 o'clock zero reference ticks (`.knob-zero-tick`) and double-click instant reset to defaults.
 
 ---
@@ -38,18 +39,40 @@ It combines real-time DSP pitch/time manipulation, instant deep-zoom waveform vi
 
 ---
 
-### 📁 Streamlined Files Hub & Local AI Stem Separation (UVR)
+### 🌊 Dynamic Height-Adjustable Waveform & Interactive Audio Tags
+* **Height-Adjustable Waveform Canvas**:
+  * Ergonomic grab handle situated between the overview waveform (40px) and the main waveform allows smooth vertical resizing from 100px up to 650px (default 256px).
+  * Double-click the resize handle to instantly restore the default 256px height.
+  * User-adjusted height persists across app restarts (`th_waveform_height`).
+* **Interactive Audio Tags**:
+  * Automatically detects track roles from filename keywords: `Original`, `Vocals only`, `Lead Vocal`, `Background Vocals`, `Iso Track`, `Track`.
+  * Multi-tag badges (`[ORIGINAL]`, `[VOCALS ONLY]`, `[LEAD VOCAL]`, `[BACKING VOCALS]`, `[ISO TRACK]`, `[TRACK]`, `[FULL-RES]`) display simultaneously in the `FILES` tab and mini-tags in the browser list.
+  * Right-click any audio file card or right-click directly on the active waveform to toggle tags on/off in real-time.
+  * Dynamically updates the overview waveform watermark banner and synchronizes bi-directionally across peer files.
+
+---
+
+### 📁 Streamlined Files Hub, Multi-Drive Explorer & AI Stem Separation (UVR)
+* **Cross-Platform Directory Explorer**:
+  * **Windows Multi-Drive Navigation**: Virtual "This PC" root directory enumerating all accessible drive letters (`C:`, `D:`, `E:`, `F:`, etc.) with volume names and drive icons.
+  * **Direct Cloud Folder Bookmarks**: Instant quick-access links to user cloud storage roots across both Windows and macOS (Dropbox, Google Drive, Microsoft OneDrive, and iCloud).
 * **Space-Efficient Single-Line Table (`FILES` Tab)**:
   * Compact horizontal rows (~32px height) displaying 10–12+ files without scrolling.
-  * Role and format badges: `[DEFAULT]`, `[ORIGINAL]`, `[VOCALS]`, `[LEAD]`, `[BACKINGS]`, `[FULL-RES]`, `M4A`, `MP3`, `WAV`, `PDF`.
+  * Role and format badges: `[DEFAULT]`, `[ORIGINAL]`, `[VOCALS]`, `[LEAD]`, `[BACKINGS]`, `[ISO TRACK]`, `[FULL-RES]`, `M4A`, `MP3`, `WAV`, `PDF`.
   * **Active Track Always Visible**: Highlights currently loaded file with a glowing `● ACTIVE` badge and `✓ Loaded` button state.
-* **Local Headless Stem Separation**:
-  * **4-Model Ensemble Vocal Isolation**: Blends Kim Vocal 2, MDX23C-InstVoc HQ, UVR-MDX-NET-Voc_FT, and Demucs v4 via `uvr_max_spec` to isolate master vocals.
+  * **Intelligent Action Button Filtering**: Sub-stems already isolated as Lead Vocals or Backing Vocals automatically suppress recursive stem buttons (`🎤 Lead/Backups` / `✨ Isolate Vocals`), keeping the file deck clean and focused.
+* **Local Headless Stem Separation (UVR)**:
+  * **Hardware-Accelerated Execution**: Runs with NVIDIA CUDA acceleration on Windows and Apple Silicon MPS on macOS, falling back gracefully to multi-threaded CPU processing.
+  * **Automated Model Discovery & Download Fallback**: Automatically discovers and links existing Ultimate Vocal Remover models from local installations, falling back to on-demand automatic downloads from HuggingFace/GitHub when models are not present locally.
+  * **4-Model Ensemble Vocal & Iso Track Isolation**: Blends Kim Vocal 2, MDX23C-InstVoc HQ, UVR-MDX-NET-Voc_FT, and Demucs v4 via `uvr_max_spec` to simultaneously isolate pristine master vocals (`(Vocals Ensemble).m4a`) and the clean isolated instrumental accompaniment (`(Iso Track).m4a`).
   * **5HP Karaoke Lead vs. Backing Split**: Splits isolated vocals into discrete Lead Vocals and Backing Harmonies stems.
-  * **Direct Active Track Triggering**: Run `✨ Isolate Vocals` directly on whatever track is loaded (e.g. original artist reference track) without switching files.
-  * Renders high-quality AAC `.m4a` directly into the song's `Vocals Only/` subfolder with real-time inline progress meter.
-* **Safe macOS Trash Integration**:
-  * Move unwanted stems or charts to macOS Finder Trash (`🗑️`) with confirmation modals, preserving native "Put Back" capability.
+  * **Self-Extracting Architecture**: Binary embeds worker script fallbacks to guarantee execution across installed, portable, or development deployments.
+  * **Cross-Volume Junction Resolution**: Transparently links pre-downloaded Ultimate Vocal Remover models across NTFS drive junctions without extra disk usage.
+  * **Clean Stderr Stream Filtering**: Formats informational startup and progress messages to stdout and filters stderr in the native host, ensuring the UI remains free of premature error banners.
+  * **Direct Active Track Triggering**: Run `✨ Isolate Vocals` directly on whatever track is loaded without switching files.
+  * Renders high-quality AAC `.m4a` directly into the song's `Vocals Only/` subfolder with real-time inline progress streaming.
+* **Safe OS Trash / Recycle Bin Integration**:
+  * Move unwanted stems or charts to macOS Finder Trash or Windows Recycle Bin (`🗑️`) with confirmation modals, preserving native "Put Back" / Restore capabilities.
 
 ---
 
@@ -76,9 +99,16 @@ It combines real-time DSP pitch/time manipulation, instant deep-zoom waveform vi
 
 ---
 
-### ⚙️ Preferences & Library Management (`Cmd+,`)
-* **Default Directory Designations**: Configure dedicated library folders for AAC/Standard audio, Hi-Res Lossless masters, Original Artist recordings, and PDF Sheet Music.
-* **Prefer High-Res Audio Toggle**: When enabled, automatically loads the lossless audio file as main track if downloaded locally on your Mac.
+### ⚙️ Preferences & Library Management (`Cmd+,` / `Ctrl+,`)
+* **5 Dedicated Library Directory Designations**:
+  * **AAC**: Low-Res Performance Tracks (`.m4a`, `.aac`, `.mp3`)
+  * **WAV**: Full-Res Lossless Performance Masters (`.wav`, `.flac`, `.aiff`)
+  * **ORIG**: Original Artist Reference Recordings
+  * **PDF**: Sheet Music & Chord Charts
+  * **VOC**: Isolated Vocals & Stems (UVR output directory)
+* **⚡ Batch Auto-Link Library Files (Fuzzy Match)**:
+  * One-click engine scans across all designated folders (and any `Vocals Only/` subdirectories) and uses token Jaccard and Levenshtein distance metrics to automatically pair performance tracks with matching originals, sheet music PDFs, full-res alternates, and vocal/iso stems into bi-directional collections.
+* **Prefer High-Res Audio Toggle**: When enabled, automatically loads the lossless audio file as main track if downloaded locally.
 * **Cloud Placeholder Detection**: Accurately detects online-only dataless cloud files on APFS / iCloud / Dropbox / OneDrive.
 
 ---
@@ -178,15 +208,16 @@ graph TD
 ```
 
 ### Technology Stack
-* **Desktop Shell**: [Tauri v2](https://v2.tauri.app/) (Rust + Webview)
+* **Desktop Shell**: [Tauri v2](https://v2.tauri.app/) (Rust + Webview2 / WebKit)
 * **Frontend UI**: [Svelte 4](https://svelte.dev/) + TypeScript + Vite + HTML5 Canvas
-* **Audio Engine**: Native Rust real-time CPAL stream with custom lock-free ringbuffers
-* **DSP Algorithms**: 
+* **Audio Engine**: Native Rust real-time CPAL stream (CoreAudio on macOS, WASAPI on Windows) with custom lock-free ringbuffers
+* **DSP & Resampling Algorithms**: 
+  * [rubato](https://github.com/HEnquist/rubato) (Polyphase FFT sample rate resampler with zero-latency phase alignment)
   * [Signalsmith Stretch](https://signalsmith-audio.co.uk/code/stretch/) (C++11 via Rust FFI static build)
   * Cascaded RBJ 64-bit Biquad Filters (Peaking, Shelves, High/Low Pass, Notch)
   * Dual-Stage Feedforward Soft-Knee Compressor (Vintage, Modern, FET, Opto)
 * **Decoders & Tags**: Symphonia with $128\text{KB}$ streaming buffers + Lofty ID3v2/Vorbis tag engine
-* **AI Stems**: Ultimate Vocal Remover models via headless Python runner (`audio-separator`) + native AAC encoding
+* **AI Stems**: Ultimate Vocal Remover models via headless Python runner (`audio-separator`) + native AAC encoding (with Apple Silicon MPS & NVIDIA CUDA acceleration)
 * **External Control**: Custom Elgato Stream Deck Plugin + `tokio-tungstenite` WebSocket server + `midir` + `rosc` + MCP Server
 
 ---
@@ -194,7 +225,8 @@ graph TD
 ## Getting Started
 
 ### Prerequisites
-* macOS with Apple Silicon or Intel CPU (Windows support in progress)
+* **macOS**: Apple Silicon (M1/M2/M3/M4) or Intel x86_64, Xcode Command Line Tools.
+* **Windows**: Windows 10 or 11 (64-bit), Visual Studio 2022 C++ Build Tools (MSVC `cl.exe`), and Python 3.10/3.11 for UVR.
 * [Rust](https://rustup.rs/) (edition 2021+)
 * [Node.js](https://nodejs.org/) (v18+)
 
@@ -208,20 +240,35 @@ cd TrackHelm
 npm install
 
 # Start Tauri development environment
+# On macOS:
 make dev
-# or: npm run tauri dev
+# On Windows / macOS (PowerShell or Bash):
+npm run tauri dev
 ```
 
 ### Building the Stream Deck Plugin
 ```bash
+# On macOS:
 npm run build:streamdeck
+# On Windows (PowerShell):
+.\integrations\streamdeck\package_plugin.ps1
 ```
 
-### Building the macOS Application Bundle
+### Packaging & Release Bundles
+
+#### macOS Application Bundle
 ```bash
 make app
 ```
 The compiled `TrackHelm.app` will be created in `build/TrackHelm.app` and can be dragged directly to `/Applications` or the macOS Dock.
+
+#### Windows Installers (NSIS Setup & MSI)
+```powershell
+npm run tauri build
+```
+The production installers will be generated in:
+* **NSIS Setup:** `src-tauri/target/release/bundle/nsis/TrackHelm_<version>_x64-setup.exe`
+* **WiX MSI:** `src-tauri/target/release/bundle/msi/TrackHelm_<version>_x64_en-US.msi`
 
 ---
 

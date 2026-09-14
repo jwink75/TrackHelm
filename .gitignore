@@ -37,6 +37,9 @@ Thumbs.db
 
 # Session & temp files
 *.ses
+*.mp4
+__pycache__/
+*.pyc
 
 
 
