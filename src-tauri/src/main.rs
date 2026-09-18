@@ -4,7 +4,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::{State, Emitter, Manager};
 use tauri::menu::{Menu, MenuItem, Submenu, PredefinedMenuItem};
-use trackhelm_engine::{Command, CommandBus, SharedEngineState, DecodedAudio, decode_file, resample_audio_channels};
+use trackhelm_engine::{
+    AudioDeviceItem, AudioEngine, Command, CommandBus, DecodedAudio, SharedEngineState,
+    decode_file, resample_audio_channels,
+};
 use lofty::prelude::*;
 
 mod control;
@@ -82,13 +85,24 @@ fn get_file_mtime_and_size(path: &str) -> (std::time::SystemTime, u64) {
     }
 }
 
+struct DriveCloudCache {
+    timestamp: std::time::Instant,
+    drives: Vec<DirEntry>,
+    cloud_folders: Vec<DirEntry>,
+}
+
+type DecodeResult = Result<Arc<CachedTrack>, String>;
+
 struct AppState {
     command_bus: CommandBus,
     shared_engine_state: Arc<SharedEngineState>,
     active_audio: Mutex<Option<Arc<DecodedAudio>>>,
+    audio_engine: Mutex<AudioEngine>,
     track_cache: Mutex<LruTrackCache>,
     ws_state: Arc<control::websocket::WebSocketServerState>,
     midi_manager: Arc<control::midi::MidiManager>,
+    drive_cloud_cache: Mutex<Option<DriveCloudCache>>,
+    in_flight_decodes: Mutex<HashMap<String, tokio::sync::broadcast::Sender<DecodeResult>>>,
 }
 
 #[derive(serde::Serialize)]
@@ -103,6 +117,7 @@ struct PlaybackStatus {
     out_peak_r: f32,
     gr_stage1: f32,
     gr_stage2: f32,
+    background_tracks_count: usize,
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -465,19 +480,37 @@ fn detect_cloud_folders(drives: &[DirEntry]) -> Vec<DirEntry> {
     cloud_folders
 }
 
-#[tauri::command]
-fn get_cloud_folders() -> Result<Vec<DirEntry>, String> {
+fn get_cached_drives_and_cloud(state: &AppState) -> (Vec<DirEntry>, Vec<DirEntry>) {
+    let mut cache = state.drive_cloud_cache.lock().unwrap();
+    const TTL: Duration = Duration::from_secs(30);
+    if let Some(ref entry) = *cache {
+        if entry.timestamp.elapsed() < TTL {
+            return (entry.drives.clone(), entry.cloud_folders.clone());
+        }
+    }
+
     let drives = get_system_drives();
-    Ok(detect_cloud_folders(&drives))
+    let cloud_folders = detect_cloud_folders(&drives);
+    *cache = Some(DriveCloudCache {
+        timestamp: std::time::Instant::now(),
+        drives: drives.clone(),
+        cloud_folders: cloud_folders.clone(),
+    });
+    (drives, cloud_folders)
 }
 
 #[tauri::command]
-fn read_dir(path: Option<String>) -> Result<DirContents, String> {
+fn get_cloud_folders(state: State<'_, AppState>) -> Result<Vec<DirEntry>, String> {
+    let (_, cloud) = get_cached_drives_and_cloud(&state);
+    Ok(cloud)
+}
+
+#[tauri::command]
+fn read_dir(state: State<'_, AppState>, path: Option<String>) -> Result<DirContents, String> {
     use std::path::PathBuf;
 
     let root_name = get_computer_root_name().to_string();
-    let all_drives = get_system_drives();
-    let all_cloud = detect_cloud_folders(&all_drives);
+    let (all_drives, all_cloud) = get_cached_drives_and_cloud(&state);
 
     let home = dirs::home_dir().ok_or_else(|| "Could not find home directory".to_string())?;
     let home_str = home.to_string_lossy().to_string();
@@ -651,79 +684,83 @@ pub struct AssetFileInfo {
 }
 
 #[tauri::command]
-fn scan_library_folder(folder_path: String, extensions: Option<Vec<String>>) -> Result<Vec<AssetFileInfo>, String> {
-    use std::path::PathBuf;
-    use std::time::UNIX_EPOCH;
+async fn scan_library_folder(folder_path: String, extensions: Option<Vec<String>>) -> Result<Vec<AssetFileInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use std::path::PathBuf;
+        use std::time::UNIX_EPOCH;
 
-    let target = PathBuf::from(&folder_path);
-    if !target.exists() || !target.is_dir() {
-        return Ok(Vec::new());
-    }
+        let target = PathBuf::from(&folder_path);
+        if !target.exists() || !target.is_dir() {
+            return Ok(Vec::new());
+        }
 
-    let exts: Option<Vec<String>> = extensions.map(|list| {
-        list.iter()
-            .map(|e| e.to_lowercase().trim_start_matches('.').to_string())
-            .collect()
-    });
+        let exts: Option<Vec<String>> = extensions.map(|list| {
+            list.iter()
+                .map(|e| e.to_lowercase().trim_start_matches('.').to_string())
+                .collect()
+        });
 
-    let mut results = Vec::new();
-    let mut stack = vec![(target.clone(), String::new())];
+        let mut results = Vec::new();
+        let mut stack = vec![(target.clone(), String::new())];
 
-    while let Some((dir, rel_prefix)) = stack.pop() {
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let file_name = entry.file_name().to_string_lossy().to_string();
+        while let Some((dir, rel_prefix)) = stack.pop() {
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let file_name = entry.file_name().to_string_lossy().to_string();
 
-                if file_name.starts_with('.') {
-                    continue;
-                }
+                    if file_name.starts_with('.') {
+                        continue;
+                    }
 
-                let rel_path = if rel_prefix.is_empty() {
-                    file_name.clone()
-                } else {
-                    format!("{}/{}", rel_prefix, file_name)
-                };
-
-                if path.is_dir() {
-                    stack.push((path, rel_path));
-                } else if path.is_file() {
-                    let ext = path
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .map(|e| e.to_lowercase())
-                        .unwrap_or_default();
-
-                    let matches = match &exts {
-                        Some(allowed) => allowed.contains(&ext),
-                        None => true,
+                    let rel_path = if rel_prefix.is_empty() {
+                        file_name.clone()
+                    } else {
+                        format!("{}/{}", rel_prefix, file_name)
                     };
 
-                    if matches {
-                        let metadata = entry.metadata().ok();
-                        let size_bytes = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
-                        let mtime_ms = metadata
-                            .and_then(|m| m.modified().ok())
-                            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                            .map(|d| d.as_millis() as u64)
-                            .unwrap_or(0);
+                    if path.is_dir() {
+                        stack.push((path, rel_path));
+                    } else if path.is_file() {
+                        let ext = path
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .map(|e| e.to_lowercase())
+                            .unwrap_or_default();
 
-                        results.push(AssetFileInfo {
-                            name: file_name,
-                            path: path.to_string_lossy().to_string(),
-                            relative_path: rel_path,
-                            extension: ext,
-                            size_bytes,
-                            mtime_ms,
-                        });
+                        let matches = match &exts {
+                            Some(allowed) => allowed.contains(&ext),
+                            None => true,
+                        };
+
+                        if matches {
+                            let metadata = entry.metadata().ok();
+                            let size_bytes = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+                            let mtime_ms = metadata
+                                .and_then(|m| m.modified().ok())
+                                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                                .map(|d| d.as_millis() as u64)
+                                .unwrap_or(0);
+
+                            results.push(AssetFileInfo {
+                                name: file_name,
+                                path: path.to_string_lossy().to_string(),
+                                relative_path: rel_path,
+                                extension: ext,
+                                size_bytes,
+                                mtime_ms,
+                            });
+                        }
                     }
                 }
             }
         }
-    }
 
-    results.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-    Ok(results)
+        results.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        Ok(results)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -823,18 +860,40 @@ fn get_raw_samples(
     Ok(data)
 }
 
-#[tauri::command]
-async fn preload_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata, String> {
-    let (current_mtime, current_size) = get_file_mtime_and_size(&path);
+async fn get_or_decode_track(state: &AppState, path: &str) -> Result<Arc<CachedTrack>, String> {
+    let (current_mtime, current_size) = get_file_mtime_and_size(path);
+
+    // 1. Check LRU cache under brief lock
     {
         let mut cache = state.track_cache.lock().unwrap();
-        if let Some(cached) = cache.get(&path) {
+        if let Some(cached) = cache.get(path) {
             if cached.modified_time == current_mtime && cached.file_size == current_size {
-                return Ok(cached.metadata.clone());
+                return Ok(cached);
             }
         }
     }
-    let p = path.clone();
+
+    // 2. Check if another task is actively decoding this path
+    let receiver = {
+        let mut in_flight = state.in_flight_decodes.lock().unwrap();
+        if let Some(sender) = in_flight.get(path) {
+            Some(sender.subscribe())
+        } else {
+            let (tx, _) = tokio::sync::broadcast::channel(2);
+            in_flight.insert(path.to_string(), tx);
+            None
+        }
+    };
+
+    if let Some(mut rx) = receiver {
+        return match rx.recv().await {
+            Ok(result) => result,
+            Err(e) => Err(format!("Failed waiting for audio decode: {}", e)),
+        };
+    }
+
+    // 3. This task performs the decode
+    let p = path.to_string();
     let target_sample_rate = state.shared_engine_state.device_sample_rate.load(std::sync::atomic::Ordering::SeqCst) as u32;
     let decoded_res = tauri::async_runtime::spawn_blocking(move || {
         let mut audio = decode_file(&p)?;
@@ -857,96 +916,48 @@ async fn preload_track(state: State<'_, AppState>, path: String) -> Result<Track
         Ok::<(Arc<DecodedAudio>, TrackMetadata), String>((arc, metadata))
     }).await;
 
-    match decoded_res {
+    let result: DecodeResult = match decoded_res {
         Ok(Ok((audio_arc, metadata))) => {
-            let mut cache = state.track_cache.lock().unwrap();
-            let cached = Arc::new(CachedTrack {
-                audio: audio_arc,
-                metadata: metadata.clone(),
-                modified_time: current_mtime,
-                file_size: current_size,
-            });
-            cache.insert(path, cached);
-            Ok(metadata)
-        }
-        Ok(Err(e)) => Err(e),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-#[tauri::command]
-async fn load_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata, String> {
-    let (current_mtime, current_size) = get_file_mtime_and_size(&path);
-    
-    // 1. Check LRU cache under brief lock
-    let cached_opt = {
-        let mut cache = state.track_cache.lock().unwrap();
-        if let Some(cached) = cache.get(&path) {
-            if cached.modified_time == current_mtime && cached.file_size == current_size {
-                Some(cached)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    };
-
-    let cached_track = match cached_opt {
-        Some(track) => track,
-        None => {
-            // 2. Decode outside the lock on a worker thread to keep the main/UI thread responsive
-            let p = path.clone();
-            let target_sample_rate = state.shared_engine_state.device_sample_rate.load(std::sync::atomic::Ordering::SeqCst) as u32;
-            let decoded_res = tauri::async_runtime::spawn_blocking(move || {
-                let mut audio = decode_file(&p)?;
-                let orig_sample_rate = audio.sample_rate;
-                if target_sample_rate > 0 && audio.sample_rate != target_sample_rate {
-                    let resampled = resample_audio_channels(&audio.channel_samples, audio.sample_rate, target_sample_rate)?;
-                    audio.channel_samples = resampled;
-                    audio.sample_rate = target_sample_rate;
-                }
-                let arc = Arc::new(audio);
-                let overview_peaks = compute_peaks(&arc, 1000);
-                let pyramid_peaks = compute_pyramid_peaks(&arc, 32768);
-                let metadata = TrackMetadata {
-                    duration_seconds: arc.duration_seconds,
-                    sample_rate: orig_sample_rate,
-                    channels: arc.channels,
-                    overview_peaks,
-                    pyramid_peaks,
-                };
-                Ok::<(Arc<DecodedAudio>, TrackMetadata), String>((arc, metadata))
-            }).await;
-
-            let (audio_arc, metadata) = match decoded_res {
-                Ok(Ok(pair)) => pair,
-                Ok(Err(e)) => return Err(e),
-                Err(e) => return Err(e.to_string()),
-            };
-
             let cached = Arc::new(CachedTrack {
                 audio: audio_arc,
                 metadata,
                 modified_time: current_mtime,
                 file_size: current_size,
             });
-
-            // 3. Insert into LRU cache under brief lock
             let mut cache = state.track_cache.lock().unwrap();
-            cache.insert(path, cached.clone());
-            cached
+            cache.insert(path.to_string(), cached.clone());
+            Ok(cached)
         }
+        Ok(Err(e)) => Err(e),
+        Err(e) => Err(e.to_string()),
     };
 
+    // Broadcast result to waiting subscribers and remove in-flight record
     {
-        let mut active_audio = state.active_audio.lock().unwrap();
-        *active_audio = Some(cached_track.audio.clone());
+        let mut in_flight = state.in_flight_decodes.lock().unwrap();
+        if let Some(sender) = in_flight.remove(path) {
+            let _ = sender.send(result.clone());
+        }
     }
 
-    state.command_bus.send(Command::LoadAudio(cached_track.audio.clone()))?;
+    result
+}
 
-    Ok(cached_track.metadata.clone())
+#[tauri::command]
+async fn preload_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata, String> {
+    let cached = get_or_decode_track(&state, &path).await?;
+    Ok(cached.metadata.clone())
+}
+
+#[tauri::command]
+async fn load_track(state: State<'_, AppState>, path: String) -> Result<TrackMetadata, String> {
+    let cached = get_or_decode_track(&state, &path).await?;
+    {
+        let mut active_audio = state.active_audio.lock().unwrap();
+        *active_audio = Some(cached.audio.clone());
+    }
+    state.command_bus.send(Command::LoadAudio(cached.audio.clone()))?;
+    Ok(cached.metadata.clone())
 }
 
 #[tauri::command]
@@ -962,6 +973,72 @@ fn pause(state: State<'_, AppState>) -> Result<(), String> {
 #[tauri::command]
 fn stop(state: State<'_, AppState>) -> Result<(), String> {
     state.command_bus.send(Command::Stop)
+}
+
+#[tauri::command]
+fn stop_background_tracks(state: State<'_, AppState>) -> Result<(), String> {
+    state.command_bus.send(Command::StopBackgroundTracks)
+}
+
+#[tauri::command]
+fn list_audio_output_devices() -> Result<Vec<AudioDeviceItem>, String> {
+    Ok(trackhelm_engine::engine::list_output_devices())
+}
+
+#[tauri::command]
+fn get_current_audio_output_device(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let engine = state.audio_engine.lock().unwrap();
+    Ok(engine.current_device())
+}
+
+#[tauri::command]
+fn set_audio_output_device(
+    state: State<'_, AppState>,
+    device_name: Option<String>,
+) -> Result<AudioDeviceItem, String> {
+    let current_frame = state.shared_engine_state.current_frame.load(std::sync::atomic::Ordering::SeqCst);
+    let old_device_sr = state.shared_engine_state.device_sample_rate.load(std::sync::atomic::Ordering::SeqCst);
+    let was_playing = state.shared_engine_state.is_playing.load(std::sync::atomic::Ordering::SeqCst);
+    let current_time_sec = if old_device_sr > 0 {
+        current_frame as f64 / old_device_sr as f64
+    } else {
+        0.0
+    };
+
+    let device_info = {
+        let engine = state.audio_engine.lock().unwrap();
+        engine.set_output_device(device_name.as_deref())?
+    };
+
+    let active_opt = {
+        let lock = state.active_audio.lock().unwrap();
+        lock.clone()
+    };
+
+    if let Some(audio) = active_opt {
+        let target_sr = device_info.sample_rate;
+        let audio_to_send = if audio.sample_rate != target_sr {
+            let resampled = resample_audio_channels(&audio.channel_samples, audio.sample_rate, target_sr)?;
+            let mut new_audio = (*audio).clone();
+            new_audio.channel_samples = resampled;
+            new_audio.sample_rate = target_sr;
+            let new_arc = Arc::new(new_audio);
+            *state.active_audio.lock().unwrap() = Some(new_arc.clone());
+            new_arc
+        } else {
+            audio
+        };
+
+        state.command_bus.send(Command::LoadAudio(audio_to_send))?;
+        if current_time_sec > 0.0 {
+            state.command_bus.send(Command::Seek(Duration::from_secs_f64(current_time_sec)))?;
+        }
+        if was_playing {
+            state.command_bus.send(Command::Play)?;
+        }
+    }
+
+    Ok(device_info)
 }
 
 #[tauri::command]
@@ -1095,6 +1172,7 @@ fn get_playback_status(state: State<'_, AppState>) -> PlaybackStatus {
     let out_peak_r = state.shared_engine_state.out_peak_db_r.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0;
     let gr_stage1 = state.shared_engine_state.gr_stage1_db.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0;
     let gr_stage2 = state.shared_engine_state.gr_stage2_db.load(std::sync::atomic::Ordering::Relaxed) as f32 / 100.0;
+    let background_tracks_count = state.shared_engine_state.background_tracks_count.load(std::sync::atomic::Ordering::Relaxed);
 
     PlaybackStatus {
         is_playing,
@@ -1107,6 +1185,7 @@ fn get_playback_status(state: State<'_, AppState>) -> PlaybackStatus {
         out_peak_r,
         gr_stage1,
         gr_stage2,
+        background_tracks_count,
     }
 }
 
@@ -1293,6 +1372,12 @@ fn save_audio_metadata(path: String, metadata: AudioTagMetadata) -> Result<(), S
 #[tauri::command]
 fn read_file_bytes(path: String) -> Result<Vec<u8>, String> {
     std::fs::read(&path).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn read_file_binary(path: String) -> Result<tauri::ipc::Response, String> {
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -1855,108 +1940,114 @@ async fn run_uvr_separation(
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn separator: {}", e))?;
-    let stdout = child.stdout.take().ok_or_else(|| "Failed to open stdout".to_string())?;
-    let stderr = child.stderr.take();
-
-    let stderr_thread = std::thread::spawn(move || {
-        let mut err_msg = String::new();
-        if let Some(pipe) = stderr {
-            let reader = BufReader::new(pipe);
-            for line in reader.lines() {
-                if let Ok(l) = line {
-                    if !err_msg.is_empty() {
-                        err_msg.push('\n');
-                    }
-                    err_msg.push_str(&l);
-                }
-            }
-        }
-        err_msg
-    });
-
     let app_handle = app.clone();
-    let reader = BufReader::new(stdout);
+    let separation_task = tauri::async_runtime::spawn_blocking(move || -> Result<UvrSeparationResult, String> {
+        let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn separator: {}", e))?;
+        let stdout = child.stdout.take().ok_or_else(|| "Failed to open stdout".to_string())?;
+        let stderr = child.stderr.take();
 
-    let mut result = UvrSeparationResult {
-        success: false,
-        files: Vec::new(),
-        error: None,
-    };
-
-    for line in reader.lines() {
-        if let Ok(line_str) = line {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line_str) {
-                if let Some(t) = val.get("type").and_then(|v| v.as_str()) {
-                    match t {
-                        "progress" => {
-                            let percent = val.get("percent").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                            let stage = val.get("stage").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let _ = app_handle.emit("uvr-progress", UvrProgressEvent { percent, stage });
+        let stderr_thread = std::thread::spawn(move || {
+            let mut err_msg = String::new();
+            if let Some(pipe) = stderr {
+                let reader = BufReader::new(pipe);
+                for line in reader.lines() {
+                    if let Ok(l) = line {
+                        if !err_msg.is_empty() {
+                            err_msg.push('\n');
                         }
-                        "complete" => {
-                            if let Some(files_val) = val.get("files").and_then(|v| v.as_array()) {
-                                for f in files_val {
-                                    let name = f.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                    let path = f.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                    let role = f.get("role").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                                    let file_type = f.get("fileType").and_then(|v| v.as_str()).unwrap_or("audio").to_string();
-                                    result.files.push(GeneratedStemItem {
-                                        name,
-                                        path,
-                                        role,
-                                        file_type,
-                                    });
-                                }
+                        err_msg.push_str(&l);
+                    }
+                }
+            }
+            err_msg
+        });
+
+        let reader = BufReader::new(stdout);
+
+        let mut result = UvrSeparationResult {
+            success: false,
+            files: Vec::new(),
+            error: None,
+        };
+
+        for line in reader.lines() {
+            if let Ok(line_str) = line {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line_str) {
+                    if let Some(t) = val.get("type").and_then(|v| v.as_str()) {
+                        match t {
+                            "progress" => {
+                                let percent = val.get("percent").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                                let stage = val.get("stage").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                let _ = app_handle.emit("uvr-progress", UvrProgressEvent { percent, stage });
                             }
-                            result.success = val.get("success").and_then(|v| v.as_bool()).unwrap_or(true);
+                            "complete" => {
+                                if let Some(files_val) = val.get("files").and_then(|v| v.as_array()) {
+                                    for f in files_val {
+                                        let name = f.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        let path = f.get("path").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        let role = f.get("role").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        let file_type = f.get("fileType").and_then(|v| v.as_str()).unwrap_or("audio").to_string();
+                                        result.files.push(GeneratedStemItem {
+                                            name,
+                                            path,
+                                            role,
+                                            file_type,
+                                        });
+                                    }
+                                }
+                                result.success = val.get("success").and_then(|v| v.as_bool()).unwrap_or(true);
+                            }
+                            "error" => {
+                                let msg = val.get("message").and_then(|v| v.as_str()).unwrap_or("Unknown error").to_string();
+                                result.error = Some(msg);
+                            }
+                            _ => {}
                         }
-                        "error" => {
-                            let msg = val.get("message").and_then(|v| v.as_str()).unwrap_or("Unknown error").to_string();
-                            result.error = Some(msg);
-                        }
-                        _ => {}
                     }
                 }
             }
         }
-    }
 
-    let stderr_output = stderr_thread.join().unwrap_or_default();
-    let status = child.wait().map_err(|e| format!("Child wait error: {}", e))?;
-    if !stderr_output.trim().is_empty() {
-        eprintln!("[uvr stderr]:\n{}", stderr_output);
-    }
-    if !status.success() && result.error.is_none() {
-        let lines: Vec<&str> = stderr_output.lines().collect();
-        let detail = if let Some(idx) = lines.iter().position(|l| l.contains("Traceback (most recent call last):")) {
-            lines[idx..].join("\n").trim().to_string()
-        } else {
-            let filtered: Vec<&str> = lines
-                .into_iter()
-                .filter(|l| {
-                    let trimmed = l.trim();
-                    let lower = trimmed.to_lowercase();
-                    !lower.contains("- info -")
-                        && !lower.contains("- warning -")
-                        && !trimmed.contains("%|")
-                        && !lower.contains("downloading")
-                        && !lower.contains("cuda-executionprovider")
-                        && !lower.contains("failed to load cublas")
-                        && !lower.contains("failed to load cufft")
-                        && !lower.contains("failed to load cudart")
-                        && !lower.contains("please follow https://onnxruntime.ai")
-                        && !trimmed.is_empty()
-                })
-                .collect();
-            if !filtered.is_empty() {
-                filtered.join("\n")
+        let stderr_output = stderr_thread.join().unwrap_or_default();
+        let status = child.wait().map_err(|e| format!("Child wait error: {}", e))?;
+        if !stderr_output.trim().is_empty() {
+            eprintln!("[uvr stderr]:\n{}", stderr_output);
+        }
+        if !status.success() && result.error.is_none() {
+            let lines: Vec<&str> = stderr_output.lines().collect();
+            let detail = if let Some(idx) = lines.iter().position(|l| l.contains("Traceback (most recent call last):")) {
+                lines[idx..].join("\n").trim().to_string()
             } else {
-                format!("Separation process exited with code {:?}", status.code())
-            }
-        };
-        result.error = Some(detail);
-    }
+                let filtered: Vec<&str> = lines
+                    .into_iter()
+                    .filter(|l| {
+                        let trimmed = l.trim();
+                        let lower = trimmed.to_lowercase();
+                        !lower.contains("- info -")
+                            && !lower.contains("- warning -")
+                            && !trimmed.contains("%|")
+                            && !lower.contains("downloading")
+                            && !lower.contains("cuda-executionprovider")
+                            && !lower.contains("failed to load cublas")
+                            && !lower.contains("failed to load cufft")
+                            && !lower.contains("failed to load cudart")
+                            && !lower.contains("please follow https://onnxruntime.ai")
+                            && !trimmed.is_empty()
+                    })
+                    .collect();
+                if !filtered.is_empty() {
+                    filtered.join("\n")
+                } else {
+                    format!("Separation process exited with code {:?}", status.code())
+                }
+            };
+            result.error = Some(detail);
+        }
+
+        Ok(result)
+    }).await.map_err(|e| format!("Separation worker thread failed: {}", e))?;
+
+    let result = separation_task?;
 
     if result.success {
         let _ = app.emit("uvr-complete", &result);
@@ -2076,7 +2167,7 @@ fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
 }
 
 fn main() {
-    let (mut engine, command_bus, shared_state) = trackhelm_engine::AudioEngine::new();
+    let (engine, command_bus, shared_state) = trackhelm_engine::AudioEngine::new();
 
     if let Err(e) = engine.start() {
         eprintln!("Audio engine failed to start: {}", e);
@@ -2093,9 +2184,12 @@ fn main() {
             command_bus,
             shared_engine_state: shared_state,
             active_audio: Mutex::new(None),
+            audio_engine: Mutex::new(engine),
             track_cache: Mutex::new(LruTrackCache::new(6)),
             ws_state,
             midi_manager,
+            drive_cloud_cache: Mutex::new(None),
+            in_flight_decodes: Mutex::new(HashMap::new()),
         })
         .setup(move |app| {
             let menu = create_app_menu(app.handle())?;
@@ -2119,6 +2213,7 @@ fn main() {
             play,
             pause,
             stop,
+            stop_background_tracks,
             seek,
             set_volume,
             set_speed,
@@ -2138,6 +2233,7 @@ fn main() {
             read_audio_metadata,
             save_audio_metadata,
             read_file_bytes,
+            read_file_binary,
             export_audio_file,
             save_playlist_file,
             load_playlist_file,
@@ -2148,7 +2244,10 @@ fn main() {
             check_files_exist,
             is_file_downloaded,
             move_file_to_trash,
-            run_uvr_separation
+            run_uvr_separation,
+            list_audio_output_devices,
+            get_current_audio_output_device,
+            set_audio_output_device
         ])
 
         .run(tauri::generate_context!())

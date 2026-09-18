@@ -127,6 +127,7 @@ pub enum Command {
     Play,
     Pause,
     Stop,
+    StopBackgroundTracks,
     Seek(Duration),
     SetPitch(f32), // In semitones
     SetTempo(f32), // Playback speed multiplier

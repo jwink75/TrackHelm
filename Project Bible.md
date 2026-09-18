@@ -273,6 +273,17 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
   * **Iso Track Instrumental Stem Preservation:** During 4-model ensemble vocal separation (`scripts/uvr_separator.py`), the engine retains the accompaniment output, encoding it to pristine AAC as `[Title] (Iso Track).m4a` alongside `[Title] (Vocals Ensemble).m4a`, automatically tagging it with the new `Iso Track` audio tag (`ISO TRACK` badge `#38bdf8`).
   * **Context-Aware Stem Action Filtering:** Audio tracks identified as Lead Vocals or Backing Vocals automatically suppress the `🎤 Lead/Backups` and `✨ Isolate Vocals` buttons to prevent unnecessary recursive separation passes.
 
+### 2.32 Real-Time Audio Engine Safety, PDF Virtualization & Subsystem Hardening (Milestone 18)
+* **Decision:** Elimination of blocking tasks on real-time and async threads, memory-scalable PDF rendering, single-flight audio decoding, and idle-gated remote broadcasting.
+* **Implementation Details:**
+  * **Real-Time Audio Thread Safety:** Removed synchronous whole-track resampling (`resample_audio_channels`) from the CPAL callback thread (`Command::LoadAudio`). Sample rate conversion is strictly handled during asynchronous decoding, with the audio thread executing a non-blocking verification check.
+  * **Subprocess Concurrency Isolation:** Long-running UVR AI separation commands are wrapped in `tauri::async_runtime::spawn_blocking`, preventing blocking child process execution from stalling Tokio async reactor threads.
+  * **PDF Dynamic Virtualization & Zero-Copy Binary IPC:** Replaced eager all-page rendering with an `IntersectionObserver` virtualization pipeline (500px pre-load margin) that allocates `<canvas>` elements only when visible and automatically disposes them when scrolled out of view. Binary transfer was migrated from JSON number arrays to `read_file_binary` returning zero-copy `tauri::ipc::Response::new(bytes)` `ArrayBuffer` payloads.
+  * **In-Flight Audio Decode Deduplication:** Unified `preload_track` and `load_track` via `get_or_decode_track` with a `tokio::sync::broadcast` channel registry in `AppState`, preventing duplicate concurrent decodes of the same audio file.
+  * **Remote Broadcast Gating:** WebSocket state broadcasting at 20 Hz is gated by `connectedRemoteClientsCount`, eliminating idle IPC and JSON serialization overhead when no remote clients are connected.
+  * **Filesystem Query Caching:** Cached drive and cloud folder discovery in `AppState` with a 30-second TTL to keep file browser directory navigation instantaneous.
+  * **Frontend Decomposition:** Extracted audio tag types, constants, and auto-detection heuristics into `src/lib/audioTags.ts` with clean ambient typing (`src/ambient.d.ts`).
+
 ---
 
 ## 3. Core Requirements & System Features
@@ -280,6 +291,7 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
 ### 3.1 Audio Engine & DSP
 * Multi-format playback (WAV, AIFF, FLAC, MP3, AAC/M4A, Ogg Vorbis).
 * Independent pitch shift and time stretch controls with permanent zero-glitch Signalsmith engagement.
+* Hardware Audio Output Device Selector with dedicated host-thread CPAL stream management and automatic sample rate resampling.
 * Parametric EQ with interactive draggable nodes + logarithmic sliders.
 * Dual-stage serial/parallel compressor with 4 character models and exact analytical transfer curve.
 * Non-destructive gapless cuts and continuous loop wrapping.
@@ -287,6 +299,9 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
 
 ### 3.2 Waveform & Timeline
 * Dual waveform display: Large scrollable/zoomable waveform + mini Overview bar.
+* Height-adjustable waveform canvas with draggable divider.
+* Shift + Mousewheel precision playhead scrubbing scaling proportionally with zoom level.
+* Window activation click guards and decoupled keyboard bindings to prevent accidental seeks/rewinds.
 * Persistent peak cache.
 * Color-coded, draggable, and renamable markers with PDF chart anchor links.
 * Multiple concurrent loops with a "Vamp Mode" option (continuous loop until disabled).
@@ -340,3 +355,5 @@ It is **not** a DAW or a simple audio editor; it is a rehearsal tool optimized f
 * **Milestone 15:** Multi-Drive File System & Cloud Navigation *(Completed)*
 * **Milestone 16:** Height-Adjustable Waveform & Interactive Audio Tags *(Completed)*
 * **Milestone 17:** Batch Fuzzy Library Auto-Linker, Iso Track Preservation, and Stem Workflow Refinements *(Completed)*
+* **Milestone 18:** Real-Time Audio Engine Safety, PDF Virtualization & Subsystem Hardening *(Completed)*
+* **Milestone 19:** Audio Output Device Selector, Shift+Wheel Waveform Scrubbing & Focus Protection *(Completed)*

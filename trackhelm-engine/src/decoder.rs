@@ -10,6 +10,7 @@ use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
 use symphonia::default::get_probe;
 
+#[derive(Clone)]
 pub struct DecodedAudio {
     pub channels: usize,
     pub sample_rate: u32,

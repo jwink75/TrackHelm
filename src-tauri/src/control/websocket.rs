@@ -5,18 +5,30 @@ use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tokio_tungstenite::tungstenite::Message;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 pub struct WebSocketServerState {
     pub broadcast_tx: broadcast::Sender<String>,
+    pub connected_clients: AtomicUsize,
 }
 
 impl WebSocketServerState {
     pub fn new() -> Self {
         let (broadcast_tx, _) = broadcast::channel(128);
-        Self { broadcast_tx }
+        Self { 
+            broadcast_tx,
+            connected_clients: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn client_count(&self) -> usize {
+        self.connected_clients.load(Ordering::Relaxed)
     }
 
     pub fn broadcast(&self, message: String) {
-        let _ = self.broadcast_tx.send(message);
+        if self.client_count() > 0 {
+            let _ = self.broadcast_tx.send(message);
+        }
     }
 }
 
@@ -40,6 +52,7 @@ pub fn start_websocket_server<R: Runtime>(
 
         while let Ok((stream, peer_addr)) = listener.accept().await {
             let app_handle = app.clone();
+            let state_clone = state.clone();
             let mut broadcast_rx = state.broadcast_tx.subscribe();
 
             tauri::async_runtime::spawn(async move {
@@ -50,6 +63,9 @@ pub fn start_websocket_server<R: Runtime>(
                         return;
                     }
                 };
+
+                let new_count = state_clone.connected_clients.fetch_add(1, Ordering::SeqCst) + 1;
+                let _ = app_handle.emit("remote-clients-changed", new_count);
 
                 let (mut ws_sender, mut ws_receiver) = ws_stream.split();
 
@@ -96,6 +112,9 @@ pub fn start_websocket_server<R: Runtime>(
                     _ = (&mut send_task) => recv_task.abort(),
                     _ = (&mut recv_task) => send_task.abort(),
                 };
+
+                let rem_count = state_clone.connected_clients.fetch_sub(1, Ordering::SeqCst).saturating_sub(1);
+                let _ = app_handle.emit("remote-clients-changed", rem_count);
             });
         }
     });

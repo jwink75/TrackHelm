@@ -136,7 +136,7 @@ It combines real-time DSP pitch/time manipulation, instant deep-zoom waveform vi
 ---
 
 ### 📝 Rehearsal Deck: Dynamic Multi-PDFs & Markdown Notes/Lyrics
-* **Dynamic Multi-PDF Tabs**: Opening associated PDFs automatically spawns dedicated dynamic tabs (e.g. `📄 Chart.pdf ×`) with independent page scroll tracking, close buttons, and **Negative Invert** dark mode for stage readability.
+* **Dynamic Multi-PDF Tabs & Virtualized Rendering**: Opening associated PDFs automatically spawns dedicated dynamic tabs (e.g. `📄 Chart.pdf ×`) with independent page scroll tracking, close buttons, **Negative Invert** dark mode for stage readability, zero-copy native binary IPC streaming (`read_file_binary`), and `IntersectionObserver` canvas virtualization that scales effortlessly to 100+ page scores while maintaining a minimal memory footprint.
 * **Obsidian-Style Markdown Notes & Lyrics**: Rich formatting for song notes, arrangement guides, and lyrics with Edit, Preview, and Side-by-Side Split view modes.
 * **Automatic Rehearsal Chord Badge Parsing**: Parses chords (e.g. `[Am7]`, `[G/B]`, `[Cadd9]`) into glowing high-contrast badges optimized for live performance reading.
 * **Audio Tag Metadata Inspector**: View and edit ID3v1/v2, Vorbis, MP4/M4A, and FLAC tags in-place via Lofty.
@@ -144,7 +144,7 @@ It combines real-time DSP pitch/time manipulation, instant deep-zoom waveform vi
 ---
 
 ### ⚡ Instant Loading & Deep Waveform Visualization
-* **Zero-Delay Playback Readiness ($< 1\text{ms}$)**: Single-click background pre-decoding (`preload_track`) and SIMD/NEON compiler optimizations (`opt-level = 3`).
+* **Zero-Delay Playback Readiness ($< 1\text{ms}$)**: Single-click background pre-decoding (`preload_track`), single-flight in-flight decode deduplication, and SIMD/NEON compiler optimizations (`opt-level = 3`).
 * **Continuous Unbroken Oscillating Waveform**: Single-sample continuous line rendering at all zoom levels, eliminating sawtooth min/max ramp gaps.
 * **Progressive Sample Node Squares (RX Style)**: Visualizes individual audio sample points with adaptive bordered node boxes when zoomed in ($\le 400$ samples down to 9 samples).
 * **Dotted Compressor Threshold Overlay**: Yellow dotted boundary lines mark threshold level on the waveform as it is brought down below $0\text{ dB}$.

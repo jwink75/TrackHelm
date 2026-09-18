@@ -1,6 +1,6 @@
 // Playlist Health & Missing File Replacement Engine
 
-import { type ScannedAsset, calculateMatchScore, findBestMatch } from "./setlistResolver";
+import { type ScannedAsset, findBestMatch } from "./setlistResolver";
 
 export interface PlaylistItemHealth {
   index: number;

@@ -9,7 +9,7 @@ pub mod resampler;
 
 // Re-export key components
 pub use command::{Command, CommandBus, EngineRegion, EnvelopeNode, EnvelopeCurve, MAX_ENVELOPE_NODES, interpolate_envelope};
-pub use engine::{AudioEngine, SharedEngineState};
+pub use engine::{AudioEngine, SharedEngineState, AudioDeviceItem};
 pub use graph::AudioGraph;
 pub use db::Database;
 pub use decoder::{decode_file, DecodedAudio};

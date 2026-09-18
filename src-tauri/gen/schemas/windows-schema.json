@@ -207,6 +207,12 @@
           "markdownDescription": "Enables the get_cloud_folders command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_current_audio_output_device command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-current-audio-output-device",
+          "markdownDescription": "Enables the get_current_audio_output_device command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_playback_status command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-playback-status",
@@ -229,6 +235,12 @@
           "type": "string",
           "const": "allow-is-file-downloaded",
           "markdownDescription": "Enables the is_file_downloaded command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the list_audio_output_devices command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-audio-output-devices",
+          "markdownDescription": "Enables the list_audio_output_devices command without any pre-configured scope."
         },
         {
           "description": "Enables the list_midi_devices command without any pre-configured scope.",
@@ -291,6 +303,12 @@
           "markdownDescription": "Enables the read_dir command without any pre-configured scope."
         },
         {
+          "description": "Enables the read_file_binary command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-read-file-binary",
+          "markdownDescription": "Enables the read_file_binary command without any pre-configured scope."
+        },
+        {
           "description": "Enables the read_file_bytes command without any pre-configured scope.",
           "type": "string",
           "const": "allow-read-file-bytes",
@@ -325,6 +343,12 @@
           "type": "string",
           "const": "allow-seek",
           "markdownDescription": "Enables the seek command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_audio_output_device command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-audio-output-device",
+          "markdownDescription": "Enables the set_audio_output_device command without any pre-configured scope."
         },
         {
           "description": "Enables the set_compressor command without any pre-configured scope.",
@@ -387,6 +411,12 @@
           "markdownDescription": "Enables the stop command without any pre-configured scope."
         },
         {
+          "description": "Enables the stop_background_tracks command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-stop-background-tracks",
+          "markdownDescription": "Enables the stop_background_tracks command without any pre-configured scope."
+        },
+        {
           "description": "Denies the broadcast_remote_state command without any pre-configured scope.",
           "type": "string",
           "const": "deny-broadcast-remote-state",
@@ -417,6 +447,12 @@
           "markdownDescription": "Denies the get_cloud_folders command without any pre-configured scope."
         },
         {
+          "description": "Denies the get_current_audio_output_device command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-current-audio-output-device",
+          "markdownDescription": "Denies the get_current_audio_output_device command without any pre-configured scope."
+        },
+        {
           "description": "Denies the get_playback_status command without any pre-configured scope.",
           "type": "string",
           "const": "deny-get-playback-status",
@@ -439,6 +475,12 @@
           "type": "string",
           "const": "deny-is-file-downloaded",
           "markdownDescription": "Denies the is_file_downloaded command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_audio_output_devices command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-audio-output-devices",
+          "markdownDescription": "Denies the list_audio_output_devices command without any pre-configured scope."
         },
         {
           "description": "Denies the list_midi_devices command without any pre-configured scope.",
@@ -501,6 +543,12 @@
           "markdownDescription": "Denies the read_dir command without any pre-configured scope."
         },
         {
+          "description": "Denies the read_file_binary command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-read-file-binary",
+          "markdownDescription": "Denies the read_file_binary command without any pre-configured scope."
+        },
+        {
           "description": "Denies the read_file_bytes command without any pre-configured scope.",
           "type": "string",
           "const": "deny-read-file-bytes",
@@ -535,6 +583,12 @@
           "type": "string",
           "const": "deny-seek",
           "markdownDescription": "Denies the seek command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_audio_output_device command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-audio-output-device",
+          "markdownDescription": "Denies the set_audio_output_device command without any pre-configured scope."
         },
         {
           "description": "Denies the set_compressor command without any pre-configured scope.",
@@ -595,6 +649,12 @@
           "type": "string",
           "const": "deny-stop",
           "markdownDescription": "Denies the stop command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the stop_background_tracks command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-stop-background-tracks",
+          "markdownDescription": "Denies the stop_background_tracks command without any pre-configured scope."
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

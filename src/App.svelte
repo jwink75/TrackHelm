@@ -16,9 +16,19 @@
     type ResolvedSetlistItem 
   } from "./lib/setlistResolver";
   import { analyzePlaylistHealth, type PlaylistItemHealth } from "./lib/playlistRepair";
+  import { 
+    AUDIO_TAG_OPTIONS, 
+    getAutoDetectedTags as detectAudioTags, 
+    isLosslessAudio, 
+    isAudioFile, 
+    getFileExtension 
+  } from "./lib/audioTags";
 
   pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
   const openDialog = open;
+
+  const BUILD_TIMESTAMP = typeof __BUILD_TIMESTAMP__ !== "undefined" ? __BUILD_TIMESTAMP__ : "2026-09-16 21:15";
+  const BUILD_NUMBER = typeof __BUILD_NUMBER__ !== "undefined" ? __BUILD_NUMBER__ : "20260916.2115";
 
   // Active Playback State (for the backend engine)
   let filePath = "";
@@ -26,6 +36,7 @@
   let duration = 0;
   let currentTime = 0;
   let isPlaying = false;
+  let backgroundTracksCount = 0;
   let volumeLinear = 1.0;
   let progress = 0.0;
   let channels = 2;
@@ -569,22 +580,7 @@
     window.addEventListener("mouseup", onMouseUp);
   }
 
-  function getFileExtension(pathOrName: string): string {
-    if (!pathOrName) return "";
-    const clean = pathOrName.split("?")[0].split("#")[0];
-    const dotIdx = clean.lastIndexOf(".");
-    return dotIdx !== -1 ? clean.substring(dotIdx + 1).toUpperCase() : "";
-  }
 
-  function isLosslessAudio(pathOrName: string): boolean {
-    const ext = getFileExtension(pathOrName).toLowerCase();
-    return ["wav", "aiff", "aif", "flac", "alac"].includes(ext);
-  }
-
-  function isAudioFile(pathOrName: string): boolean {
-    const ext = getFileExtension(pathOrName).toLowerCase();
-    return ["wav", "mp3", "m4a", "aac", "flac", "aif", "aiff", "alac", "ogg", "wma"].includes(ext);
-  }
 
   function renderMarkdown(md: string): string {
     if (!md || !md.trim()) return "<div class='markdown-empty-hint'>No notes recorded yet. Click <strong>Raw Text</strong> or <strong>Split</strong> to add rehearsal notes, singer tables, or chord cues...</div>";
@@ -1215,6 +1211,9 @@
   let isAutoLinkingLibrary: boolean = false;
   let autoLinkStatusMessage: string = "";
   let autoLinkStatusIsError: boolean = false;
+  let autoLinkProgress: { current: number; total: number; percent: number } | null = null;
+  let bgAutoLinkSuccessToast: string = "";
+  let bgAutoLinkToastTimeout: any = null;
 
   // Setlist CSV Importer Modal State
   let showSetlistModal: boolean = false;
@@ -1229,6 +1228,55 @@
   let playlistHealth: PlaylistItemHealth[] = [];
   let missingTracksCount: number = 0;
 
+  // Window Focus Tracking (to guard against activating clicks seeking/rewinding)
+  let lastWindowFocusTime = Date.now();
+
+  // Audio Output Device Selection State
+  interface AudioDeviceItem {
+    name: string;
+    is_default: boolean;
+    sample_rate: number;
+    channels: number;
+  }
+  let availableAudioDevices: AudioDeviceItem[] = [];
+  let selectedAudioDevice: string = "default";
+  let defaultAudioDeviceName: string = "";
+  let activeAudioDeviceInfo: AudioDeviceItem | null = null;
+  let isLoadingAudioDevices: boolean = false;
+
+  async function refreshAudioOutputDevices() {
+    isLoadingAudioDevices = true;
+    try {
+      const devices = await invoke<AudioDeviceItem[]>("list_audio_output_devices");
+      availableAudioDevices = devices || [];
+      const def = availableAudioDevices.find(d => d.is_default);
+      defaultAudioDeviceName = def ? def.name : "";
+      if (selectedAudioDevice !== "default" && selectedAudioDevice) {
+        activeAudioDeviceInfo = availableAudioDevices.find(d => d.name === selectedAudioDevice) || null;
+      } else {
+        activeAudioDeviceInfo = def || null;
+      }
+    } catch (err) {
+      console.error("Failed to list audio output devices:", err);
+    } finally {
+      isLoadingAudioDevices = false;
+    }
+  }
+
+  async function handleAudioDeviceChange() {
+    try {
+      saveAppPreferences();
+      const devArg = selectedAudioDevice === "default" ? null : selectedAudioDevice;
+      const info = await invoke<AudioDeviceItem>("set_audio_output_device", { deviceName: devArg });
+      activeAudioDeviceInfo = info;
+      if (selectedAudioDevice === "default") {
+        defaultAudioDeviceName = info.name;
+      }
+    } catch (err) {
+      console.error("Failed to switch audio output device:", err);
+    }
+  }
+
   function loadAppPreferences() {
     try {
       const savedTheme = localStorage.getItem("th_pref_pdf_theme");
@@ -1240,6 +1288,8 @@
       prefFolderOrig = localStorage.getItem("th_pref_folder_orig") || "";
       prefFolderPdf = localStorage.getItem("th_pref_folder_pdf") || "";
       prefFolderVocals = localStorage.getItem("th_pref_folder_vocals") || "";
+
+      selectedAudioDevice = localStorage.getItem("th_pref_audio_device") || "default";
 
       const savedAi = localStorage.getItem("th_pref_ai_provider");
       if (savedAi === "builtin" || savedAi === "ollama" || savedAi === "openai" || savedAi === "anthropic" || savedAi === "gemini") {
@@ -1259,6 +1309,7 @@
       localStorage.setItem("th_pref_folder_orig", prefFolderOrig);
       localStorage.setItem("th_pref_folder_pdf", prefFolderPdf);
       localStorage.setItem("th_pref_folder_vocals", prefFolderVocals);
+      localStorage.setItem("th_pref_audio_device", selectedAudioDevice);
       localStorage.setItem("th_pref_ai_provider", prefAiProvider);
       localStorage.setItem("th_pref_ai_api_key", prefAiApiKey);
       localStorage.setItem("th_pref_ai_model", prefAiModel);
@@ -1303,6 +1354,7 @@
 
   function openPreferencesModal() {
     showPreferencesModal = true;
+    refreshAudioOutputDevices();
   }
 
   function closePreferencesModal() {
@@ -1316,60 +1368,57 @@
   function closeAboutModal() {
     showAboutModal = false;
   }
-
   async function scanLibraryAssets() {
-    let aacFiles: ScannedAsset[] = [];
-    let hiresFiles: ScannedAsset[] = [];
-    let origFiles: ScannedAsset[] = [];
-    let pdfFiles: ScannedAsset[] = [];
-    let vocalsFiles: ScannedAsset[] = [];
-
     try {
-      if (prefFolderAac) {
-        aacFiles = await invoke("scan_library_folder", {
-          folderPath: prefFolderAac,
-          extensions: ["m4a", "aac", "mp3", "wav", "aiff", "aif"]
-        });
-      }
-      if (prefFolderHiRes) {
-        hiresFiles = await invoke("scan_library_folder", {
-          folderPath: prefFolderHiRes,
-          extensions: ["wav", "flac", "aiff", "aif"]
-        });
-      }
-      if (prefFolderOrig) {
-        origFiles = await invoke("scan_library_folder", {
-          folderPath: prefFolderOrig,
-          extensions: ["mp3", "m4a", "wav", "flac", "aiff", "aif", "ogg"]
-        });
-      }
-      if (prefFolderPdf) {
-        pdfFiles = await invoke("scan_library_folder", {
-          folderPath: prefFolderPdf,
-          extensions: ["pdf"]
-        });
-      }
-      if (prefFolderVocals) {
-        vocalsFiles = await invoke("scan_library_folder", {
-          folderPath: prefFolderVocals,
-          extensions: ["m4a", "aac", "mp3", "wav", "flac", "aiff", "aif"]
-        });
-      }
+      autoLinkStatusMessage = "Scanning designated library folders in parallel...";
+      const [aacFiles, hiresFiles, origFiles, pdfFiles, vocalsFiles] = await Promise.all([
+        prefFolderAac
+          ? invoke<ScannedAsset[]>("scan_library_folder", {
+              folderPath: prefFolderAac,
+              extensions: ["m4a", "aac", "mp3", "wav", "aiff", "aif"]
+            })
+          : Promise.resolve([]),
+        prefFolderHiRes
+          ? invoke<ScannedAsset[]>("scan_library_folder", {
+              folderPath: prefFolderHiRes,
+              extensions: ["wav", "flac", "aiff", "aif"]
+            })
+          : Promise.resolve([]),
+        prefFolderOrig
+          ? invoke<ScannedAsset[]>("scan_library_folder", {
+              folderPath: prefFolderOrig,
+              extensions: ["mp3", "m4a", "wav", "flac", "aiff", "aif", "ogg"]
+            })
+          : Promise.resolve([]),
+        prefFolderPdf
+          ? invoke<ScannedAsset[]>("scan_library_folder", {
+              folderPath: prefFolderPdf,
+              extensions: ["pdf"]
+            })
+          : Promise.resolve([]),
+        prefFolderVocals
+          ? invoke<ScannedAsset[]>("scan_library_folder", {
+              folderPath: prefFolderVocals,
+              extensions: ["m4a", "aac", "mp3", "wav", "flac", "aiff", "aif"]
+            })
+          : Promise.resolve([]),
+      ]);
+      return { aacFiles, hiresFiles, origFiles, pdfFiles, vocalsFiles };
     } catch (e) {
       console.error("Failed to scan library assets:", e);
+      return { aacFiles: [], hiresFiles: [], origFiles: [], pdfFiles: [], vocalsFiles: [] };
     }
-
-    return { aacFiles, hiresFiles, origFiles, pdfFiles, vocalsFiles };
   }
 
   async function executeAutoLinkLibrary() {
     if (isAutoLinkingLibrary) return;
     isAutoLinkingLibrary = true;
-    autoLinkStatusMessage = "";
+    autoLinkStatusMessage = "Starting background library linker...";
     autoLinkStatusIsError = false;
+    bgAutoLinkSuccessToast = "";
 
     try {
-      // 1. Scan assets across all designated folders
+      // 1. Scan assets across all designated folders in background
       const { aacFiles, hiresFiles, origFiles, pdfFiles, vocalsFiles } = await scanLibraryAssets();
 
       const totalScanned = aacFiles.length + hiresFiles.length + origFiles.length + pdfFiles.length + (vocalsFiles ? vocalsFiles.length : 0);
@@ -1448,157 +1497,187 @@
       let hiresLinked = 0;
       let stemsLinked = 0;
 
-      for (const anchor of anchors) {
+      for (let i = 0; i < anchors.length; i++) {
+        const anchor = anchors[i];
         songsProcessed++;
+        const currentSongNum = i + 1;
+        const currentPercent = Math.round((currentSongNum / anchors.length) * 100);
+
+        autoLinkProgress = {
+          current: currentSongNum,
+          total: anchors.length,
+          percent: currentPercent
+        };
+        autoLinkStatusMessage = `Matching song ${currentSongNum} of ${anchors.length} (${currentPercent}%): ${anchor.name}`;
+
         const cleanTitle = normalizeSongTitle(anchor.name);
-        if (!cleanTitle) continue;
-
-        const existingProfile = store[anchor.path] || ({} as TrackProfile);
-        const existingAssoc: AssociatedFileItem[] = existingProfile.associatedFiles ? [...existingProfile.associatedFiles] : [];
-
-        // 1. Match Sheet Music PDF
-        let matchedPdfPath = existingProfile.pdfChartPath || "";
-        let matchedPdfName = existingProfile.pdfChartName || "";
-        if (!matchedPdfPath && pdfPool.length > 0) {
-          const match = findBestMatch(cleanTitle, pdfPool, 0.55);
-          if (match) {
-            matchedPdfPath = match.asset.path;
-            matchedPdfName = match.asset.name;
+        if (cleanTitle) {
+          const existingProfile = store[anchor.path] || ({} as TrackProfile);
+          // If the currently loaded song matches this anchor, preserve any in-memory markers or notes
+          if (filePath === anchor.path) {
+            existingProfile.markers = markers ? markers.map(m => ({ ...m })) : (existingProfile.markers || []);
+            existingProfile.notes = songNotes || existingProfile.notes || "";
+            existingProfile.lyrics = songLyrics || existingProfile.lyrics || "";
           }
-        }
-        if (matchedPdfPath && !existingAssoc.some(a => a.path === matchedPdfPath)) {
-          existingAssoc.push({
-            id: "pdf_" + Math.random().toString(36).substring(2, 8),
-            name: matchedPdfName || matchedPdfPath.split("/").pop() || "Sheet Music",
-            path: matchedPdfPath,
-            fileType: "pdf"
-          });
-          pdfsLinked++;
-        }
+          const existingAssoc: AssociatedFileItem[] = existingProfile.associatedFiles ? [...existingProfile.associatedFiles] : [];
 
-        // 2. Match Original Artist Recording
-        if (origPool.length > 0 && !existingAssoc.some(a => a.role === "orig" || a.id === "audio-orig")) {
-          const match = findBestMatch(cleanTitle, origPool, 0.60);
-          if (match && match.asset.path !== anchor.path) {
+          // 1. Match Sheet Music PDF
+          let matchedPdfPath = existingProfile.pdfChartPath || "";
+          let matchedPdfName = existingProfile.pdfChartName || "";
+          if (!matchedPdfPath && pdfPool.length > 0) {
+            const match = findBestMatch(cleanTitle, pdfPool, 0.55);
+            if (match) {
+              matchedPdfPath = match.asset.path;
+              matchedPdfName = match.asset.name;
+            }
+          }
+          if (matchedPdfPath && !existingAssoc.some(a => a.path === matchedPdfPath)) {
             existingAssoc.push({
-              id: "audio-orig",
-              name: match.asset.name,
-              path: match.asset.path,
-              fileType: "audio",
-              role: "orig"
+              id: "pdf_" + Math.random().toString(36).substring(2, 8),
+              name: matchedPdfName || matchedPdfPath.split("/").pop() || "Sheet Music",
+              path: matchedPdfPath,
+              fileType: "pdf"
             });
-            origsLinked++;
+            pdfsLinked++;
           }
-        }
 
-        // 3. Match Hi-Res Audio Track
-        if (hiresPool.length > 0 && anchor.path !== hiresPool.find(h => h.path === anchor.path)?.path) {
-          if (!existingAssoc.some(a => a.role === "hires" || a.id === "audio-hires")) {
-            const match = findBestMatch(cleanTitle, hiresPool, 0.60);
+          // 2. Match Original Artist Recording
+          if (origPool.length > 0 && !existingAssoc.some(a => a.role === "orig" || a.id === "audio-orig")) {
+            const match = findBestMatch(cleanTitle, origPool, 0.60);
             if (match && match.asset.path !== anchor.path) {
               existingAssoc.push({
-                id: "audio-hires",
+                id: "audio-orig",
                 name: match.asset.name,
                 path: match.asset.path,
                 fileType: "audio",
-                role: "hires"
+                role: "orig"
               });
-              hiresLinked++;
+              origsLinked++;
             }
           }
-        }
 
-        // 4. Match All Vocal Stems & Iso Tracks
-        if (stemPool.length > 0) {
-          for (const stem of stemPool) {
-            if (stem.path === anchor.path) continue;
-            if (existingAssoc.some(a => a.path === stem.path)) continue;
-
-            const score = calculateMatchScore(cleanTitle, stem.name);
-            if (score >= 0.62) {
-              const stemNameLower = stem.name.toLowerCase();
-              let stemRole = "vocals";
-              if (stemNameLower.includes("lead")) {
-                stemRole = "lead";
-              } else if (stemNameLower.includes("backing") || stemNameLower.includes("bgv") || stemNameLower.includes("backings")) {
-                stemRole = "backings";
-              } else if (stemNameLower.includes("iso track") || stemNameLower.includes("instrumental")) {
-                stemRole = "track";
+          // 3. Match Hi-Res Audio Track
+          if (hiresPool.length > 0 && anchor.path !== hiresPool.find(h => h.path === anchor.path)?.path) {
+            if (!existingAssoc.some(a => a.role === "hires" || a.id === "audio-hires")) {
+              const match = findBestMatch(cleanTitle, hiresPool, 0.60);
+              if (match && match.asset.path !== anchor.path) {
+                existingAssoc.push({
+                  id: "audio-hires",
+                  name: match.asset.name,
+                  path: match.asset.path,
+                  fileType: "audio",
+                  role: "hires"
+                });
+                hiresLinked++;
               }
-
-              existingAssoc.push({
-                id: "stem_" + Math.random().toString(36).substring(2, 8),
-                name: stem.name,
-                path: stem.path,
-                fileType: "audio",
-                role: stemRole
-              });
-              stemsLinked++;
             }
           }
-        }
 
-        // Update profile for this anchor track
-        store[anchor.path] = {
-          ...existingProfile,
-          primarySongTrackPath: anchor.path,
-          pdfChartPath: matchedPdfPath,
-          pdfChartName: matchedPdfName,
-          associatedFiles: existingAssoc
-        };
+          // 4. Match All Vocal Stems & Iso Tracks
+          if (stemPool.length > 0) {
+            for (const stem of stemPool) {
+              if (stem.path === anchor.path) continue;
+              if (existingAssoc.some(a => a.path === stem.path)) continue;
 
-        // Propagate bi-directional sync to all peer audio files
-        const audioPeers = existingAssoc.filter(a => a.fileType === "audio" && a.path);
-        for (const peer of audioPeers) {
-          if (!peer.path || peer.path === anchor.path) continue;
-          const peerExisting = store[peer.path] || ({} as TrackProfile);
-          const peerAssoc: AssociatedFileItem[] = [
-            ...existingAssoc.filter(a => a.fileType !== "audio"),
-            {
-              id: "track-anchor-" + anchor.path.replace(/[^a-zA-Z0-9]/g, "_"),
-              name: anchor.name,
-              path: anchor.path,
-              fileType: "audio",
-              role: isLosslessAudio(anchor.path) ? "hires" : "main"
-            },
-            ...audioPeers.filter(p => p.path !== peer.path)
-          ];
+              const score = calculateMatchScore(cleanTitle, stem.name);
+              if (score >= 0.62) {
+                const stemNameLower = stem.name.toLowerCase();
+                let stemRole = "vocals";
+                if (stemNameLower.includes("lead")) {
+                  stemRole = "lead";
+                } else if (stemNameLower.includes("backing") || stemNameLower.includes("bgv") || stemNameLower.includes("backings")) {
+                  stemRole = "backings";
+                } else if (stemNameLower.includes("iso track") || stemNameLower.includes("instrumental")) {
+                  stemRole = "track";
+                }
 
-          store[peer.path] = {
-            ...peerExisting,
+                existingAssoc.push({
+                  id: "stem_" + Math.random().toString(36).substring(2, 8),
+                  name: stem.name,
+                  path: stem.path,
+                  fileType: "audio",
+                  role: stemRole
+                });
+                stemsLinked++;
+              }
+            }
+          }
+
+          // Update profile for this anchor track
+          store[anchor.path] = {
+            ...existingProfile,
             primarySongTrackPath: anchor.path,
-            pdfChartPath: matchedPdfPath || peerExisting.pdfChartPath || "",
-            pdfChartName: matchedPdfName || peerExisting.pdfChartName || "",
-            markers: existingProfile.markers ? existingProfile.markers.map(m => ({ ...m })) : (peerExisting.markers || []),
-            notes: existingProfile.notes || peerExisting.notes || "",
-            lyrics: existingProfile.lyrics || peerExisting.lyrics || "",
-            associatedFiles: peerAssoc
+            pdfChartPath: matchedPdfPath,
+            pdfChartName: matchedPdfName,
+            associatedFiles: existingAssoc
           };
-        }
 
-        // If the currently loaded song in TrackHelm matches this anchor or any peer:
-        if (filePath && (filePath === anchor.path || audioPeers.some(p => p.path === filePath))) {
-          const currentCollectionProfile = store[filePath];
-          if (currentCollectionProfile) {
-            associatedFiles = [...(currentCollectionProfile.associatedFiles || [])];
-            primarySongTrackPath = currentCollectionProfile.primarySongTrackPath || anchor.path;
-            if (matchedPdfPath && !pdfChartPath) {
-              pdfChartPath = matchedPdfPath;
-              pdfChartName = matchedPdfName;
+          // Propagate bi-directional sync to all peer audio files
+          const audioPeers = existingAssoc.filter(a => a.fileType === "audio" && a.path);
+          for (const peer of audioPeers) {
+            if (!peer.path || peer.path === anchor.path) continue;
+            const peerExisting = store[peer.path] || ({} as TrackProfile);
+            const peerAssoc: AssociatedFileItem[] = [
+              ...existingAssoc.filter(a => a.fileType !== "audio"),
+              {
+                id: "track-anchor-" + anchor.path.replace(/[^a-zA-Z0-9]/g, "_"),
+                name: anchor.name,
+                path: anchor.path,
+                fileType: "audio",
+                role: isLosslessAudio(anchor.path) ? "hires" : "main"
+              },
+              ...audioPeers.filter(p => p.path !== peer.path)
+            ];
+
+            store[peer.path] = {
+              ...peerExisting,
+              primarySongTrackPath: anchor.path,
+              pdfChartPath: matchedPdfPath || peerExisting.pdfChartPath || "",
+              pdfChartName: matchedPdfName || peerExisting.pdfChartName || "",
+              markers: existingProfile.markers ? existingProfile.markers.map(m => ({ ...m })) : (peerExisting.markers || []),
+              notes: existingProfile.notes || peerExisting.notes || "",
+              lyrics: existingProfile.lyrics || peerExisting.lyrics || "",
+              associatedFiles: peerAssoc
+            };
+          }
+
+          // If the currently loaded song in TrackHelm matches this anchor or any peer:
+          if (filePath && (filePath === anchor.path || audioPeers.some(p => p.path === filePath))) {
+            const currentCollectionProfile = store[filePath];
+            if (currentCollectionProfile) {
+              associatedFiles = [...(currentCollectionProfile.associatedFiles || [])];
+              primarySongTrackPath = currentCollectionProfile.primarySongTrackPath || anchor.path;
+              if (matchedPdfPath && !pdfChartPath) {
+                pdfChartPath = matchedPdfPath;
+                pdfChartName = matchedPdfName;
+              }
             }
           }
+        }
+
+        // Yield to browser event loop every 3 songs (or on final item)
+        // so audio playback, UI controls, waveform scrubbing, and window closing remain 100% fluid!
+        if (i % 3 === 0 || i === anchors.length - 1) {
+          await new Promise(resolve => setTimeout(resolve, 0));
         }
       }
 
       flushProfilesToLocalStorage();
-      autoLinkStatusMessage = `✓ Auto-link complete! Processed ${songsProcessed} songs. Linked ${pdfsLinked} PDFs, ${origsLinked} Originals, ${hiresLinked} Full-Res masters, and ${stemsLinked} Vocal/Iso stems.`;
+      const successMsg = `✓ Auto-link complete! Processed ${songsProcessed} songs. Linked ${pdfsLinked} PDFs, ${origsLinked} Originals, ${hiresLinked} Full-Res masters, and ${stemsLinked} Vocal/Iso stems.`;
+      autoLinkStatusMessage = successMsg;
       autoLinkStatusIsError = false;
+      bgAutoLinkSuccessToast = successMsg;
+      if (bgAutoLinkToastTimeout) clearTimeout(bgAutoLinkToastTimeout);
+      bgAutoLinkToastTimeout = setTimeout(() => {
+        bgAutoLinkSuccessToast = "";
+      }, 8000);
     } catch (err: any) {
       console.error("Auto-link error:", err);
       autoLinkStatusMessage = "Failed to auto-link library: " + (err?.message || err);
       autoLinkStatusIsError = true;
     } finally {
       isAutoLinkingLibrary = false;
+      autoLinkProgress = null;
     }
   }
 
@@ -2315,174 +2394,8 @@
   // Audio file tags system (auto-detected and user-toggled via right-click)
   let activeSongTags: Record<string, string[]> = {};
 
-  const AUDIO_TAG_OPTIONS = [
-    { id: "original", label: "Original", color: "#d084ff" },
-    { id: "vocals_only", label: "Vocals only", color: "#30d158" },
-    { id: "lead_vocal", label: "Lead Vocal", color: "#ffd60a" },
-    { id: "background_vocals", label: "Background Vocals", color: "#64d2ff" },
-    { id: "iso_track", label: "Iso Track", color: "#38bdf8" },
-    { id: "track", label: "Track", color: "#ff9f0a" }
-  ];
-
   function getAutoDetectedTags(path: string, name?: string, roleHint?: string): string[] {
-    const text = ((path || "") + " " + (name || "")).toLowerCase();
-    const fileNameOnly = (name || (path ? path.split("/").pop()?.split("\\").pop() : "") || "").toLowerCase();
-    const detected: string[] = [];
-
-    // 1. Original Artist / Reference Recording
-    if (
-      roleHint === "orig" ||
-      text.includes("audio-orig") ||
-      text.includes("original") ||
-      text.includes("[original]") ||
-      text.includes("(original)") ||
-      text.includes("album version") ||
-      text.includes("artist version") ||
-      text.includes("album cut") ||
-      text.includes("reference recording") ||
-      text.includes("original mix")
-    ) {
-      detected.push("Original");
-    }
-
-    // 2. Lead Vocal Track
-    if (
-      roleHint === "lead" ||
-      text.includes("lead vocal") ||
-      text.includes("lead-vocal") ||
-      text.includes("lead_vocal") ||
-      text.includes("(lead vocals)") ||
-      text.includes("[lead vocals]") ||
-      text.includes("(lead vocal)") ||
-      text.includes("[lead vocal]") ||
-      text.includes("lead vox") ||
-      text.includes("lead_vox") ||
-      text.includes("(lead)") ||
-      text.includes("[lead]") ||
-      text.includes("_lead.") ||
-      text.includes("- lead.") ||
-      text.includes(" lead.") ||
-      text.includes("lead voice")
-    ) {
-      detected.push("Lead Vocal");
-    }
-
-    // 3. Background Vocals / Backing Vocals Track
-    // Distinguish "Backing Track" (instrumental) from "Backing Vocals" / "BGV"
-    const isBackingTrackText = text.includes("backing track") || 
-      text.includes("backing-track") || 
-      text.includes("backing_track") ||
-      text.includes("performance track");
-
-    const hasBgvKeyword = 
-      roleHint === "backings" ||
-      text.includes("backing vocal") ||
-      text.includes("backing-vocal") ||
-      text.includes("backing_vocal") ||
-      text.includes("background vocal") ||
-      text.includes("background-vocal") ||
-      text.includes("background_vocal") ||
-      text.includes("backup vocal") ||
-      text.includes("backup-vocal") ||
-      text.includes("backup_vocal") ||
-      text.includes("bgv") ||
-      text.includes("bgvs") ||
-      text.includes("bg vox") ||
-      text.includes("backing vox") ||
-      text.includes("harmonies") ||
-      text.includes("harmony vocals") ||
-      text.includes("(backings)") ||
-      text.includes("[backings]") ||
-      (!isBackingTrackText && (
-        text.includes("backings") ||
-        text.includes("(backup)") ||
-        text.includes("[backup]") ||
-        text.includes("backing.") ||
-        text.includes("- backing") ||
-        text.includes("_backing")
-      ));
-
-    if (hasBgvKeyword) {
-      detected.push("Background Vocals");
-    }
-
-    // 4. Vocals only (Master Isolated Vocal Stem / Acapella)
-    const hasVocalsOnlyKeyword = 
-      roleHint === "vocals" ||
-      text.includes("vocals only") || 
-      text.includes("(vocals)") || 
-      text.includes("[vocals]") || 
-      text.includes("vocals ensemble") || 
-      text.includes("isolated_vocals") || 
-      text.includes("isolated vocals") || 
-      text.includes("acapella") || 
-      text.includes("acappella") || 
-      fileNameOnly.includes("vocals.") ||
-      fileNameOnly.includes("_vocals.") ||
-      fileNameOnly.includes(" vocals.") ||
-      fileNameOnly.includes("-vocals.");
-
-    if (hasVocalsOnlyKeyword) {
-      if (!detected.includes("Lead Vocal") && !detected.includes("Background Vocals")) {
-        detected.push("Vocals only");
-      }
-    }
-
-    // 5. Iso Track (Isolated Instrumental Stem from Vocal Separation)
-    const hasIsoTrackKeyword = 
-      roleHint === "iso_track" ||
-      text.includes("iso track") ||
-      text.includes("iso-track") ||
-      text.includes("iso_track") ||
-      text.includes("(iso track)") ||
-      text.includes("[iso track]") ||
-      text.includes("(instrumental)") ||
-      text.includes("[instrumental]") ||
-      fileNameOnly.includes("iso track") ||
-      fileNameOnly.includes("instrumental.");
-
-    if (hasIsoTrackKeyword) {
-      detected.push("Iso Track");
-    }
-
-    // 6. Track (Accompaniment / Backing Track / Instrumental / Karaoke)
-    const hasTrackKeyword = 
-      roleHint === "main" ||
-      text.includes("backing track") ||
-      text.includes("performance track") ||
-      text.includes("split track") ||
-      text.includes("accompaniment") ||
-      text.includes("instrumental") ||
-      text.includes("karaoke") ||
-      text.includes("minus one") ||
-      text.includes("minus 1") ||
-      text.includes("no vox") ||
-      text.includes("no vocals") ||
-      text.includes("(track)") ||
-      text.includes("[track]") ||
-      text.includes("_track.") ||
-      text.includes("-track.") ||
-      text.includes(" track.") ||
-      text.includes("- track.") ||
-      text.includes("- track ") ||
-      text.includes("rehearsal track") ||
-      text.includes("stage track");
-
-    if (hasTrackKeyword && !detected.includes("Iso Track")) {
-      detected.push("Track");
-    } else if (
-      // If no tag detected yet, check if this is the designated primary track
-      (roleHint === "main" || (primarySongTrackPath && path === primarySongTrackPath)) &&
-      !detected.includes("Original") &&
-      !detected.includes("Vocals only") &&
-      !detected.includes("Lead Vocal") &&
-      !detected.includes("Background Vocals") &&
-      !detected.includes("Iso Track")
-    ) {
-      detected.push("Track");
-    }
-
-    return detected;
+    return detectAudioTags(path, name, roleHint, primarySongTrackPath);
   }
 
   function getFileTags(trackPath: string, trackName?: string, roleHint?: string): string[] {
@@ -2858,6 +2771,10 @@
     return document.querySelector(".pdf-scroll-column") as HTMLElement | null;
   }
 
+  // Observers for virtualized PDF page rendering
+  let mainPdfObserver: IntersectionObserver | null = null;
+  const dynamicPdfObservers: Map<string, IntersectionObserver> = new Map();
+
   async function renderOpenPdfTab(tab: OpenPdfTab) {
     const container = document.getElementById("pdf-container-" + tab.id) as HTMLDivElement | null;
     if (!container) return;
@@ -2865,9 +2782,15 @@
     tab.error = null;
     openPdfTabs = [...openPdfTabs];
 
+    // Clean up previous observer for this tab if exists
+    if (dynamicPdfObservers.has(tab.id)) {
+      dynamicPdfObservers.get(tab.id)?.disconnect();
+      dynamicPdfObservers.delete(tab.id);
+    }
+
     try {
-      const bytes: number[] = await invoke("read_file_bytes", { path: tab.path });
-      const uint8 = new Uint8Array(bytes);
+      const arrayBuffer: ArrayBuffer = await invoke("read_file_binary", { path: tab.path });
+      const uint8 = new Uint8Array(arrayBuffer);
       const loadingTask = pdfjsLib.getDocument({ data: uint8 });
       const doc = await loadingTask.promise;
       
@@ -2876,15 +2799,83 @@
       const containerWidth = Math.max(300, (container.clientWidth || 800) - 32);
       const dpr = window.devicePixelRatio || 1;
 
+      // Track render tasks per page to prevent duplicate or cancelled renders
+      const pageRenderTasks = new Map<number, any>();
+
+      const observer = new IntersectionObserver((entries) => {
+        entries.forEach(async (entry) => {
+          const card = entry.target as HTMLElement;
+          const pageNum = parseInt(card.dataset.pageNum || "1", 10);
+
+          if (entry.isIntersecting) {
+            // Page is visible (or within 500px rootMargin)
+            let canvas = card.querySelector("canvas.pdf-page-canvas") as HTMLCanvasElement | null;
+            if (!canvas) {
+              const baseWidth = parseFloat(card.dataset.baseWidth || `${containerWidth}`);
+              const baseHeight = parseFloat(card.dataset.baseHeight || "800");
+
+              canvas = document.createElement("canvas");
+              canvas.className = "pdf-page-canvas";
+              canvas.width = Math.floor(baseWidth * dpr);
+              canvas.height = Math.floor(baseHeight * dpr);
+              canvas.style.width = `${Math.floor(baseWidth)}px`;
+              canvas.style.height = `${Math.floor(baseHeight)}px`;
+              card.prepend(canvas);
+
+              try {
+                const page = await doc.getPage(pageNum);
+                const unscaledViewport = page.getViewport({ scale: 1.0 });
+                const baseScale = baseWidth / unscaledViewport.width;
+                const viewport = page.getViewport({ scale: baseScale * dpr });
+                const ctx = canvas.getContext("2d")!;
+
+                const renderTask = page.render({ canvasContext: ctx, viewport });
+                pageRenderTasks.set(pageNum, renderTask);
+                await renderTask.promise;
+              } catch (err: any) {
+                if (err?.name !== "RenderingCancelledException") {
+                  console.warn(`Error rendering PDF page ${pageNum}:`, err);
+                }
+              } finally {
+                pageRenderTasks.delete(pageNum);
+              }
+            }
+          } else {
+            // Page is well outside viewport: cancel pending render and release canvas memory
+            const existingTask = pageRenderTasks.get(pageNum);
+            if (existingTask) {
+              try { existingTask.cancel(); } catch {}
+              pageRenderTasks.delete(pageNum);
+            }
+            const canvas = card.querySelector("canvas.pdf-page-canvas");
+            if (canvas) {
+              canvas.remove();
+            }
+          }
+        });
+      }, {
+        root: container,
+        rootMargin: "500px 0px 500px 0px",
+        threshold: 0
+      });
+
+      dynamicPdfObservers.set(tab.id, observer);
+
+      // Skeletons pass: measure unscaled pages once and create cards with accurate heights
       for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
         const page = await doc.getPage(pageNum);
         const unscaledViewport = page.getViewport({ scale: 1.0 });
         const baseScale = containerWidth / unscaledViewport.width;
-        const viewport = page.getViewport({ scale: baseScale * dpr });
+        const cardWidth = Math.floor(unscaledViewport.width * baseScale);
+        const cardHeight = Math.floor(unscaledViewport.height * baseScale);
 
         const pageWrapper = document.createElement("div");
         pageWrapper.className = `pdf-page-card ${tab.isInverted ? 'inverted' : ''}`;
         pageWrapper.dataset.pageNum = pageNum.toString();
+        pageWrapper.dataset.baseWidth = cardWidth.toString();
+        pageWrapper.dataset.baseHeight = cardHeight.toString();
+        pageWrapper.style.width = `${cardWidth}px`;
+        pageWrapper.style.minHeight = `${cardHeight}px`;
 
         pageWrapper.addEventListener("dragover", (e) => {
           e.preventDefault();
@@ -2896,18 +2887,8 @@
           handlePdfPageDrop(e, pageNum, pageWrapper);
         });
 
-        const canvas = document.createElement("canvas");
-        canvas.className = "pdf-page-canvas";
-        canvas.width = Math.floor(viewport.width);
-        canvas.height = Math.floor(viewport.height);
-        canvas.style.width = `${Math.floor(viewport.width / dpr)}px`;
-        canvas.style.height = `${Math.floor(viewport.height / dpr)}px`;
-
-        const ctx = canvas.getContext("2d")!;
-        pageWrapper.appendChild(canvas);
         container.appendChild(pageWrapper);
-
-        await page.render({ canvasContext: ctx, viewport }).promise;
+        observer.observe(pageWrapper);
       }
 
       tab.isLoading = false;
@@ -2991,10 +2972,16 @@
     pdfRenderError = "";
     pdfCurrentPage = 1;
 
+    // Disconnect any existing observer
+    if (mainPdfObserver) {
+      mainPdfObserver.disconnect();
+      mainPdfObserver = null;
+    }
+
     try {
-      const bytes: number[] = await invoke("read_file_bytes", { path: pdfChartPath });
+      const arrayBuffer: ArrayBuffer = await invoke("read_file_binary", { path: pdfChartPath });
       if (taskId !== currentRenderTaskId) return;
-      const uint8 = new Uint8Array(bytes);
+      const uint8 = new Uint8Array(arrayBuffer);
       const loadingTask = pdfjsLib.getDocument({ data: uint8 });
       const doc = await loadingTask.promise;
       if (taskId !== currentRenderTaskId) return;
@@ -3006,18 +2993,84 @@
       lastRenderedWidth = containerWidth;
       const dpr = window.devicePixelRatio || 1;
 
+      // Track render tasks per page to prevent duplicate or cancelled renders
+      const pageRenderTasks = new Map<number, any>();
+
+      mainPdfObserver = new IntersectionObserver((entries) => {
+        entries.forEach(async (entry) => {
+          if (taskId !== currentRenderTaskId) return;
+          const card = entry.target as HTMLElement;
+          const pageNum = parseInt(card.dataset.pageNum || "1", 10);
+
+          if (entry.isIntersecting) {
+            // Page is visible (or within 500px rootMargin)
+            let canvas = card.querySelector("canvas.pdf-page-canvas") as HTMLCanvasElement | null;
+            if (!canvas) {
+              const baseWidth = parseFloat(card.dataset.baseWidth || `${containerWidth}`);
+              const baseHeight = parseFloat(card.dataset.baseHeight || "800");
+
+              canvas = document.createElement("canvas");
+              canvas.className = "pdf-page-canvas";
+              canvas.width = Math.floor(baseWidth * dpr);
+              canvas.height = Math.floor(baseHeight * dpr);
+              canvas.style.width = `${Math.floor(baseWidth)}px`;
+              canvas.style.height = `${Math.floor(baseHeight)}px`;
+              card.prepend(canvas);
+
+              try {
+                const page = await doc.getPage(pageNum);
+                if (taskId !== currentRenderTaskId) return;
+                const unscaledViewport = page.getViewport({ scale: 1.0 });
+                const baseScale = baseWidth / unscaledViewport.width;
+                const viewport = page.getViewport({ scale: baseScale * dpr });
+                const ctx = canvas.getContext("2d")!;
+
+                const renderTask = page.render({ canvasContext: ctx, viewport });
+                pageRenderTasks.set(pageNum, renderTask);
+                await renderTask.promise;
+              } catch (err: any) {
+                if (err?.name !== "RenderingCancelledException") {
+                  console.warn(`Error rendering PDF page ${pageNum}:`, err);
+                }
+              } finally {
+                pageRenderTasks.delete(pageNum);
+              }
+            }
+          } else {
+            // Page is well outside viewport: cancel pending render and release canvas memory
+            const existingTask = pageRenderTasks.get(pageNum);
+            if (existingTask) {
+              try { existingTask.cancel(); } catch {}
+              pageRenderTasks.delete(pageNum);
+            }
+            const canvas = card.querySelector("canvas.pdf-page-canvas");
+            if (canvas) {
+              canvas.remove();
+            }
+          }
+        });
+      }, {
+        root: pdfContainer,
+        rootMargin: "500px 0px 500px 0px",
+        threshold: 0
+      });
+
+      // Skeletons pass: measure unscaled pages once and create cards with accurate heights
       for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
         if (taskId !== currentRenderTaskId) return;
         const page = await doc.getPage(pageNum);
         const unscaledViewport = page.getViewport({ scale: 1.0 });
-        
-        // Auto-scale to full container width
         const baseScale = containerWidth / unscaledViewport.width;
-        const viewport = page.getViewport({ scale: baseScale * dpr });
+        const cardWidth = Math.floor(unscaledViewport.width * baseScale);
+        const cardHeight = Math.floor(unscaledViewport.height * baseScale);
 
         const pageWrapper = document.createElement("div");
         pageWrapper.className = `pdf-page-card ${isPdfInverted ? 'inverted' : ''}`;
         pageWrapper.dataset.pageNum = pageNum.toString();
+        pageWrapper.dataset.baseWidth = cardWidth.toString();
+        pageWrapper.dataset.baseHeight = cardHeight.toString();
+        pageWrapper.style.width = `${cardWidth}px`;
+        pageWrapper.style.minHeight = `${cardHeight}px`;
 
         pageWrapper.addEventListener("dragover", (e) => {
           e.preventDefault();
@@ -3029,23 +3082,8 @@
           handlePdfPageDrop(e, pageNum, pageWrapper);
         });
 
-        const canvas = document.createElement("canvas");
-        canvas.className = "pdf-page-canvas";
-        canvas.width = Math.floor(viewport.width);
-        canvas.height = Math.floor(viewport.height);
-        canvas.style.width = `${Math.floor(viewport.width / dpr)}px`;
-        canvas.style.height = `${Math.floor(viewport.height / dpr)}px`;
-
-        const ctx = canvas.getContext("2d")!;
-
-        pageWrapper.appendChild(canvas);
         pdfContainer.appendChild(pageWrapper);
-
-        const renderContext = {
-          canvasContext: ctx,
-          viewport: viewport
-        };
-        await page.render(renderContext).promise;
+        mainPdfObserver.observe(pageWrapper);
       }
 
       renderPdfMarkerBadges();
@@ -3373,11 +3411,21 @@
         badge.style.backgroundColor = m.color || "#ff9500";
         badge.title = `Marker: ${m.name} (${formatTime(m.time)}) • Click to jump • Drag to move (drag off to unpin)`;
 
-        badge.innerHTML = `
-          <span class="pdf-marker-dot"></span>
-          <span class="pdf-marker-title">${m.name}</span>
-          <button class="pdf-marker-unpin" title="Unpin from score">×</button>
-        `;
+        const dotSpan = document.createElement("span");
+        dotSpan.className = "pdf-marker-dot";
+
+        const titleSpan = document.createElement("span");
+        titleSpan.className = "pdf-marker-title";
+        titleSpan.textContent = m.name;
+
+        const unpinBtn = document.createElement("button");
+        unpinBtn.className = "pdf-marker-unpin";
+        unpinBtn.title = "Unpin from score";
+        unpinBtn.textContent = "×";
+
+        badge.appendChild(dotSpan);
+        badge.appendChild(titleSpan);
+        badge.appendChild(unpinBtn);
 
         // Click to seek
         badge.addEventListener("click", async (e) => {
@@ -3391,13 +3439,10 @@
         });
 
         // Unpin button
-        const unpinBtn = badge.querySelector(".pdf-marker-unpin");
-        if (unpinBtn) {
-          unpinBtn.addEventListener("click", (e) => {
-            e.stopPropagation();
-            removeMarkerPdfAnchor(m.id);
-          });
-        }
+        unpinBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          removeMarkerPdfAnchor(m.id);
+        });
 
         // Mouse pointer drag to reposition or unpin
         badge.addEventListener("mousedown", (e) => {
@@ -3680,6 +3725,25 @@
   onMount(() => {
     loadAppPreferences();
 
+    // Refresh audio hardware devices and apply saved device preference
+    refreshAudioOutputDevices().then(() => {
+      if (selectedAudioDevice && selectedAudioDevice !== "default") {
+        invoke<AudioDeviceItem>("set_audio_output_device", { deviceName: selectedAudioDevice })
+          .then(info => {
+            activeAudioDeviceInfo = info;
+          })
+          .catch(err => {
+            console.warn("Could not activate saved audio device on startup:", err);
+          });
+      }
+    });
+
+    // Window focus tracking to prevent activating clicks from accidentally seeking/rewinding
+    const handleFocus = () => {
+      lastWindowFocusTime = Date.now();
+    };
+    window.addEventListener("focus", handleFocus);
+
     // Restore Sidebar Widths
     const savedLeftWidth = localStorage.getItem("th_left_sidebar_width");
     if (savedLeftWidth) {
@@ -3743,13 +3807,13 @@
     if (savedVersions) associatedVersions = JSON.parse(savedVersions);
 
     // UVR Event Listeners
-    listen<{ percent: number; stage: string }>("uvr-progress", (event) => {
+    const unlistenUvrProgress = listen<{ percent: number; stage: string }>("uvr-progress", (event) => {
       uvrSeparating = true;
       uvrPercent = event.payload.percent;
       uvrStage = event.payload.stage;
     });
 
-    listen<{ success: boolean; files: Array<{ name: string; path: string; role: string; fileType: string }>; error?: string }>("uvr-complete", (event) => {
+    const unlistenUvrComplete = listen<{ success: boolean; files: Array<{ name: string; path: string; role: string; fileType: string }>; error?: string }>("uvr-complete", (event) => {
       uvrSeparating = false;
       uvrPercent = 100;
       uvrStage = "Done!";
@@ -3758,7 +3822,7 @@
       }
     });
 
-    listen<string>("uvr-error", (event) => {
+    const unlistenUvrError = listen<string>("uvr-error", (event) => {
       uvrSeparating = false;
       uvrErrorMessage = event.payload;
     });
@@ -3792,6 +3856,7 @@
     statusInterval = setInterval(async () => {
       try {
         const status: any = await invoke("get_playback_status");
+        backgroundTracksCount = status.background_tracks_count || 0;
         const wasPlaying = isPlaying;
         isPlaying = status.is_playing;
         if (isPlaying) {
@@ -3953,6 +4018,10 @@
       handleRemoteControlAction(event.payload);
     });
 
+    const unlistenRemoteClients = listen<number>("remote-clients-changed", (event) => {
+      connectedRemoteClientsCount = typeof event.payload === "number" ? event.payload : 0;
+    });
+
     // Listen to Hardware MIDI events
     const unlistenMidi = listen("midi-event", (event: any) => {
       handleMidiEvent(event.payload);
@@ -3985,8 +4054,9 @@
 
       if (e.code === "Space") {
         e.preventDefault();
-        if (typeToJumpBuffer.length > 1) {
-          performTypeToJump(typeToJumpBuffer);
+        if (typeToJumpBuffer.length > 0) {
+          handleTypeaheadKey(" ");
+          return;
         }
         clearTypeahead();
         // Standard Play/Pause toggle for currently loaded track
@@ -4081,13 +4151,25 @@
               isPlaying = true;
             });
           } else {
-            handleStop();
+            handlePlayPause();
           }
-        } else {
-          handleStop();
         }
         return;
       } else if (e.code === "Delete" || e.code === "Backspace") {
+        if (typeToJumpBuffer.length > 0) {
+          e.preventDefault();
+          typeToJumpBuffer = typeToJumpBuffer.slice(0, -1);
+          if (typeToJumpBuffer.length === 0) {
+            clearTypeahead();
+          } else {
+            performTypeToJump(typeToJumpBuffer);
+            if (typeToJumpTimeout) clearTimeout(typeToJumpTimeout);
+            typeToJumpTimeout = setTimeout(() => {
+              onTypeaheadRestPeriodElapsed();
+            }, TYPEAHEAD_REST_PERIOD_MS);
+          }
+          return;
+        }
         clearTypeahead();
         if (selectedEnvelopeNodeId) {
           e.preventDefault();
@@ -4184,10 +4266,15 @@
       unlistenDragDrop.then(fn => fn());
       unlistenMenu.then(fn => fn());
       unlistenRemote.then(fn => fn());
+      unlistenRemoteClients.then(fn => fn());
       unlistenMidi.then(fn => fn());
+      unlistenUvrProgress.then(fn => fn());
+      unlistenUvrComplete.then(fn => fn());
+      unlistenUvrError.then(fn => fn());
       window.removeEventListener("click", closeMenu);
       window.removeEventListener("mousedown", handleContainerMousedown);
       window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("focus", handleFocus);
     };
   });
 
@@ -4580,7 +4667,7 @@
   }
 
   // Type-To-Jump & Typeahead Engine
-  const TYPEAHEAD_REST_PERIOD_MS = 750;
+  const TYPEAHEAD_REST_PERIOD_MS = 1200;
 
   function cleanItemNameForSearch(name: string): string {
     if (!name) return "";
@@ -4589,15 +4676,48 @@
     return withoutTrackNum.trim() || withoutExt.trim() || name.trim();
   }
 
+  function escapeRegExp(string: string): string {
+    return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
   function matchesTypeahead(name: string, query: string): boolean {
     if (!name || !query) return false;
-    const q = query.toLowerCase();
+    const q = query.toLowerCase().trim();
+    if (!q) return false;
+
     const raw = name.toLowerCase();
-    if (raw.startsWith(q)) return true;
     const cleaned = cleanItemNameForSearch(name).toLowerCase();
-    if (cleaned.startsWith(q)) return true;
-    if (raw.replace(/^the[\s\._-]+/, "").startsWith(q)) return true;
-    if (cleaned.replace(/^the[\s\._-]+/, "").startsWith(q)) return true;
+    const noTheRaw = raw.replace(/^the[\s\._-]+/, "");
+    const noTheCleaned = cleaned.replace(/^the[\s\._-]+/, "");
+
+    // 1. Direct prefix matches
+    if (raw.startsWith(q) || cleaned.startsWith(q) || noTheRaw.startsWith(q) || noTheCleaned.startsWith(q)) {
+      return true;
+    }
+
+    // 2. Word-boundary prefix match for full query
+    const escapedQ = escapeRegExp(q);
+    const wordBoundaryRegex = new RegExp(`(?:^|[\\s\\-_./(])` + escapedQ);
+    if (wordBoundaryRegex.test(cleaned) || wordBoundaryRegex.test(raw)) {
+      return true;
+    }
+
+    // 3. Multi-token match (e.g. "want you" matches "I Want You (She's So Heavy)")
+    const tokens = q.split(/\s+/).filter(Boolean);
+    if (tokens.length > 1) {
+      const allTokensMatch = tokens.every(tok => {
+        const escTok = escapeRegExp(tok);
+        const tokRegex = new RegExp(`(?:^|[\\s\\-_./(])` + escTok);
+        return tokRegex.test(cleaned) || tokRegex.test(raw) || cleaned.includes(tok) || raw.includes(tok);
+      });
+      if (allTokensMatch) return true;
+    }
+
+    // 4. Substring containment match as fallback if query is >= 3 chars
+    if (q.length >= 3 && (cleaned.includes(q) || raw.includes(q))) {
+      return true;
+    }
+
     return false;
   }
 
@@ -4666,6 +4786,7 @@
     const isFirstChar = typeToJumpBuffer.length === 0;
 
     if (isFirstChar) {
+      if (char === " ") return;
       typeToJumpBuffer = char;
       showTypeaheadIndicator = true;
       // Immediate jump on first letter!
@@ -4679,8 +4800,8 @@
       // Within rest window:
       if (typeToJumpTimeout) clearTimeout(typeToJumpTimeout);
 
-      // Check if user is repeating the same character (e.g. "B" then "B")
-      const isRepeatedSameChar = typeToJumpBuffer.split("").every(c => c.toLowerCase() === char.toLowerCase());
+      // Check if user is repeating the same character (e.g. "B" then "B") - do NOT cycle on space!
+      const isRepeatedSameChar = char !== " " && typeToJumpBuffer.split("").every(c => c.toLowerCase() === char.toLowerCase());
 
       if (isRepeatedSameChar) {
         const testBuffer = typeToJumpBuffer + char;
@@ -5114,8 +5235,12 @@
 
   // Show Control & Remotes Functions (Milestone 8)
   let lastBroadcastStateStr = "";
+  let connectedRemoteClientsCount = 0;
 
   function broadcastCurrentState(force: boolean = false) {
+    if (connectedRemoteClientsCount <= 0 && !force) {
+      return;
+    }
     let activeMarkerName = "";
     let maxMarkerTime = -1;
     for (let i = 0; i < markers.length; i++) {
@@ -5617,6 +5742,9 @@
 
   // Playback handlers
   async function handlePlayPause() {
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
     if (isPlaying) {
       await invoke("pause");
     } else {
@@ -5625,13 +5753,25 @@
   }
 
   async function handleStop() {
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
     await invoke("stop");
+    backgroundTracksCount = 0;
     currentTime = 0;
     progress = 0;
     updateVisiblePeaks().then(() => {
       drawMainWaveform();
       drawOverviewWaveform();
     });
+  }
+
+  async function handleStopBackgroundTracks() {
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
+    await invoke("stop_background_tracks");
+    backgroundTracksCount = 0;
   }
 
   async function handleVolume(e: Event) {
@@ -5643,6 +5783,9 @@
   }
 
   function handleRewind() {
+    if (document.activeElement instanceof HTMLElement) {
+      document.activeElement.blur();
+    }
     lastScrolledMarkerId = null;
     currentTime = 0;
     progress = 0;
@@ -5743,6 +5886,9 @@
   // Main Waveform: Mouse Drag to Pan, click to seek, Shift-drag region select, and Ruler Marker Dragging
   function handleMainMouseDown(e: MouseEvent) {
     if (duration === 0 || !mainCanvas) return;
+    if (Date.now() - lastWindowFocusTime < 250) {
+      return;
+    }
 
     const rect = mainCanvas.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
@@ -6214,10 +6360,27 @@
     showRegionContextMenu = true;
   }
 
-  // Mouse wheel zoom on Main Waveform
+  // Mouse wheel zoom or Shift-wheel scrub on Main Waveform
   function handleMainWheel(e: WheelEvent) {
     if (duration === 0) return;
     e.preventDefault();
+
+    // Shift + Mouse Wheel or horizontal trackpad/wheel = scrub forward / backward smoothly
+    if (e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
+      const wheelDelta = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+      const visibleSec = (1.0 / zoom) * duration;
+      // Proportional scrub: approx 5% of visible window per 120-unit wheel notch, with min step of 0.1s
+      const scrubDelta = (wheelDelta / 120.0) * Math.max(0.1, visibleSec * 0.05);
+      const newTime = Math.max(0, Math.min(duration, currentTime + scrubDelta));
+      currentTime = newTime;
+      progress = duration > 0 ? currentTime / duration : 0;
+      updateVisiblePeaks();
+      drawMainWaveform();
+      drawOverviewWaveform();
+      invoke("seek", { seconds: currentTime });
+      return;
+    }
+
     const factor = e.deltaY < 0 ? 1.15 : 0.85;
     let newZoom = zoom * factor;
     newZoom = Math.max(1.0, Math.min(maxZoom, newZoom));
@@ -6251,6 +6414,9 @@
 
   // Overview Waveform: Drag highlighted window center
   function handleOverviewMouseDown(e: MouseEvent, target: "main" | "alternate") {
+    if (Date.now() - lastWindowFocusTime < 250) {
+      return;
+    }
     if (target !== activeTrackMode) {
       toggleActiveTrack(target);
     }
@@ -6351,7 +6517,7 @@
       }
     }
     if (hasChanges) {
-      localStorage.setItem("th_track_profiles", JSON.stringify(store));
+      flushProfilesToLocalStorage();
     }
 
     saveCurrentTrackProfile(filePath);
@@ -6391,7 +6557,7 @@
         }
       }
       if (hasChanges) {
-        localStorage.setItem("th_track_profiles", JSON.stringify(store));
+        flushProfilesToLocalStorage();
       }
 
       saveCurrentTrackProfile(filePath);
@@ -6416,7 +6582,7 @@
         store[trackPath].markers = store[trackPath].markers.filter((m: Marker) => m.name.trim().toLowerCase() !== targetName);
       }
     }
-    localStorage.setItem("th_track_profiles", JSON.stringify(store));
+    flushProfilesToLocalStorage();
     saveCurrentTrackProfile(filePath);
     drawMainWaveform();
     drawOverviewWaveform();
@@ -7451,7 +7617,10 @@
                   if (filePath && associatedFiles.some(f => f.path === entry.path)) {
                     loadAudioVersion(entry.path, true);
                   } else {
-                    loadAudioPath(entry.path, "main");
+                    loadAudioPath(entry.path, "main", true).then(async () => {
+                      await invoke("play");
+                      isPlaying = true;
+                    });
                   }
                 }
               }}
@@ -7572,6 +7741,9 @@
         <div class="info-row">
           <span class="label">Remaining:</span>
           <span class="val">{formatTime(Math.max(0, duration - currentTime))}</span>
+        </div>
+        <div class="sidebar-build-info" title="Build Identifier: {BUILD_NUMBER}">
+          TrackHelm v0.1.1 • Build {BUILD_TIMESTAMP}
         </div>
       </div>
 
@@ -8227,7 +8399,7 @@
             on:mousedown={handleMainMouseDown}
             on:mousemove={handleMainCanvasHover}
             on:dblclick={handleMainDblClick}
-            on:wheel|passive={handleMainWheel}
+            on:wheel|preventDefault={handleMainWheel}
             on:contextmenu={handleWaveformContextMenu}
             class="main-canvas"
           ></canvas>
@@ -8365,6 +8537,13 @@
             >
               ⇄ A/B
             </button>
+            {#if backgroundTracksCount > 0}
+              <div class="bg-tracks-pill" title="Tracks continuing in background until finished">
+                <span class="bg-tracks-pulse">●</span>
+                <span class="bg-tracks-label">{backgroundTracksCount} in background</span>
+                <button class="bg-tracks-stop-btn" on:click={handleStopBackgroundTracks} title="Stop background tracks">✕</button>
+              </div>
+            {/if}
           </div>
         </div>
 
@@ -10294,11 +10473,56 @@
             <span class="modal-badge prefs-badge">PREFS</span>
             <h3>Preferences</h3>
             <span class="stage-subhead">TrackHelm Application Settings</span>
+            <span class="prefs-build-tag" title="Build Identifier: {BUILD_NUMBER}">Build: {BUILD_TIMESTAMP}</span>
           </div>
           <button class="modal-close-btn" on:click={closePreferencesModal}>×</button>
         </div>
 
         <div class="modal-body prefs-modal-body">
+          <!-- Audio Output Device Selection -->
+          <div class="export-section">
+            <div class="export-section-title">AUDIO OUTPUT DEVICE</div>
+            <p class="prefs-section-hint">
+              Select the audio playback hardware interface or sound card. Changes apply immediately in real-time without restarting playback.
+            </p>
+
+            <div class="prefs-field-row" style="align-items: center; gap: 8px;">
+              <span class="prefs-field-label">Output Device:</span>
+              <div style="display: flex; gap: 6px; flex: 1; align-items: center;">
+                <select 
+                  class="export-select" 
+                  style="flex: 1;"
+                  bind:value={selectedAudioDevice} 
+                  on:change={handleAudioDeviceChange}
+                  disabled={isLoadingAudioDevices}
+                >
+                  <option value="default">
+                    System Default {defaultAudioDeviceName ? `(${defaultAudioDeviceName})` : ''}
+                  </option>
+                  {#each availableAudioDevices as dev}
+                    <option value={dev.name}>
+                      {dev.name} ({dev.sample_rate} Hz, {dev.channels}ch){dev.is_default ? ' [Default]' : ''}
+                    </option>
+                  {/each}
+                </select>
+                <button 
+                  class="folder-pick-btn" 
+                  style="padding: 6px 10px;"
+                  on:click={refreshAudioOutputDevices} 
+                  title="Refresh audio hardware device list"
+                  disabled={isLoadingAudioDevices}
+                >
+                  ↻
+                </button>
+              </div>
+            </div>
+            {#if activeAudioDeviceInfo}
+              <div class="prefs-section-hint" style="margin-top: 6px; font-size: 11px; opacity: 0.8;">
+                Active: <strong>{activeAudioDeviceInfo.name}</strong> • {activeAudioDeviceInfo.sample_rate} Hz • {activeAudioDeviceInfo.channels} Channels
+              </div>
+            {/if}
+          </div>
+
           <!-- Library & Setlist Default Folders (AI Assistant Groundwork) -->
           <div class="export-section">
             <div class="export-section-title">LIBRARY & SETLIST ASSETS FOLDERS</div>
@@ -10442,14 +10666,29 @@
                 on:click={executeAutoLinkLibrary}
               >
                 {#if isAutoLinkingLibrary}
-                  <span class="spinner-inline"></span> Linking Library...
+                  <span class="spinner-inline"></span> Linking in Background...
                 {:else}
                   ⚡ Auto-Link Library Files
                 {/if}
               </button>
             </div>
 
-            {#if autoLinkStatusMessage}
+            {#if isAutoLinkingLibrary && autoLinkProgress}
+              <div class="auto-link-progress-card">
+                <div class="auto-link-progress-header">
+                  <span class="auto-link-progress-status">{autoLinkStatusMessage}</span>
+                  <span class="auto-link-progress-pct">{autoLinkProgress.percent}%</span>
+                </div>
+                <div class="auto-link-progress-track">
+                  <div class="auto-link-progress-bar" style="width: {autoLinkProgress.percent}%"></div>
+                </div>
+                <div class="auto-link-progress-subnote">
+                  💡 <strong>Runs in background:</strong> You can close this Preferences window and play or practice tracks freely.
+                </div>
+              </div>
+            {/if}
+
+            {#if autoLinkStatusMessage && !isAutoLinkingLibrary}
               <div class="auto-link-status-banner" class:error={autoLinkStatusIsError}>
                 <span>{autoLinkStatusMessage}</span>
                 <button class="status-dismiss-btn" on:click={() => autoLinkStatusMessage = ""}>×</button>
@@ -10723,14 +10962,14 @@
         <div class="modal-body about-modal-body">
           <div class="about-hero">
             <div class="about-app-title">TrackHelm</div>
-            <div class="about-version-tag">Version 0.1.1</div>
-            <div class="about-build-date">Build: September 2026 • 60fps Fluid Resizing Engine</div>
+            <div class="about-version-tag">Version 0.1.1 (Build {BUILD_NUMBER})</div>
+            <div class="about-build-date">Build Timestamp: {BUILD_TIMESTAMP}</div>
           </div>
 
           <div class="about-info-grid">
             <div class="about-info-row">
               <span class="about-info-label">Platform</span>
-              <span class="about-info-val">Windows x64 / Tauri 2.0</span>
+              <span class="about-info-val">{typeof navigator !== "undefined" && navigator.userAgent.includes("Mac") ? "macOS (Apple Silicon / Intel)" : "Windows x64"} / Tauri 2.0</span>
             </div>
             <div class="about-info-row">
               <span class="about-info-label">Audio DSP</span>
@@ -10923,6 +11162,31 @@
           </button>
         </div>
       </div>
+    </div>
+  {/if}
+
+  <!-- Global Floating Indicator for Background Library Linking -->
+  {#if isAutoLinkingLibrary && !showPreferencesModal}
+    <!-- svelte-ignore a11y-click-events-have-key-events -->
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div 
+      class="bg-autolink-floating-pill" 
+      on:click={() => showPreferencesModal = true}
+      title="Click to open Preferences and view details"
+    >
+      <span class="spinner-inline"></span>
+      <span class="bg-autolink-pill-text">
+        Auto-Linking Library: {autoLinkProgress?.current || 0}/{autoLinkProgress?.total || 0}
+        {#if autoLinkProgress?.percent !== undefined} ({autoLinkProgress.percent}%){/if}
+      </span>
+      <span class="bg-autolink-pill-sub">Background • Click to open</span>
+    </div>
+  {:else if bgAutoLinkSuccessToast && !showPreferencesModal}
+    <!-- svelte-ignore a11y-click-events-have-key-events -->
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div class="bg-autolink-floating-pill success">
+      <span class="bg-autolink-pill-text">{bgAutoLinkSuccessToast}</span>
+      <button class="bg-autolink-pill-close" on:click|stopPropagation={() => bgAutoLinkSuccessToast = ""}>×</button>
     </div>
   {/if}
 </main>
@@ -11822,6 +12086,58 @@
     border-color: #28a76f;
     box-shadow: 0 0 8px rgba(40, 167, 111, 0.4);
     font-weight: 700;
+  }
+
+  .bg-tracks-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    background: rgba(33, 150, 243, 0.15);
+    border: 1px solid rgba(33, 150, 243, 0.4);
+    border-radius: 12px;
+    font-size: 0.75rem;
+    color: #64b5f6;
+    margin-left: 6px;
+    user-select: none;
+  }
+
+  .bg-tracks-pulse {
+    color: #42a5f5;
+    font-size: 0.65rem;
+    animation: bg-pulse 1.5s infinite;
+  }
+
+  @keyframes bg-pulse {
+    0% { opacity: 0.3; }
+    50% { opacity: 1; }
+    100% { opacity: 0.3; }
+  }
+
+  .bg-tracks-label {
+    font-weight: 600;
+    letter-spacing: 0.2px;
+    white-space: nowrap;
+  }
+
+  .bg-tracks-stop-btn {
+    background: none;
+    border: none;
+    color: #90caf9;
+    cursor: pointer;
+    font-size: 0.75rem;
+    padding: 0 4px;
+    line-height: 1;
+    border-radius: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+  }
+
+  .bg-tracks-stop-btn:hover {
+    color: #ff5252;
+    background: rgba(255, 82, 82, 0.25);
   }
 
   /* Loop & Zoom layout */
@@ -15338,6 +15654,31 @@
     color: #ffffff;
   }
 
+  .prefs-build-tag {
+    font-size: 0.72rem;
+    font-weight: 600;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    background: rgba(255, 255, 255, 0.08);
+    color: #a1a1aa;
+    padding: 3px 9px;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    margin-left: auto;
+    letter-spacing: 0.02em;
+  }
+
+  .sidebar-build-info {
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    font-size: 0.65rem;
+    color: #71717a;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    text-align: center;
+    user-select: none;
+    letter-spacing: 0.01em;
+  }
+
   .xfade-modal-body, .prefs-modal-body {
     padding: 16px 20px;
     display: flex;
@@ -15737,6 +16078,120 @@
 
   .status-dismiss-btn:hover {
     opacity: 1;
+  }
+
+  /* Auto-Link Progress Card inside Preferences */
+  .auto-link-progress-card {
+    margin-top: 12px;
+    padding: 12px 14px;
+    background: #18181f;
+    border: 1px solid #2a2a36;
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .auto-link-progress-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.72rem;
+    font-weight: 600;
+  }
+
+  .auto-link-progress-status {
+    color: #f2f2f7;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 80%;
+  }
+
+  .auto-link-progress-pct {
+    color: #3b99fc;
+    font-weight: 700;
+  }
+
+  .auto-link-progress-track {
+    width: 100%;
+    height: 6px;
+    background: #2c2c36;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .auto-link-progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, #2563eb, #38bdf8);
+    transition: width 0.2s ease;
+  }
+
+  .auto-link-progress-subnote {
+    font-size: 0.68rem;
+    color: #98989f;
+    line-height: 1.35;
+  }
+
+  /* Global Floating Pill for Background Linking */
+  .bg-autolink-floating-pill {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 99999;
+    background: rgba(26, 26, 36, 0.95);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid #3b82f6;
+    border-radius: 24px;
+    padding: 10px 18px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 12px rgba(59, 130, 246, 0.25);
+    cursor: pointer;
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+  }
+
+  .bg-autolink-floating-pill:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.6), 0 0 16px rgba(59, 130, 246, 0.35);
+  }
+
+  .bg-autolink-floating-pill.success {
+    border-color: #30d158;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 12px rgba(48, 209, 88, 0.25);
+    cursor: default;
+  }
+
+  .bg-autolink-pill-text {
+    font-size: 0.76rem;
+    font-weight: 600;
+    color: #f2f2f7;
+  }
+
+  .bg-autolink-floating-pill.success .bg-autolink-pill-text {
+    color: #30d158;
+  }
+
+  .bg-autolink-pill-sub {
+    font-size: 0.68rem;
+    color: #94a3b8;
+    margin-left: 4px;
+  }
+
+  .bg-autolink-pill-close {
+    background: transparent;
+    border: none;
+    color: #8e8e93;
+    font-size: 1rem;
+    cursor: pointer;
+    line-height: 1;
+    padding: 0 4px;
+  }
+
+  .bg-autolink-pill-close:hover {
+    color: #f2f2f7;
   }
 
   .spinner-inline {

@@ -291,6 +291,12 @@
           "markdownDescription": "Enables the read_dir command without any pre-configured scope."
         },
         {
+          "description": "Enables the read_file_binary command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-read-file-binary",
+          "markdownDescription": "Enables the read_file_binary command without any pre-configured scope."
+        },
+        {
           "description": "Enables the read_file_bytes command without any pre-configured scope.",
           "type": "string",
           "const": "allow-read-file-bytes",
@@ -499,6 +505,12 @@
           "type": "string",
           "const": "deny-read-dir",
           "markdownDescription": "Denies the read_dir command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the read_file_binary command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-read-file-binary",
+          "markdownDescription": "Denies the read_file_binary command without any pre-configured scope."
         },
         {
           "description": "Denies the read_file_bytes command without any pre-configured scope.",

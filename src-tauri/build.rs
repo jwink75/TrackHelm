@@ -28,6 +28,7 @@ fn main() {
                         "read_audio_metadata",
                         "save_audio_metadata",
                         "read_file_bytes",
+                        "read_file_binary",
                         "export_audio_file",
                         "save_playlist_file",
                         "load_playlist_file",
@@ -38,7 +39,11 @@ fn main() {
                         "check_files_exist",
                         "is_file_downloaded",
                         "move_file_to_trash",
-                        "run_uvr_separation"
+                        "run_uvr_separation",
+                        "list_audio_output_devices",
+                        "get_current_audio_output_device",
+                        "set_audio_output_device",
+                        "stop_background_tracks"
                     ])
 
             )

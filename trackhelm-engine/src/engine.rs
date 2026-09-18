@@ -17,11 +17,214 @@ pub struct SharedEngineState {
     pub out_peak_db_r: Arc<AtomicI32>,
     pub gr_stage1_db: Arc<AtomicI32>,  // (abs_gr_db * 100.0) as i32, default 0
     pub gr_stage2_db: Arc<AtomicI32>,
+    pub background_tracks_count: Arc<AtomicUsize>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AudioDeviceItem {
+    pub name: String,
+    pub is_default: bool,
+    pub sample_rate: u32,
+    pub channels: u16,
+}
+
+enum HostCommand {
+    SetDevice {
+        name: Option<String>,
+        reply: crossbeam_channel::Sender<Result<AudioDeviceItem, String>>,
+    },
+    GetDevice {
+        reply: crossbeam_channel::Sender<Option<String>>,
+    },
 }
 
 pub struct AudioEngine {
-    command_receiver: crossbeam_channel::Receiver<Command>,
-    shared_state: Arc<SharedEngineState>,
+    host_sender: crossbeam_channel::Sender<HostCommand>,
+}
+
+pub fn list_output_devices() -> Vec<AudioDeviceItem> {
+    let host = cpal::default_host();
+    let default_name = host.default_output_device().and_then(|d| d.name().ok());
+    let mut devices = Vec::new();
+
+    if let Ok(dev_iter) = host.output_devices() {
+        for dev in dev_iter {
+            if let Ok(name) = dev.name() {
+                let is_default = default_name.as_deref() == Some(&name);
+                let (sample_rate, channels) = dev.default_output_config()
+                    .map(|c| (c.sample_rate().0, c.channels()))
+                    .unwrap_or((44100, 2));
+
+                devices.push(AudioDeviceItem {
+                    name,
+                    is_default,
+                    sample_rate,
+                    channels,
+                });
+            }
+        }
+    }
+    devices
+}
+
+struct BackgroundVoice {
+    audio: Arc<DecodedAudio>,
+    playback_frame: usize,
+    speed: f32,
+    pitch: f32,
+    stretch: signalsmith_stretch_rs::SignalsmithStretch,
+    stretch_channels: usize,
+    biquads_pool: Vec<crate::dsp::Biquad>,
+    active_biquad_count: usize,
+    eq_active: bool,
+    dual_compressor: crate::dsp::DualCompressor,
+    volume: f32,
+    envelope_nodes: [crate::command::EnvelopeNode; crate::command::MAX_ENVELOPE_NODES],
+    envelope_nodes_count: usize,
+    active_regions: [crate::command::EngineRegion; crate::command::MAX_ENGINE_REGIONS],
+    active_region_count: usize,
+    in_scratch: Vec<Vec<f32>>,
+    out_scratch: Vec<Vec<f32>>,
+}
+
+fn render_single_voice(
+    audio: &DecodedAudio,
+    playback_frame: &mut usize,
+    speed: f32,
+    pitch: f32,
+    stretch: &mut signalsmith_stretch_rs::SignalsmithStretch,
+    stretch_channels: usize,
+    biquads_pool: &mut [crate::dsp::Biquad],
+    active_biquad_count: usize,
+    eq_active: bool,
+    dual_compressor: &mut crate::dsp::DualCompressor,
+    volume: f32,
+    envelope_nodes: &[crate::command::EnvelopeNode],
+    active_regions: &[crate::command::EngineRegion],
+    device_sample_rate: f64,
+    output_channels: usize,
+    num_out_frames: usize,
+    in_scratch: &mut [Vec<f32>],
+    out_scratch: &mut [Vec<f32>],
+    dest: &mut [f32],
+) -> bool {
+    let audio_len = audio.channel_samples[0].len();
+    let audio_channels = audio.channels;
+    let frame_rate = audio.sample_rate as f64;
+
+    // Region handling: Check for Cut skip and Loop wrap
+    let current_sec = *playback_frame as f64 / frame_rate;
+    for reg in active_regions {
+        if reg.is_cut && current_sec >= reg.start_seconds && current_sec < reg.end_seconds {
+            *playback_frame = (reg.end_seconds * frame_rate) as usize;
+            break;
+        } else if reg.is_loop && current_sec >= reg.end_seconds {
+            *playback_frame = (reg.start_seconds * frame_rate) as usize;
+            break;
+        }
+    }
+
+    if *playback_frame >= audio_len {
+        for s in dest.iter_mut().take(num_out_frames * output_channels) {
+            *s = 0.0;
+        }
+        return true;
+    }
+
+    const MAX_BUFFER_FRAMES: usize = 16384;
+    const MAX_CHANNELS: usize = 8;
+    let safe_out_frames = std::cmp::min(num_out_frames, MAX_BUFFER_FRAMES);
+    let num_in_frames = ((safe_out_frames as f32) * speed).round() as usize;
+    let safe_in_frames = std::cmp::min(num_in_frames, MAX_BUFFER_FRAMES);
+
+    for i in 0..safe_in_frames {
+        let curr_f = *playback_frame + i;
+        if curr_f < audio_len {
+            for ch in 0..stretch_channels {
+                in_scratch[ch][i] = audio.channel_samples[ch % audio_channels][curr_f];
+            }
+        } else {
+            for ch in 0..stretch_channels {
+                in_scratch[ch][i] = 0.0;
+            }
+        }
+    }
+
+    let mut in_slices: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
+    for ch in 0..stretch_channels {
+        in_slices[ch] = &in_scratch[ch][..safe_in_frames];
+    }
+
+    let mut out_slices: [&mut [f32]; MAX_CHANNELS] = std::array::from_fn(|ch| {
+        if ch < stretch_channels {
+            unsafe {
+                std::slice::from_raw_parts_mut(out_scratch[ch].as_mut_ptr(), safe_out_frames)
+            }
+        } else {
+            &mut [][..]
+        }
+    });
+
+    let is_modulating = pitch.abs() > 0.001 || (speed - 1.0).abs() > 0.001;
+    if is_modulating {
+        stretch.process(&in_slices[..stretch_channels], &mut out_slices[..stretch_channels]);
+    } else {
+        for ch in 0..stretch_channels {
+            out_scratch[ch][..safe_out_frames].copy_from_slice(&in_scratch[ch][..safe_out_frames]);
+        }
+    }
+
+    // Apply track volume & volume envelope PRE-EQ and PRE-COMPRESSOR
+    for frame_idx in 0..safe_out_frames {
+        let frame_time_sec = (*playback_frame + ((frame_idx as f32 * speed) as usize)) as f64 / device_sample_rate;
+        let env_gain = if !envelope_nodes.is_empty() {
+            crate::command::interpolate_envelope(envelope_nodes, frame_time_sec)
+        } else {
+            1.0
+        };
+        let total_pre_gain = volume * env_gain;
+
+        for out_c in 0..output_channels {
+            let in_c = out_c % stretch_channels;
+            dest[frame_idx * output_channels + out_c] = out_scratch[in_c][frame_idx] * total_pre_gain;
+        }
+    }
+
+    for frame_idx in safe_out_frames..num_out_frames {
+        for out_c in 0..output_channels {
+            dest[frame_idx * output_channels + out_c] = 0.0;
+        }
+    }
+
+    // Apply High-Quality Biquad EQ Filters
+    if eq_active && active_biquad_count > 0 {
+        for frame_idx in 0..num_out_frames {
+            for ch in 0..output_channels {
+                let idx = frame_idx * output_channels + ch;
+                let mut s = dest[idx];
+                for b in &mut biquads_pool[..active_biquad_count] {
+                    s = b.process_sample(ch, s);
+                }
+                dest[idx] = s;
+            }
+        }
+    }
+
+    // Apply Dual-Stage Dynamic Compressor
+    if !dual_compressor.is_bypassed() {
+        for frame_idx in 0..num_out_frames {
+            let left_idx = frame_idx * output_channels;
+            let right_idx = if output_channels > 1 { left_idx + 1 } else { left_idx };
+            let (l, r) = dual_compressor.process_stereo_frame(dest[left_idx], dest[right_idx]);
+            dest[left_idx] = l;
+            if output_channels > 1 {
+                dest[right_idx] = r;
+            }
+        }
+    }
+
+    *playback_frame += safe_in_frames;
+    *playback_frame >= audio_len
 }
 
 impl AudioEngine {
@@ -42,51 +245,107 @@ impl AudioEngine {
             out_peak_db_r: Arc::new(AtomicI32::new(-6000)),
             gr_stage1_db: Arc::new(AtomicI32::new(0)),
             gr_stage2_db: Arc::new(AtomicI32::new(0)),
+            background_tracks_count: Arc::new(AtomicUsize::new(0)),
+        });
+
+        let (host_sender, host_receiver) = crossbeam_channel::unbounded::<HostCommand>();
+        let cmd_rx_clone = receiver.clone();
+        let thread_shared_state = shared_state.clone();
+
+        std::thread::spawn(move || {
+            let mut active_stream: Option<cpal::Stream>;
+            let mut current_device_name: Option<String> = None;
+
+            while let Ok(cmd) = host_receiver.recv() {
+                match cmd {
+                    HostCommand::SetDevice { name, reply } => {
+                        active_stream = None;
+
+                        let res = (|| -> Result<AudioDeviceItem, String> {
+                            let host = cpal::default_host();
+                            let (target_device, is_default) = match name.as_deref() {
+                                Some(d_name) => {
+                                    let mut found = None;
+                                    if let Ok(devices) = host.output_devices() {
+                                        for d in devices {
+                                            if let Ok(n) = d.name() {
+                                                if n == d_name {
+                                                    found = Some(d);
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    let dev = found.ok_or_else(|| format!("Audio device '{}' not found", d_name))?;
+                                    let is_def = host.default_output_device().and_then(|d| d.name().ok()).as_deref() == Some(d_name);
+                                    (dev, is_def)
+                                }
+                                None => {
+                                    let dev = host.default_output_device().ok_or_else(|| "No default audio output device found".to_string())?;
+                                    (dev, true)
+                                }
+                            };
+
+                            let dev_name = target_device.name().unwrap_or_else(|_| "Unknown Device".to_string());
+                            let config = target_device.default_output_config()
+                                .map_err(|e| format!("Failed to get output config for '{}': {}", dev_name, e))?;
+
+                            let sample_rate = config.sample_rate().0;
+                            let channels = config.channels();
+
+                            log::info!("Initializing audio output device: {} ({:?})", dev_name, config);
+
+                            let stream = Self::build_stream(
+                                &target_device,
+                                &config,
+                                cmd_rx_clone.clone(),
+                                thread_shared_state.clone(),
+                            )?;
+
+                            active_stream = Some(stream);
+                            current_device_name = Some(dev_name.clone());
+
+                            Ok(AudioDeviceItem {
+                                name: dev_name,
+                                is_default,
+                                sample_rate,
+                                channels,
+                            })
+                        })();
+
+                        let _ = reply.send(res);
+                    }
+                    HostCommand::GetDevice { reply } => {
+                        let _ = reply.send(current_device_name.clone());
+                    }
+                }
+            }
         });
 
         let engine = AudioEngine {
-            command_receiver: receiver,
-            shared_state: shared_state.clone(),
+            host_sender,
         };
 
         (engine, command_bus, shared_state)
     }
 
-    pub fn start(&mut self) -> Result<(), String> {
-        let command_receiver = self.command_receiver.clone();
-        let shared_state = self.shared_state.clone();
+    fn build_stream(
+        device: &cpal::Device,
+        config: &cpal::SupportedStreamConfig,
+        command_receiver: crossbeam_channel::Receiver<Command>,
+        shared_state: Arc<SharedEngineState>,
+    ) -> Result<cpal::Stream, String> {
+        let device_sample_rate = config.sample_rate().0 as f64;
+        shared_state.device_sample_rate.store(config.sample_rate().0 as usize, Ordering::SeqCst);
 
-        std::thread::spawn(move || {
-            let host = cpal::default_host();
-            let device = match host.default_output_device() {
-                Some(d) => d,
-                None => {
-                    log::error!("No default audio output device found");
-                    return;
-                }
-            };
-
-            let config = match device.default_output_config() {
-                Ok(c) => c,
-                Err(e) => {
-                    log::error!("Failed to get default output config: {}", e);
-                    return;
-                }
-            };
-
-            log::info!("Audio device initialized: {}", device.name().unwrap_or_default());
-            log::info!("Default output config: {:?}", config);
-
-            let device_sample_rate = config.sample_rate().0 as f64;
-            shared_state.device_sample_rate.store(config.sample_rate().0 as usize, Ordering::SeqCst);
-
-            let output_channels = config.channels() as usize;
+        let output_channels = config.channels() as usize;
 
             // Maximum supported channel count and buffer frames for real-time safety
             const MAX_CHANNELS: usize = 8;
             const MAX_BUFFER_FRAMES: usize = 16384;
+            const MAX_BACKGROUND_VOICES: usize = 4;
 
-            // Local state for the audio thread
+            // Local state for active track voice
             let mut active_audio: Option<Arc<DecodedAudio>> = None;
             let mut playback_frame: usize = 0;
             let mut is_playing = false;
@@ -96,9 +355,13 @@ impl AudioEngine {
             stretch.set_transpose_semitones(current_pitch);
             let mut stretch_channels: usize = output_channels.max(2).min(MAX_CHANNELS);
 
-            // Pre-allocated scratch buffers (zero heap allocations in audio loop)
+            // Pre-allocated scratch buffers for active track
             let mut in_channel_scratch: Vec<Vec<f32>> = vec![vec![0.0f32; MAX_BUFFER_FRAMES]; MAX_CHANNELS];
             let mut out_channel_scratch: Vec<Vec<f32>> = vec![vec![0.0f32; MAX_BUFFER_FRAMES]; MAX_CHANNELS];
+
+            // Background voice pool and block scratch buffer
+            let mut background_voices: [Option<BackgroundVoice>; MAX_BACKGROUND_VOICES] = std::array::from_fn(|_| None);
+            let mut bg_voice_block_scratch: Vec<f32> = vec![0.0f32; MAX_BUFFER_FRAMES * MAX_CHANNELS];
 
             // Pre-allocate biquad filter pool (up to 16 cascade bands)
             let mut biquads_pool: Vec<crate::dsp::Biquad> = (0..crate::command::MAX_EQ_BANDS).map(|_| crate::dsp::Biquad::new(output_channels)).collect();
@@ -121,14 +384,14 @@ impl AudioEngine {
             let shared_out_peak_r = shared_state.out_peak_db_r.clone();
             let shared_gr_stage1 = shared_state.gr_stage1_db.clone();
             let shared_gr_stage2 = shared_state.gr_stage2_db.clone();
+            let shared_background_tracks = shared_state.background_tracks_count.clone();
 
             let err_fn = |err| log::error!("An error occurred on the audio stream: {}", err);
 
-            // Keep the stream alive inside this thread by holding its handle
-            let _stream = match config.sample_format() {
+            match config.sample_format() {
                 cpal::SampleFormat::F32 => {
                     let s = device.build_output_stream(
-                        &config.into(),
+                        &config.clone().into(),
                         move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                             // Update volume from main thread state if changed there
                             let vol_raw = shared_volume_raw.load(Ordering::SeqCst);
@@ -149,10 +412,12 @@ impl AudioEngine {
                                         shared_is_playing.store(true, Ordering::SeqCst);
                                     }
                                     Command::Pause => {
+                                        // Pause freezes both active track and all background tracks
                                         is_playing = false;
                                         shared_is_playing.store(false, Ordering::SeqCst);
                                     }
                                     Command::Stop => {
+                                        // Stop rewinds active track and completely terminates all background tracks
                                         is_playing = false;
                                         playback_frame = 0;
                                         shared_is_playing.store(false, Ordering::SeqCst);
@@ -162,6 +427,17 @@ impl AudioEngine {
                                             b.reset();
                                         }
                                         dual_compressor.reset();
+
+                                        for slot in &mut background_voices {
+                                            *slot = None;
+                                        }
+                                        shared_background_tracks.store(0, Ordering::SeqCst);
+                                    }
+                                    Command::StopBackgroundTracks => {
+                                        for slot in &mut background_voices {
+                                            *slot = None;
+                                        }
+                                        shared_background_tracks.store(0, Ordering::SeqCst);
                                     }
                                     Command::Seek(duration) => {
                                         if let Some(ref audio) = active_audio {
@@ -186,7 +462,7 @@ impl AudioEngine {
                                         let mut bands = [crate::command::EqBand::default(); crate::command::MAX_EQ_BANDS];
                                         let mut count = 0;
                                         if bass_db.abs() > 0.001 {
-                                            bands[count] = crate::command::EqBand {
+                                             bands[count] = crate::command::EqBand {
                                                 filter_type: crate::dsp::FilterType::LowShelf,
                                                 freq: 100.0,
                                                 gain_db: bass_db as f64,
@@ -247,26 +523,86 @@ impl AudioEngine {
                                         pending_envelope = Some((nodes, count));
                                     }
                                     Command::LoadAudio(audio) => {
-                                        // Ensure audio matches device sample rate
-                                        let audio_to_load = if audio.sample_rate as f64 != device_sample_rate && audio.sample_rate > 0 {
-                                            match crate::resampler::resample_audio_channels(&audio.channel_samples, audio.sample_rate, device_sample_rate as u32) {
-                                                Ok(resampled) => {
-                                                    let duration = audio.duration_seconds;
-                                                    Arc::new(DecodedAudio {
-                                                        channels: audio.channels,
-                                                        sample_rate: device_sample_rate as u32,
-                                                        duration_seconds: duration,
-                                                        channel_samples: resampled,
-                                                    })
-                                                }
-                                                Err(e) => {
-                                                    log::error!("Failed to resample audio in engine: {}", e);
-                                                    audio
+                                        let audio_to_load = audio;
+                                        if (audio_to_load.sample_rate as f64 - device_sample_rate).abs() > 0.5 && audio_to_load.sample_rate > 0 {
+                                            log::warn!(
+                                                "Audio sample rate ({} Hz) differs from device sample rate ({} Hz) in audio callback. Audio must be pre-resampled off-thread.",
+                                                audio_to_load.sample_rate,
+                                                device_sample_rate
+                                            );
+                                        }
+
+                                        // If a track was currently playing, transfer it to the background voices pool!
+                                        if is_playing {
+                                            if let Some(old_audio) = active_audio.take() {
+                                                let old_len = old_audio.channel_samples[0].len();
+                                                if playback_frame < old_len {
+                                                    let old_stretch = std::mem::replace(
+                                                        &mut stretch,
+                                                        signalsmith_stretch_rs::SignalsmithStretch::new(output_channels.max(2).min(MAX_CHANNELS), device_sample_rate as f32)
+                                                    );
+                                                    let old_biquads = std::mem::replace(
+                                                        &mut biquads_pool,
+                                                        (0..crate::command::MAX_EQ_BANDS).map(|_| crate::dsp::Biquad::new(output_channels)).collect()
+                                                    );
+                                                    let old_comp = std::mem::replace(
+                                                        &mut dual_compressor,
+                                                        crate::dsp::DualCompressor::new(device_sample_rate)
+                                                    );
+                                                    let old_in_scratch = std::mem::replace(
+                                                        &mut in_channel_scratch,
+                                                        vec![vec![0.0f32; MAX_BUFFER_FRAMES]; MAX_CHANNELS]
+                                                    );
+                                                    let old_out_scratch = std::mem::replace(
+                                                        &mut out_channel_scratch,
+                                                        vec![vec![0.0f32; MAX_BUFFER_FRAMES]; MAX_CHANNELS]
+                                                    );
+
+                                                    let bg_voice = BackgroundVoice {
+                                                        audio: old_audio,
+                                                        playback_frame,
+                                                        speed: current_speed,
+                                                        pitch: current_pitch,
+                                                        stretch: old_stretch,
+                                                        stretch_channels,
+                                                        biquads_pool: old_biquads,
+                                                        active_biquad_count,
+                                                        eq_active,
+                                                        dual_compressor: old_comp,
+                                                        volume,
+                                                        envelope_nodes,
+                                                        envelope_nodes_count,
+                                                        active_regions,
+                                                        active_region_count,
+                                                        in_scratch: old_in_scratch,
+                                                        out_scratch: old_out_scratch,
+                                                    };
+
+                                                    // Reset active track controls
+                                                    stretch_channels = output_channels.max(2).min(MAX_CHANNELS);
+                                                    stretch.set_transpose_semitones(0.0);
+                                                    current_pitch = 0.0;
+                                                    current_speed = 1.0;
+                                                    active_biquad_count = 0;
+                                                    eq_active = false;
+                                                    envelope_nodes_count = 0;
+                                                    active_region_count = 0;
+
+                                                    if let Some(slot) = background_voices.iter_mut().find(|s| s.is_none()) {
+                                                        *slot = Some(bg_voice);
+                                                    } else {
+                                                        // Pool full: displace oldest voice
+                                                        for i in 0..MAX_BACKGROUND_VOICES - 1 {
+                                                            background_voices[i] = background_voices[i + 1].take();
+                                                        }
+                                                        background_voices[MAX_BACKGROUND_VOICES - 1] = Some(bg_voice);
+                                                    }
+
+                                                    let active_bg = background_voices.iter().filter(|s| s.is_some()).count();
+                                                    shared_background_tracks.store(active_bg, Ordering::Relaxed);
                                                 }
                                             }
-                                        } else {
-                                            audio
-                                        };
+                                        }
 
                                         let total = audio_to_load.channel_samples[0].len();
                                         let rate = audio_to_load.sample_rate;
@@ -291,7 +627,7 @@ impl AudioEngine {
                                 }
                             }
 
-                            // Apply coalesced parameter updates exactly once per buffer block (zero heap allocations)
+                            // Apply coalesced parameter updates exactly once per buffer block
                             if let Some(pitch) = pending_pitch {
                                 current_pitch = pitch;
                                 stretch.set_transpose_semitones(current_pitch);
@@ -330,175 +666,129 @@ impl AudioEngine {
                             // 2. Render samples
                             let num_out_frames = data.len() / output_channels;
 
-                            if !is_playing || active_audio.is_none() {
+                            if !is_playing {
                                 for sample in data.iter_mut() {
                                     *sample = 0.0;
                                 }
-                            } else if let Some(ref audio) = active_audio {
-                                let audio_len = audio.channel_samples[0].len();
-                                let audio_channels = audio.channels;
-                                let frame_rate = audio.sample_rate as f64;
-
-                                // Region handling: Check for Cut skip and Loop wrap (gapless continuous playback)
-                                let current_sec = playback_frame as f64 / frame_rate;
-                                for reg in &active_regions[..active_region_count] {
-                                    if reg.is_cut && current_sec >= reg.start_seconds && current_sec < reg.end_seconds {
-                                        playback_frame = (reg.end_seconds * frame_rate) as usize;
-                                        shared_current_frame.store(playback_frame, Ordering::SeqCst);
-                                        break;
-                                    } else if reg.is_loop && current_sec >= reg.end_seconds {
-                                        playback_frame = (reg.start_seconds * frame_rate) as usize;
-                                        shared_current_frame.store(playback_frame, Ordering::SeqCst);
-                                        break;
-                                    }
-                                }
-
-                                if playback_frame >= audio_len {
-                                    is_playing = false;
-                                    shared_is_playing.store(false, Ordering::SeqCst);
-                                    for sample in data.iter_mut() {
-                                        *sample = 0.0;
-                                    }
-                                } else {
-                                    // Signalsmith stretch processing (or bit-transparent passthrough if unmodulated)
-                                    let safe_out_frames = std::cmp::min(num_out_frames, MAX_BUFFER_FRAMES);
-                                    let num_in_frames = ((safe_out_frames as f32) * current_speed).round() as usize;
-                                    let safe_in_frames = std::cmp::min(num_in_frames, MAX_BUFFER_FRAMES);
-
-                                    for i in 0..safe_in_frames {
-                                        let curr_f = playback_frame + i;
-                                        if curr_f < audio_len {
-                                            for ch in 0..stretch_channels {
-                                                in_channel_scratch[ch][i] = audio.channel_samples[ch % audio_channels][curr_f];
-                                            }
-                                        } else {
-                                            for ch in 0..stretch_channels {
-                                                in_channel_scratch[ch][i] = 0.0;
-                                            }
-                                        }
-                                    }
-
-                                    // Form zero-allocation channel slices for Signalsmith processing
-                                    let mut in_slices: [&[f32]; MAX_CHANNELS] = [&[]; MAX_CHANNELS];
-                                    for ch in 0..stretch_channels {
-                                        in_slices[ch] = &in_channel_scratch[ch][..safe_in_frames];
-                                    }
-
-                                    let mut out_slices: [&mut [f32]; MAX_CHANNELS] = std::array::from_fn(|ch| {
-                                        if ch < stretch_channels {
-                                            unsafe {
-                                                std::slice::from_raw_parts_mut(out_channel_scratch[ch].as_mut_ptr(), safe_out_frames)
-                                            }
-                                        } else {
-                                            &mut [][..]
-                                        }
-                                    });
-
-                                    let is_modulating = current_pitch.abs() > 0.001 || (current_speed - 1.0).abs() > 0.001;
-                                    if is_modulating {
-                                        stretch.process(&in_slices[..stretch_channels], &mut out_slices[..stretch_channels]);
-                                    } else {
-                                        for ch in 0..stretch_channels {
-                                            out_channel_scratch[ch][..safe_out_frames].copy_from_slice(&in_channel_scratch[ch][..safe_out_frames]);
-                                        }
-                                    }
-
-                                    // Apply track volume & interpolated volume envelope PRE-EQ and PRE-COMPRESSOR
-                                    for frame_idx in 0..safe_out_frames {
-                                        let frame_time_sec = (playback_frame + ((frame_idx as f32 * current_speed) as usize)) as f64 / device_sample_rate;
-                                        let env_gain = if envelope_nodes_count > 0 {
-                                            crate::command::interpolate_envelope(&envelope_nodes[..envelope_nodes_count], frame_time_sec)
-                                        } else {
-                                            1.0
-                                        };
-                                        let total_pre_gain = volume * env_gain;
-
-                                        for out_c in 0..output_channels {
-                                            let in_c = out_c % stretch_channels;
-                                            data[frame_idx * output_channels + out_c] = out_channel_scratch[in_c][frame_idx] * total_pre_gain;
-                                        }
-                                    }
-
-                                    // Zero-fill any excess frames if CPAL output buffer exceeds MAX_BUFFER_FRAMES
-                                    for frame_idx in safe_out_frames..num_out_frames {
-                                        for out_c in 0..output_channels {
-                                            data[frame_idx * output_channels + out_c] = 0.0;
-                                        }
-                                    }
-
-                                    playback_frame += safe_in_frames;
-                                    if playback_frame >= audio_len {
-                                        is_playing = false;
-                                        shared_is_playing.store(false, Ordering::SeqCst);
-                                    }
-                                }
-
-                                    // Measure input levels (before EQ & compressor)
-                                    let mut max_in_l: f32 = 0.0;
-                                    let mut max_in_r: f32 = 0.0;
-                                    for frame_idx in 0..num_out_frames {
-                                        let l_idx = frame_idx * output_channels;
-                                        let r_idx = if output_channels > 1 { l_idx + 1 } else { l_idx };
-                                        max_in_l = max_in_l.max(data[l_idx].abs());
-                                        max_in_r = max_in_r.max(data[r_idx].abs());
-                                    }
-                                    let in_l_db = if max_in_l > 1e-5 { (20.0 * max_in_l.log10()).clamp(-60.0, 6.0) } else { -60.0 };
-                                    let in_r_db = if max_in_r > 1e-5 { (20.0 * max_in_r.log10()).clamp(-60.0, 6.0) } else { -60.0 };
-                                    shared_in_peak_l.store((in_l_db * 100.0) as i32, Ordering::Relaxed);
-                                    shared_in_peak_r.store((in_r_db * 100.0) as i32, Ordering::Relaxed);
-
-                                    // 3. Apply High-Quality Biquad EQ Filters (in-place)
-                                    if eq_active && active_biquad_count > 0 {
-                                        for frame_idx in 0..num_out_frames {
-                                            for ch in 0..output_channels {
-                                                let idx = frame_idx * output_channels + ch;
-                                                let mut s = data[idx];
-                                                for b in &mut biquads_pool[..active_biquad_count] {
-                                                    s = b.process_sample(ch, s);
-                                                }
-                                                data[idx] = s;
-                                            }
-                                        }
-                                    }
-
-                                    // 4. Apply Dual-Stage Dynamic Compressor
-                                    if !dual_compressor.is_bypassed() {
-                                        for frame_idx in 0..num_out_frames {
-                                            let left_idx = frame_idx * output_channels;
-                                            let right_idx = if output_channels > 1 { left_idx + 1 } else { left_idx };
-                                            let (l, r) = dual_compressor.process_stereo_frame(data[left_idx], data[right_idx]);
-                                            data[left_idx] = l;
-                                            if output_channels > 1 {
-                                                data[right_idx] = r;
-                                            }
-                                        }
-                                    }
-
-                                    // Measure gain reduction and output levels
-                                    let gr1 = dual_compressor.stage1.last_gr_db.abs();
-                                    let gr2 = dual_compressor.stage2.last_gr_db.abs();
-                                    shared_gr_stage1.store((gr1 * 100.0) as i32, Ordering::Relaxed);
-                                    shared_gr_stage2.store((gr2 * 100.0) as i32, Ordering::Relaxed);
-
-                                    let mut max_out_l: f32 = 0.0;
-                                    let mut max_out_r: f32 = 0.0;
-                                    for frame_idx in 0..num_out_frames {
-                                        let l_idx = frame_idx * output_channels;
-                                        let r_idx = if output_channels > 1 { l_idx + 1 } else { l_idx };
-                                        max_out_l = max_out_l.max(data[l_idx].abs());
-                                        max_out_r = max_out_r.max(data[r_idx].abs());
-                                    }
-                                    let out_l_db = if max_out_l > 1e-5 { (20.0 * max_out_l.log10()).clamp(-60.0, 6.0) } else { -60.0 };
-                                    let out_r_db = if max_out_r > 1e-5 { (20.0 * max_out_r.log10()).clamp(-60.0, 6.0) } else { -60.0 };
-                                    shared_out_peak_l.store((out_l_db * 100.0) as i32, Ordering::Relaxed);
-                                    shared_out_peak_r.store((out_r_db * 100.0) as i32, Ordering::Relaxed);
-                            } else {
                                 shared_in_peak_l.store(-6000, Ordering::Relaxed);
                                 shared_in_peak_r.store(-6000, Ordering::Relaxed);
                                 shared_out_peak_l.store(-6000, Ordering::Relaxed);
                                 shared_out_peak_r.store(-6000, Ordering::Relaxed);
                                 shared_gr_stage1.store(0, Ordering::Relaxed);
                                 shared_gr_stage2.store(0, Ordering::Relaxed);
+                            } else {
+                                let mut has_active = false;
+                                let mut active_finished = false;
+
+                                if let Some(ref audio) = active_audio {
+                                    has_active = true;
+                                    active_finished = render_single_voice(
+                                        audio,
+                                        &mut playback_frame,
+                                        current_speed,
+                                        current_pitch,
+                                        &mut stretch,
+                                        stretch_channels,
+                                        &mut biquads_pool,
+                                        active_biquad_count,
+                                        eq_active,
+                                        &mut dual_compressor,
+                                        volume,
+                                        &envelope_nodes[..envelope_nodes_count],
+                                        &active_regions[..active_region_count],
+                                        device_sample_rate,
+                                        output_channels,
+                                        num_out_frames,
+                                        &mut in_channel_scratch,
+                                        &mut out_channel_scratch,
+                                        data,
+                                    );
+
+                                    if active_finished {
+                                        shared_is_playing.store(false, Ordering::SeqCst);
+                                    }
+                                    shared_current_frame.store(playback_frame, Ordering::SeqCst);
+
+                                    // Measure compressor gain reduction on active track
+                                    let gr1 = dual_compressor.stage1.last_gr_db.abs();
+                                    let gr2 = dual_compressor.stage2.last_gr_db.abs();
+                                    shared_gr_stage1.store((gr1 * 100.0) as i32, Ordering::Relaxed);
+                                    shared_gr_stage2.store((gr2 * 100.0) as i32, Ordering::Relaxed);
+                                } else {
+                                    for sample in data.iter_mut() {
+                                        *sample = 0.0;
+                                    }
+                                    shared_gr_stage1.store(0, Ordering::Relaxed);
+                                    shared_gr_stage2.store(0, Ordering::Relaxed);
+                                }
+
+                                // Render background voices into bg_voice_block_scratch and sum into data
+                                let mut active_bg_count = 0;
+                                let total_block_samples = num_out_frames * output_channels;
+                                for slot in &mut background_voices {
+                                    if let Some(ref mut voice) = slot {
+                                        let voice_finished = render_single_voice(
+                                            &voice.audio,
+                                            &mut voice.playback_frame,
+                                            voice.speed,
+                                            voice.pitch,
+                                            &mut voice.stretch,
+                                            voice.stretch_channels,
+                                            &mut voice.biquads_pool,
+                                            voice.active_biquad_count,
+                                            voice.eq_active,
+                                            &mut voice.dual_compressor,
+                                            voice.volume,
+                                            &voice.envelope_nodes[..voice.envelope_nodes_count],
+                                            &voice.active_regions[..voice.active_region_count],
+                                            device_sample_rate,
+                                            output_channels,
+                                            num_out_frames,
+                                            &mut voice.in_scratch,
+                                            &mut voice.out_scratch,
+                                            &mut bg_voice_block_scratch[..total_block_samples],
+                                        );
+
+                                        for i in 0..total_block_samples {
+                                            data[i] += bg_voice_block_scratch[i];
+                                        }
+
+                                        if voice_finished {
+                                            *slot = None;
+                                        } else {
+                                            active_bg_count += 1;
+                                        }
+                                    }
+                                }
+                                shared_background_tracks.store(active_bg_count, Ordering::Relaxed);
+
+                                // If both active track finished (or none) and all background tracks finished:
+                                if (!has_active || active_finished) && active_bg_count == 0 {
+                                    is_playing = false;
+                                    shared_is_playing.store(false, Ordering::SeqCst);
+                                }
+
+                                // Measure output levels on final mixed audio
+                                let mut max_in_l: f32 = 0.0;
+                                let mut max_in_r: f32 = 0.0;
+                                let mut max_out_l: f32 = 0.0;
+                                let mut max_out_r: f32 = 0.0;
+                                for frame_idx in 0..num_out_frames {
+                                    let l_idx = frame_idx * output_channels;
+                                    let r_idx = if output_channels > 1 { l_idx + 1 } else { l_idx };
+                                    max_in_l = max_in_l.max(data[l_idx].abs());
+                                    max_in_r = max_in_r.max(data[r_idx].abs());
+                                    max_out_l = max_out_l.max(data[l_idx].abs());
+                                    max_out_r = max_out_r.max(data[r_idx].abs());
+                                }
+                                let in_l_db = if max_in_l > 1e-5 { (20.0 * max_in_l.log10()).clamp(-60.0, 6.0) } else { -60.0 };
+                                let in_r_db = if max_in_r > 1e-5 { (20.0 * max_in_r.log10()).clamp(-60.0, 6.0) } else { -60.0 };
+                                shared_in_peak_l.store((in_l_db * 100.0) as i32, Ordering::Relaxed);
+                                shared_in_peak_r.store((in_r_db * 100.0) as i32, Ordering::Relaxed);
+                                let out_l_db = if max_out_l > 1e-5 { (20.0 * max_out_l.log10()).clamp(-60.0, 6.0) } else { -60.0 };
+                                let out_r_db = if max_out_r > 1e-5 { (20.0 * max_out_r.log10()).clamp(-60.0, 6.0) } else { -60.0 };
+                                shared_out_peak_l.store((out_l_db * 100.0) as i32, Ordering::Relaxed);
+                                shared_out_peak_r.store((out_r_db * 100.0) as i32, Ordering::Relaxed);
                             }
 
                             shared_current_frame.store(playback_frame, Ordering::SeqCst);
@@ -506,32 +796,36 @@ impl AudioEngine {
                         err_fn,
                         None
                     );
-                    match s {
-                        Ok(stream) => {
-                            if let Err(e) = stream.play() {
-                                log::error!("Failed to start CPAL stream: {}", e);
-                                return;
-                            }
-                            stream
-                        }
-                        Err(e) => {
-                            log::error!("Failed to build CPAL output stream: {}", e);
-                            return;
-                        }
-                    }
+                    let stream = s.map_err(|e| format!("Failed to build CPAL output stream: {}", e))?;
+                    stream.play().map_err(|e| format!("Failed to start CPAL stream: {}", e))?;
+                    Ok(stream)
                 }
                 sample_fmt => {
-                    log::error!("Unsupported output sample format: {:?}", sample_fmt);
-                    return;
+                    Err(format!("Unsupported output sample format: {:?}", sample_fmt))
                 }
-            };
-
-            // Loop to keep stream alive in background thread
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(3600));
             }
-        });
+        }
 
-        Ok(())
+    pub fn set_output_device(&self, device_name: Option<&str>) -> Result<AudioDeviceItem, String> {
+        let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+        self.host_sender.send(HostCommand::SetDevice {
+            name: device_name.map(|s| s.to_string()),
+            reply: reply_tx,
+        }).map_err(|e| format!("Audio host thread disconnected: {}", e))?;
+
+        reply_rx.recv().map_err(|e| format!("Failed to receive device switch reply: {}", e))?
+    }
+
+    pub fn current_device(&self) -> Option<String> {
+        let (reply_tx, reply_rx) = crossbeam_channel::bounded(1);
+        if self.host_sender.send(HostCommand::GetDevice { reply: reply_tx }).is_ok() {
+            reply_rx.recv().ok().flatten()
+        } else {
+            None
+        }
+    }
+
+    pub fn start(&self) -> Result<(), String> {
+        self.set_output_device(None).map(|_| ())
     }
 }

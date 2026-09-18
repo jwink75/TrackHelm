@@ -34,6 +34,17 @@ All Windows-specific platform tiers have been implemented and verified:
 7. **Batch Fuzzy Library Auto-Linker & Stems Folder**:
    - 5th designated folder row in Preferences: **Isolated Vocals & Stems (UVR)** (`prefFolderVocals`).
    - One-click batch fuzzy linker discovers and pairs performance tracks with matching originals, sheet music PDFs, lossless masters, and all vocal/iso stems across folders and subdirectories.
+8. **Milestone 18: Real-Time Audio Engine Safety, PDF Virtualization & Subsystem Hardening**:
+   - **Real-Time Thread Safety:** Resampling removed from CPAL callback thread; verified in-flight during decode.
+   - **Subprocess Isolation:** AI stem separation runs in `spawn_blocking` to prevent blocking Tokio async workers.
+   - **Dynamic PDF Virtualization:** Memory-efficient `IntersectionObserver` with 500px pre-load margin and zero-copy binary IPC (`read_file_binary`).
+   - **Decode Deduplication:** Unified `get_or_decode_track` with broadcast channels in `AppState`.
+   - **Remote Broadcast Gating:** WebSocket state broadcasting gated by connected clients to eliminate idle serialization overhead.
+   - **Drive Cache:** 30s TTL cache on drive and cloud folder discovery.
+9. **Milestone 19: Hardware Audio Output Selector, Shift+Wheel Scrubbing & Focus Protection**:
+   - **Audio Output Device Selection:** Dedicated host thread architecture managing CPAL stream lifecycle, enabling runtime device hot-switching without COM apartment violations or app restarts. Active audio buffer automatically resampled on-the-fly when device native sample rate differs (e.g. 44.1k to 48k). Preferences modal integration with device persistence to `localStorage`.
+   - **Shift + Mousewheel Scrubbing:** Hovering over the main waveform and scrolling with Shift (or horizontal wheel/trackpad) scrubs playhead smoothly with delta dynamically scaled to zoom level (~5% of visible window per notch).
+   - **Window Focus Activation Guard:** Prevents activating clicks from other windows from accidentally seeking or rewinding audio by ignoring waveform clicks within 250ms of window focus. Bare Enter key decoupled from stop/rewind. Transport buttons automatically blurred on click.
 
 ---
 
